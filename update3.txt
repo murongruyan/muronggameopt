@@ -1,6 +1,0 @@
-{
-  "version": "1.0",
-  "versionCode": 10,
-  "zipUrl": "https://github.com/murongruyan/muronggameopt/releases/download/慕容调度/1.0.zip",
-  "changelog": "https://raw.githubusercontent.com/murongruyan/muronggameopt/main/changelog.txt"
-}
