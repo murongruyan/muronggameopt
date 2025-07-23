@@ -1,0 +1,206 @@
+{
+  "powersave": { //省电模式配置
+    "cpu_policies": [ //CPU参数设置
+      {
+        "cluster": 0, //第一个CPU簇（此配置为骁龙8E的，所以仅有两个，0代表第一个CPU簇对应policy0）
+        "governor": "walt", //调速器设置为walt
+        "max_freq": 2227200, //最小频率设置为2227200 KHz (2227.2 MHz)
+        "min_freq": 384000, //最小频率设置为384000 KHz (384 MHz)
+        "params": {
+          "adaptive_level_1": "90", //负载阈值设置为90%。当CPU负载超过当前频率对应的阈值时，调度器会认为该频率不足以处理负载，从而尝试升频。值越低越积极升频，值越高越保守。
+          "hispeed_cond_freq":"960000", //高负载时最低频率阈值设为960mhz
+          //上面两个选项仅8e有，8GEN3为target_loads，及负载阈值触发升频，假如我这样写："target_loads": "80",代表每个频率占用率为80%，"80 1574400:85",代表频率1574.4mhz前占用率都为80%，达到1574.4mhz占用率为85%，"target_loads": "80 1574400:85 2035200:90"` 的解释是准确的：代表在频率达到1574.4 MHz之前，负载阈值是80%；在1574.4 MHz到2035.2 MHz之间，负载阈值是85%；在2035.2 MHz及以上，负载阈值是90%。
+          "hispeed_freq": "960000", //高负载立即提升到960mhz频率
+          "hispeed_load": "90", //达到90%占用立即升到hispeed_freq所设置的频率
+          "up_rate_limit_us": "8000", //升频操作之间的最小时间间隔(8000微秒 / 8毫秒)。值越大升频越缓慢平滑。
+          "down_rate_limit_us": "2000", //降频操作之间的最小时间间隔(2000微秒 / 2毫秒)。值越大降频越缓慢平滑
+          "boost": "-30", //对调度器计算出的"需求频率"进行百分比偏移。负值(如-30)降低需求频率(更倾向于降频/低频运行)，正值(如10)提高需求频率(更倾向于升频/高频运行)，0表示不偏移。偏移后的频率仍受min_freq和max_freq限制。负值有助于更快降到rtg_boost_freq附近。
+          "rtg_boost_freq": "748800", //实时任务组(RTG)提升频率。当有实时任务(如UI线程)被调度时，调度器会努力让CPU至少运行在此频率(748800 KHz / 748.8 MHz)上以保证响应性。
+          "target_load_shift": "2" //检测负载精度设置为2
+        }
+      },
+      {
+        "cluster": 1, //代表第二个簇，对应policy6，后面都一样，不过多解释了
+        "governor": "walt",
+        "max_freq": 2246400,
+        "min_freq": 1017600,
+        "params": {
+          "adaptive_level_1": "90",
+          "hispeed_cond_freq":"1017600",
+          "hispeed_freq": "1017600",
+          "hispeed_load": "90",
+          "up_rate_limit_us": "8000",
+          "down_rate_limit_us": "2000",
+          "boost": "-35",
+          "rtg_boost_freq": "1017600",
+          "target_load_shift": "2"
+        }
+      }
+    ],
+    "cpuset": { //线程隔离
+      "background": "0-4", //用户后台进程设置为0到4核心，0，1，2，3，4。
+      "systembackground": "0-4", //系统后台进程设置为0到4核心
+      "foreground": "0-6", //前台进程设置为0-6核心
+      "topapp": "0-7" //顶层进程设置为0-7核心
+    },
+    "ddr": {
+      "min_freq": "ddr_min", //最小ddr频率不变
+      "max_freq": "ddr_min*3.824499" //最大ddr频率设置为最小ddr频率的3.8倍。
+    }
+  },
+  "balance": { //均衡模式，后面都一样了，不多解释了。
+    "cpu_policies": [
+      {
+        "cluster": 0,
+        "governor": "walt",
+        "max_freq": 2400000,
+        "min_freq": 1152000,
+        "params": {
+          "adaptive_level_1": "85",
+          "hispeed_cond_freq":"1363200",
+          "hispeed_freq": "1996800",
+          "hispeed_load": "85",
+          "up_rate_limit_us": "2000",
+          "down_rate_limit_us": "1000",
+          "boost": "-15",
+          "rtg_boost_freq": "844800",
+          "target_load_shift": "2"
+        }
+      },
+      {
+        "cluster": 1,
+        "governor": "walt",
+        "max_freq": 2438400,
+        "min_freq": 1017600,
+        "params": {
+          "adaptive_level_1": "85",
+          "hispeed_cond_freq":"1401600",
+          "hispeed_freq": "1958400",
+          "hispeed_load": "75",
+          "up_rate_limit_us": "2000",
+          "down_rate_limit_us": "1000",
+          "boost": "-35",
+          "rtg_boost_freq": "902400",
+          "target_load_shift": "2"
+        }
+      }
+    ],
+    "cpuset": {
+      "background": "0-1",
+      "systembackground": "0-1",
+      "foreground": "0-6",
+      "topapp": "0-7"
+    },
+    "ddr": {
+      "min_freq": "ddr_min",
+      "max_freq": "ddr_max"
+    }
+  },
+  "performance": {
+    "cpu_policies": [
+      {
+        "cluster": 0,
+        "governor": "walt",
+        "max_freq": 2841600,
+        "min_freq": 729600,
+        "params": {
+          "adaptive_level_1": "75",
+          "hispeed_cond_freq":"1555200",
+          "hispeed_freq": "1708800",
+          "hispeed_load": "75",
+          "up_rate_limit_us": "2000",
+          "down_rate_limit_us": "1000",
+          "boost": "-20",
+          "rtg_boost_freq": "844800",
+          "target_load_shift": "2"
+        }
+      },
+      {
+        "cluster": 1,
+        "governor": "walt",
+        "max_freq": 2995200,
+        "min_freq": 787200,
+        "params": {
+          "adaptive_level_1": "80",
+          "hispeed_cond_freq":"1689600",
+          "hispeed_freq": "2246400",
+          "hispeed_load": "75",
+          "up_rate_limit_us": "1000",
+          "down_rate_limit_us": "1000",
+          "boost": "-15",
+          "rtg_boost_freq": "902400",
+          "target_load_shift": "2"
+        }
+      }
+    ],
+    "cpuset": {
+      "background": "0-1",
+      "systembackground": "0-1",
+      "foreground": "0-6",
+      "topapp": "0-7"
+    },
+    "ddr": {
+      "min_freq": "ddr_min",
+      "max_freq": "ddr_max"
+    }
+  },
+  "fast": {
+    "cpu_policies": [
+      {
+        "cluster": 0,
+        "governor": "walt",
+        "max_freq": 3532800,
+        "min_freq": 1363200,
+        "params": {
+          "adaptive_level_1": "85",
+          "hispeed_cond_freq":"1785600",
+          "hispeed_freq": "2227200",
+          "hispeed_load": "75",
+          "up_rate_limit_us": "1000",
+          "down_rate_limit_us": "1000",
+          "boost": "-10",
+          "rtg_boost_freq": "960000",
+          "target_load_shift": "2"
+        }
+      },
+      {
+        "cluster": 1,
+        "governor": "walt",
+        "max_freq": 4320000,
+        "min_freq": 1209600,
+        "params": {
+          "adaptive_level_1": "85",
+          "hispeed_cond_freq":"1958400",
+          "hispeed_freq": "2438400",
+          "hispeed_load": "75",
+          "up_rate_limit_us": "1000",
+          "down_rate_limit_us": "1000",
+          "boost": "-15",
+          "rtg_boost_freq": "1017600",
+          "target_load_shift": "2"
+        }
+      }
+    ],
+    "cpuset": {
+      "background": "0-1",
+      "systembackground": "0-1",
+      "foreground": "0-6",
+      "topapp": "0-7"
+    },
+    "ddr": {
+      "min_freq": "ddr_min",
+      "max_freq": "ddr_max"
+    }
+  },
+  "special_apps": [ //单应用模式
+  {
+    "package": "com.oplus.engineercamera,com.oplus.camera,com.android.launcher", //相机，工程相机，桌面的包名
+    "min_freq": [1552000, 1958400], //覆盖上面普通模式的最小频率
+    "params": {
+      "up_rate_limit_us": "0", //覆盖升频延迟为0ms
+      "down_rate_limit_us": "0", //覆盖降频延迟为0ms
+      "boost": "0" //覆盖boost参数为0
+    }
+  }
+]
+}
