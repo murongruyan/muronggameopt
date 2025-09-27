@@ -268,51 +268,98 @@ Cluster 3 (策略: 7)
 
 ---
 
+## 📦 版本获取方式
+
+### 🆓 免费开源版本
+当前可免费获取的开源版本：
+- **版本 4.9** - 事件驱动架构 + 实时监控
+- **版本 5.0** - CPU控制组 + 企业级日志管理
+
+这些版本完全开源，遵循MIT许可证，您可以：
+- ✅ 免费下载和使用
+- ✅ 查看完整源代码
+- ✅ 修改和定制功能
+- ✅ 商业使用
+
+### 💎 付费抢先体验版本
+最新版本采用"抢先体验"模式：
+- **版本 5.1** - 🔒 付费抢先体验 (即将免费)
+- **版本 5.2** - 🔒 付费抢先体验 (已发布)
+- **版本 5.3** - 🔒 付费抢先体验 (规划中)
+
+### 🔄 版本开源策略
+我们采用"滚动开源"模式：
+```
+当版本 5.3 发布时 → 版本 5.1 变为免费开源
+当版本 5.4 发布时 → 版本 5.2 变为免费开源
+当版本 5.5 发布时 → 版本 5.3 变为免费开源
+```
+
+**简单来说：** 每个付费版本在两个版本后自动变为免费开源版本
+
+### 💰 获取付费版本
+- 📧 **联系方式**: QQ群 974835379
+- 💳 **支付方式**: 支持支付宝/微信支付
+- 🎁 **早鸟优惠**: 首批用户享受特别价格
+- 🔄 **终身更新**: 一次购买，持续更新
+
+### 🤔 为什么选择付费版本？
+- ⚡ **抢先体验** - 第一时间获得最新功能
+- 🛠️ **技术支持** - 专属技术支持和问题解答
+- 🚀 **性能优势** - 最新优化算法和性能提升
+- 💡 **功能预览** - 提前体验未来功能特性
+
+---
+
 ## 📄 开源许可证
 
-本项目采用 **GNU General Public License v3.0** 开源许可证。
+本项目采用 **MIT License** 开源许可证。
 
 ### 🔓 您的权利
-- ✅ **自由使用** - 可以自由运行本软件
-- ✅ **自由研究** - 可以研究软件工作原理
-- ✅ **自由分享** - 可以重新分发软件副本
-- ✅ **自由修改** - 可以修改软件并分发修改版本
-- ✅ **商业使用** - 可以用于商业目的
+- ✅ **商业使用** - 可以在商业项目中使用本软件
+- ✅ **修改权** - 可以修改源代码以满足您的需求
+- ✅ **分发权** - 可以分发原始或修改后的软件
+- ✅ **私人使用** - 可以私人使用和修改软件
+- ✅ **专利使用** - 获得贡献者的专利授权
 
 ### 📋 您的义务
-- 📝 **保留版权** - 必须保留原始版权声明
-- 🔄 **相同许可** - 修改版本必须使用相同的GPLv3许可证
-- 📖 **提供源码** - 分发时必须提供源代码或提供获取源代码的方式
-- 🏷️ **标明修改** - 如果修改了代码，必须明确标明修改内容
+- 📝 **版权声明** - 在软件副本中包含原始版权声明
+- 📄 **许可证声明** - 在软件副本中包含MIT许可证声明
 
 ### ⚖️ 法律声明
 ```
-慕容调度模块 (Murong Scheduling Module)
-Copyright (C) 2025 慕容如燕 (murongruyan)
+MIT License
 
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
+Copyright (c) 2025 慕容如燕 (murongruyan)
 
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <https://www.gnu.org/licenses/>.
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 ```
 
 ### 🔗 相关链接
 - 📜 [完整许可证文本](LICENSE)
-- 🌐 [GPLv3官方说明](https://www.gnu.org/licenses/gpl-3.0.html)
-- 📚 [开源许可证指南](https://choosealicense.com/licenses/gpl-3.0/)
+- 🌐 [MIT许可证官方说明](https://opensource.org/licenses/MIT)
+- 📚 [开源许可证指南](https://choosealicense.com/licenses/mit/)
 
 ---
 
-**💡 选择GPLv3的原因：**
-- 🛡️ **强保护性** - 确保代码永远保持开源
-- 🤝 **社区友好** - 鼓励开源社区贡献和改进
-- ⚖️ **防止闭源** - 防止他人将开源代码闭源商业化
-- 🔄 **持续开放** - 保证所有衍生作品都保持开源
+**💡 选择MIT的原因：**
+- 🚀 **简单宽松** - 最少限制，最大自由度
+- 💼 **商业友好** - 允许商业使用和闭源衍生
+- 🤝 **社区友好** - 鼓励广泛采用和贡献
+- ⚡ **快速集成** - 无复杂法律要求，易于集成

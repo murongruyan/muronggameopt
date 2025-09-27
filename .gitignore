@@ -31,3 +31,32 @@ google-services.json
 
 # Android Profiling
 *.hprof
+
+# Commercial/Business sensitive files
+commercial/versions/*/source/          # 商业版本源代码
+commercial/licensing/user_licenses/    # 用户许可证记录
+commercial/licensing/activation/       # 激活系统
+commercial/distribution/payment/       # 支付信息
+commercial/support/tickets/            # 支持工单
+*.key                                  # 私钥文件
+*.pem                                  # 证书文件
+config/secrets/                        # 密钥配置
+.env                                   # 环境变量文件
+
+# Temporary and cache files
+*.tmp
+*.cache
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.o
+*.obj
+*.exe
+*.dll
+*.so
+*.dylib
+
+# IDE specific files
+.vscode/
+.vs/
