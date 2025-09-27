@@ -265,3 +265,54 @@ Cluster 3 (策略: 7)
 > **💡 技术提示**：模块采用`双层缓存机制`，配置加载速度比传统方案快3倍  
 > **📬 反馈交友**： QQ群: 974835379  
 > **🌎 适配机型**：一加12/小米14/真我GT5 Pro 等骁龙8 Gen3机型，其他处理器请自行二改
+
+---
+
+## 📄 开源许可证
+
+本项目采用 **GNU General Public License v3.0** 开源许可证。
+
+### 🔓 您的权利
+- ✅ **自由使用** - 可以自由运行本软件
+- ✅ **自由研究** - 可以研究软件工作原理
+- ✅ **自由分享** - 可以重新分发软件副本
+- ✅ **自由修改** - 可以修改软件并分发修改版本
+- ✅ **商业使用** - 可以用于商业目的
+
+### 📋 您的义务
+- 📝 **保留版权** - 必须保留原始版权声明
+- 🔄 **相同许可** - 修改版本必须使用相同的GPLv3许可证
+- 📖 **提供源码** - 分发时必须提供源代码或提供获取源代码的方式
+- 🏷️ **标明修改** - 如果修改了代码，必须明确标明修改内容
+
+### ⚖️ 法律声明
+```
+慕容调度模块 (Murong Scheduling Module)
+Copyright (C) 2025 慕容如燕 (murongruyan)
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+```
+
+### 🔗 相关链接
+- 📜 [完整许可证文本](LICENSE)
+- 🌐 [GPLv3官方说明](https://www.gnu.org/licenses/gpl-3.0.html)
+- 📚 [开源许可证指南](https://choosealicense.com/licenses/gpl-3.0/)
+
+---
+
+**💡 选择GPLv3的原因：**
+- 🛡️ **强保护性** - 确保代码永远保持开源
+- 🤝 **社区友好** - 鼓励开源社区贡献和改进
+- ⚖️ **防止闭源** - 防止他人将开源代码闭源商业化
+- 🔄 **持续开放** - 保证所有衍生作品都保持开源
