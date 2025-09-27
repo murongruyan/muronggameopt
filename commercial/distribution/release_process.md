@@ -166,7 +166,7 @@ echo "Version $VERSION converted to open source"
 
 ## 📞 紧急联系方式
 
-- **技术负责人**: 慕容如燕
+- **技术负责人**: 慕容茹艳
 - **QQ群**: 974835379
 - **邮箱**: support@muronggameopt.com
 - **紧急热线**: 24小时技术支持

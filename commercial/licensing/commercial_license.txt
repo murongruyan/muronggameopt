@@ -33,7 +33,7 @@ Commercial License Agreement for Murong Scheduling Module
 
 第三条 版权声明
 
-3.1 软件版权归慕容如燕 (murongruyan) 所有
+3.1 软件版权归慕容茹艳 (murongruyan) 所有
 3.2 本许可证不转让任何版权或知识产权
 3.3 用户仅获得使用权，不获得所有权
 
@@ -94,7 +94,7 @@ Commercial License Agreement for Murong Scheduling Module
 
 ================================================================================
 
-慕容如燕 (murongruyan)
+慕容茹艳 (murongruyan)
 版权所有 © 2025
 官方网站: https://github.com/murongruyan/muronggameopt
 技术支持: QQ群 974835379

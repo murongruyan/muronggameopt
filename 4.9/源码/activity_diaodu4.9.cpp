@@ -2,7 +2,7 @@
  * 慕容调度模块 (Murong Scheduling Module) v4.9
  * 事件驱动架构与性能优化版本
  * 
- * Copyright (c) 2025 慕容如燕 (murongruyan)
+ * Copyright (c) 2025 慕容茹艳 (murongruyan)
  * GitHub: https://github.com/murongruyan/muronggameopt
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
