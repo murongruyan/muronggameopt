@@ -1,0 +1,12 @@
+persist.graphics.vulkan.disable=0
+debug.vulkan.validate=0
+debug.vulkan.force_validation=0
+debug.hwui.vulkan_safe_mode=1
+persist.vulkan.fallback=0
+debug.hwui.target_cpu_time_percent=70
+renderthread.skia.reduceopstasksplitting=true
+debug.hwui.disable_buffer_age=true
+ro.hwui.use_vulkan=true
+ro.hwui.texture_cache_size=72
+ro.hwui.layer_cache_size=36
+persist.sys.ui.thread.boost=true

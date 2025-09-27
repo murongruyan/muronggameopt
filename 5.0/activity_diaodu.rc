@@ -1,0 +1,4 @@
+#!/system/bin/sh
+cd ${0%/*}
+
+nohup ./bin/activity_diaodu >/dev/null 2>&1 &
