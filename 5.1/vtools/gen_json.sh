@@ -7,7 +7,7 @@ json=$(
     "name": "慕容调度",
     "author": "慕容茹艳（酷安慕容雪绒）",
     "version": "$version",
-    "versionCode": 202507170343,
+    "versionCode": 2025081700,
     "features": {
         "strict": true,
         "pedestal": true

@@ -1,29 +1,3 @@
-/*
- * 慕容调度模块 (Murong Scheduling Module) v4.9
- * 事件驱动架构与性能优化版本
- * 
- * Copyright (c) 2025 慕容茹艳 (murongruyan)
- * GitHub: https://github.com/murongruyan/muronggameopt
- * 
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- * 
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- * 
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -40,6 +14,7 @@
 #include "cJSON.h"
 
 #define LOG_FILE "/data/adb/modules/muronggameopt/config/log.txt"
+#define LOG_BACKUP_DIR "/data/adb/modules/muronggameopt/config/log_backups"
 #define MODE_FILE "/data/adb/modules/muronggameopt/config/mode.txt"
 #define CPU_CONFIG_DIR "/data/adb/modules/muronggameopt/bin/cpu/"
 
@@ -89,6 +64,21 @@ typedef struct {
     int max_freq;
 } DdrSettings;
 
+//cpuctl相关数据结构
+typedef struct {
+    int uclamp_min;          // 0-100 (百分比)
+    int uclamp_max;          // 0-100 (百分比)
+    int latency_sensitive;   // 0或1
+    int shares;              // 2-1024 (CPU份额)
+} CpuCtlGroup;
+
+typedef struct {
+    CpuCtlGroup background;
+    CpuCtlGroup systembackground;
+    CpuCtlGroup foreground;
+    CpuCtlGroup topapp;
+} CpuCtlSettings;
+
 // 增强的特殊应用配置结构
 typedef struct {
     char package[MAX_PACKAGE_LEN];
@@ -115,6 +105,9 @@ typedef struct {
     char cpuset_systembackground[16];
     char cpuset_foreground[16];
     char cpuset_topapp[16];
+
+    // cpuctl设置
+    CpuCtlSettings cpuctl;
 } SpecialAppSetting;
 
 typedef struct {
@@ -128,6 +121,7 @@ CpuPolicy cpu_policies[MAX_POLICIES];
 CpuCluster cpu_clusters[MAX_CLUSTERS];
 CpusetSettings cpuset;
 DdrSettings ddr;
+CpuCtlSettings cpuctl; // 全局cpuctl设置
 SpecialAppSetting special_apps_cache[MAX_SPECIAL_APPS];
 int policy_count = 0;
 int cluster_count = 0;
@@ -136,13 +130,14 @@ int ddr_min = 0;
 int special_apps_count = 0;
 time_t special_apps_json_mtime = 0;
 char cpu_model[MAX_CPU_MODEL_LEN] = "unknown";
-char config_version[MAX_VERSION_LEN] = "1.0"; // 默认版本号
+char config_version[MAX_VERSION_LEN] = "5.1"; // 默认版本号
 
 // 函数声明
 void log_message(const char* message);
 char* get_foreground_app();
 void apply_settings();
 void apply_ddr_settings();
+void apply_cpuctl_settings(const CpuCtlSettings* settings);
 void load_mode_settings_json(const char* mode);
 int lock_val(const char* path, const char* value);
 void set_special_app_settings(const char* package);
@@ -165,6 +160,7 @@ void apply_special_app_cpuset_settings(const SpecialAppSetting* app_setting);
 int extract_chip_model(const char* input);
 int is_numeric(const char* str);
 void handle_inotify_events(int inotify_fd, int wd_mode_file, int wd_config_file, int wd_config_dir);
+
 void load_config_version(); // 新增加载配置版本函数
 
 // 安全的字符串复制
@@ -182,6 +178,85 @@ void safe_strncpy(char* dest, const char* src, size_t dest_size) {
 // 检查文件是否存在
 int file_exists(const char* path) {
     return access(path, F_OK) == 0;
+}
+
+// 日志备份函数
+void backup_and_clear_log() {
+    // 创建日志备份目录（如果不存在）
+    mkdir(LOG_BACKUP_DIR, 0755);
+
+    // 获取当前时间
+    time_t now = time(NULL);
+    struct tm* tm_info = localtime(&now);
+
+    // 生成备份文件名：log_YYYYMMDD_HHMMSS.bak
+    char backup_path[256];
+    strftime(backup_path, sizeof(backup_path),
+        LOG_BACKUP_DIR "/log_%Y%m%d_%H%M%S.bak",
+        tm_info);
+
+    // 重命名当前日志文件
+    if (rename(LOG_FILE, backup_path) == 0) {
+        char log_msg[256];
+        snprintf(log_msg, sizeof(log_msg), "旧日志已备份为: %s", backup_path);
+        log_message(log_msg);
+    }
+    else if (errno != ENOENT) { // 忽略文件不存在的错误
+        char log_msg[256];
+        snprintf(log_msg, sizeof(log_msg), "日志备份失败: %s", strerror(errno));
+        log_message(log_msg);
+    }
+
+    // 创建新的日志文件
+    FILE* log = fopen(LOG_FILE, "w");
+    if (log) {
+        fclose(log);
+        chmod(LOG_FILE, 0644); // 设置适当权限
+    }
+}
+
+// 清理旧的日志备份（保留最近5个）
+void cleanup_old_logs() {
+    DIR* dir = opendir(LOG_BACKUP_DIR);
+    if (!dir) return;
+
+    struct dirent** namelist;
+    int n = scandir(LOG_BACKUP_DIR, &namelist, NULL, alphasort);
+
+    if (n < 0) {
+        closedir(dir);
+        return;
+    }
+
+    // 保留最近5个备份，删除其他
+    if (n > 5) {
+        for (int i = 0; i < n - 5; i++) {
+            char filepath[256];
+            snprintf(filepath, sizeof(filepath), "%s/%s", LOG_BACKUP_DIR, namelist[i]->d_name);
+
+            if (unlink(filepath) == 0) {
+                char log_msg[256];
+                snprintf(log_msg, sizeof(log_msg), "删除旧日志备份: %s", namelist[i]->d_name);
+                log_message(log_msg);
+            }
+
+            free(namelist[i]);
+        }
+
+        // 释放剩余条目
+        for (int i = n - 5; i < n; i++) {
+            free(namelist[i]);
+        }
+    }
+    else {
+        // 释放所有条目
+        for (int i = 0; i < n; i++) {
+            free(namelist[i]);
+        }
+    }
+
+    free(namelist);
+    closedir(dir);
 }
 
 // 清理过大的日志文件
@@ -1020,10 +1095,13 @@ char* get_foreground_app() {
     return strdup("unknown");
 }
 
+// 检查授权状态
+
+
 // 加载配置文件中的版本号
 void load_config_version() {
-    // 首先设置默认版本为5.0
-    safe_strncpy(config_version, "5.0", sizeof(config_version));
+    // 首先设置默认版本为5.1
+    safe_strncpy(config_version, "5.1", sizeof(config_version));
 
     const char* config_path = get_cpu_config_path();
 
@@ -1086,8 +1164,61 @@ void load_config_version() {
     free(data);
 }
 
+//应用cpuctl设置
+void apply_cpuctl_settings(const CpuCtlSettings* settings) {
+
+    const char* groups[] = {
+        "background",
+        "system-background",
+        "foreground",
+        "top-app"
+    };
+
+    const CpuCtlGroup* group_settings[] = {
+        &settings->background,
+        &settings->systembackground,
+        &settings->foreground,
+        &settings->topapp
+    };
+
+    for (int i = 0; i < 4; i++) {
+        char base_path[256];
+        snprintf(base_path, sizeof(base_path), "/dev/cpuctl/%s", groups[i]);
+
+        // 只在值有效时设置
+        if (group_settings[i]->uclamp_min >= 0) {
+            char path[512], value[16];
+            snprintf(path, sizeof(path), "%s/cpu.uclamp.min", base_path);
+            snprintf(value, sizeof(value), "%d", group_settings[i]->uclamp_min);
+            lock_val(path, value);
+        }
+
+        if (group_settings[i]->uclamp_max >= 0) {
+            char path[512], value[16];
+            snprintf(path, sizeof(path), "%s/cpu.uclamp.max", base_path);
+            snprintf(value, sizeof(value), "%d", group_settings[i]->uclamp_max);
+            lock_val(path, value);
+        }
+
+        if (group_settings[i]->latency_sensitive >= 0) {
+            char path[512], value[16];
+            snprintf(path, sizeof(path), "%s/cpu.uclamp.latency_sensitive", base_path);
+            snprintf(value, sizeof(value), "%d", group_settings[i]->latency_sensitive);
+            lock_val(path, value);
+        }
+
+        if (group_settings[i]->shares >= 0) {
+            char path[512], value[16];
+            snprintf(path, sizeof(path), "%s/cpu.shares", base_path);
+            snprintf(value, sizeof(value), "%d", group_settings[i]->shares);
+            lock_val(path, value);
+        }
+    }
+}
+
 // 应用设置
 void apply_settings() {
+
     // 应用cpuset设置
     lock_val("/dev/cpuset/background/cpus", cpuset.background);
     lock_val("/dev/cpuset/system-background/cpus", cpuset.systembackground);
@@ -1133,10 +1264,14 @@ void apply_settings() {
         // 设置调速器参数
         set_governor_params(policy->policy_num, policy->governor);
     }
+
+    // 应用cpuctl设置
+    apply_cpuctl_settings(&cpuctl);
 }
 
 // 应用DDR设置
 void apply_ddr_settings() {
+
     DIR* dir = opendir("/sys/devices/system/cpu/bus_dcvs/DDR");
     if (!dir) {
         log_message("无法打开DDR目录");
@@ -1362,13 +1497,90 @@ void load_mode_settings_json(const char* mode) {
         }
     }
 
+    // 解析cpuctl设置
+    cJSON* cpuctl_obj = cJSON_GetObjectItem(mode_obj, "cpuctl");
+    if (cpuctl_obj) {
+        const char* groups[] = { "background", "systembackground", "foreground", "topapp" };
+        CpuCtlGroup* group_ptrs[] = {
+            &cpuctl.background,
+            &cpuctl.systembackground,
+            &cpuctl.foreground,
+            &cpuctl.topapp
+        };
+
+        for (int i = 0; i < 4; i++) {
+            cJSON* group_obj = cJSON_GetObjectItem(cpuctl_obj, groups[i]);
+            if (group_obj) {
+                // uclamp_min (0-100)
+                cJSON* uclamp_min = cJSON_GetObjectItem(group_obj, "uclamp_min");
+                if (uclamp_min && cJSON_IsNumber(uclamp_min)) {
+                    int val = uclamp_min->valueint;
+                    // 确保在0-100范围内
+                    if (val < 0) val = 0;
+                    if (val > 100) val = 100;
+                    group_ptrs[i]->uclamp_min = val;
+                }
+                else {
+                    group_ptrs[i]->uclamp_min = -1; // 标记为未设置
+                }
+
+                // uclamp_max (0-100)
+                cJSON* uclamp_max = cJSON_GetObjectItem(group_obj, "uclamp_max");
+                if (uclamp_max && cJSON_IsNumber(uclamp_max)) {
+                    int val = uclamp_max->valueint;
+                    if (val < 0) val = 0;
+                    if (val > 100) val = 100;
+                    group_ptrs[i]->uclamp_max = val;
+                }
+                else {
+                    group_ptrs[i]->uclamp_max = -1;
+                }
+
+                // latency_sensitive (0/1)
+                cJSON* latency_sensitive = cJSON_GetObjectItem(group_obj, "latency_sensitive");
+                if (latency_sensitive) {
+                    if (cJSON_IsNumber(latency_sensitive)) {
+                        group_ptrs[i]->latency_sensitive = latency_sensitive->valueint ? 1 : 0;
+                    }
+                    else if (cJSON_IsBool(latency_sensitive)) {
+                        group_ptrs[i]->latency_sensitive = cJSON_IsTrue(latency_sensitive) ? 1 : 0;
+                    }
+                    else {
+                        group_ptrs[i]->latency_sensitive = -1;
+                    }
+                }
+                else {
+                    group_ptrs[i]->latency_sensitive = -1;
+                }
+
+                // shares (2-1024)
+                cJSON* shares = cJSON_GetObjectItem(group_obj, "shares");
+                if (shares && cJSON_IsNumber(shares)) {
+                    int val = shares->valueint;
+                    if (val < 2) val = 2;
+                    if (val > 1024) val = 1024;
+                    group_ptrs[i]->shares = val;
+                }
+                else {
+                    group_ptrs[i]->shares = -1;
+                }
+            }
+            else {
+                // 该组未配置，全部标记为未设置
+                group_ptrs[i]->uclamp_min = -1;
+                group_ptrs[i]->uclamp_max = -1;
+                group_ptrs[i]->latency_sensitive = -1;
+                group_ptrs[i]->shares = -1;
+            }
+        }
+    }
+
     cJSON_Delete(root);
     free(data);
 }
 
 // 应用特殊应用的CPU设置
 void apply_special_app_cpu_settings(const SpecialAppSetting* app_setting) {
-
 
     for (int i = 0; i < app_setting->policy_count && i < policy_count; i++) {
         int policy_num = cpu_policies[i].policy_num;
@@ -1429,7 +1641,6 @@ void apply_special_app_cpu_settings(const SpecialAppSetting* app_setting) {
 // 应用特殊应用的DDR设置
 void apply_special_app_ddr_settings(const SpecialAppSetting* app_setting) {
 
-
     if (app_setting->ddr_min_freq <= 0 && app_setting->ddr_max_freq <= 0) {
         return;
     }
@@ -1477,7 +1688,6 @@ void apply_special_app_ddr_settings(const SpecialAppSetting* app_setting) {
 // 应用特殊应用的cpuset设置
 void apply_special_app_cpuset_settings(const SpecialAppSetting* app_setting) {
 
-
     if (strlen(app_setting->cpuset_background) > 0) {
         lock_val("/dev/cpuset/background/cpus", app_setting->cpuset_background);
     }
@@ -1497,7 +1707,6 @@ void apply_special_app_cpuset_settings(const SpecialAppSetting* app_setting) {
 
 // 设置特殊应用设置
 void set_special_app_settings(const char* package) {
-
 
     for (int i = 0; i < special_apps_count; i++) {
         if (strcmp(special_apps_cache[i].package, package) == 0) {
@@ -1563,7 +1772,41 @@ void set_special_app_settings(const char* package) {
                     strcat(summary, "topapp=");
                     strcat(summary, app_setting->cpuset_topapp);
                 }
-                strcat(summary, "]");
+                strcat(summary, "] ");
+            }
+
+            // cpuctl设置
+            if (app_setting->cpuctl.topapp.uclamp_min >= 0 ||
+                app_setting->cpuctl.topapp.uclamp_max >= 0 ||
+                app_setting->cpuctl.topapp.shares >= 0) {
+
+                char cpuctl_summary[256] = "cpuctl: topapp[";
+                int added = 0;
+
+                if (app_setting->cpuctl.topapp.uclamp_min >= 0) {
+                    char temp[32];
+                    snprintf(temp, sizeof(temp), "min=%d", app_setting->cpuctl.topapp.uclamp_min);
+                    strcat(cpuctl_summary, temp);
+                    added = 1;
+                }
+
+                if (app_setting->cpuctl.topapp.uclamp_max >= 0) {
+                    if (added) strcat(cpuctl_summary, " ");
+                    char temp[32];
+                    snprintf(temp, sizeof(temp), "max=%d", app_setting->cpuctl.topapp.uclamp_max);
+                    strcat(cpuctl_summary, temp);
+                    added = 1;
+                }
+
+                if (app_setting->cpuctl.topapp.shares >= 0) {
+                    if (added) strcat(cpuctl_summary, " ");
+                    char temp[32];
+                    snprintf(temp, sizeof(temp), "shares=%d", app_setting->cpuctl.topapp.shares);
+                    strcat(cpuctl_summary, temp);
+                }
+
+                strcat(cpuctl_summary, "]");
+                strcat(summary, cpuctl_summary);
             }
 
             log_message(summary);
@@ -1572,6 +1815,9 @@ void set_special_app_settings(const char* package) {
             apply_special_app_cpu_settings(app_setting);
             apply_special_app_ddr_settings(app_setting);
             apply_special_app_cpuset_settings(app_setting);
+
+            // 应用特殊应用的cpuctl设置
+            apply_cpuctl_settings(&app_setting->cpuctl);
 
             // 结束标记
             log_message("===== 特殊设置应用完成 =====");
@@ -1655,6 +1901,28 @@ void load_special_apps_cache() {
             while (package && i < MAX_SPECIAL_APPS) {
                 SpecialAppSetting* setting = &special_apps_cache[i];
                 safe_strncpy(setting->package, package, sizeof(setting->package));
+
+                // 初始化所有cpuctl属性为-1（未设置）
+                CpuCtlSettings* cpuctl = &setting->cpuctl;
+                cpuctl->background.uclamp_min = -1;
+                cpuctl->background.uclamp_max = -1;
+                cpuctl->background.latency_sensitive = -1;
+                cpuctl->background.shares = -1;
+
+                cpuctl->systembackground.uclamp_min = -1;
+                cpuctl->systembackground.uclamp_max = -1;
+                cpuctl->systembackground.latency_sensitive = -1;
+                cpuctl->systembackground.shares = -1;
+
+                cpuctl->foreground.uclamp_min = -1;
+                cpuctl->foreground.uclamp_max = -1;
+                cpuctl->foreground.latency_sensitive = -1;
+                cpuctl->foreground.shares = -1;
+
+                cpuctl->topapp.uclamp_min = -1;
+                cpuctl->topapp.uclamp_max = -1;
+                cpuctl->topapp.latency_sensitive = -1;
+                cpuctl->topapp.shares = -1;
 
                 // 解析完整的CPU策略设置
                 cJSON* policies = cJSON_GetObjectItem(app, "cpu_policies");
@@ -1753,6 +2021,83 @@ void load_special_apps_cache() {
                     }
                 }
 
+                // 解析cpuctl设置
+                cJSON* cpuctl_obj = cJSON_GetObjectItem(app, "cpuctl");
+                if (cpuctl_obj) {
+                    const char* groups[] = { "background", "systembackground", "foreground", "topapp" };
+                    CpuCtlGroup* group_ptrs[] = {
+                        &setting->cpuctl.background,
+                        &setting->cpuctl.systembackground,
+                        &setting->cpuctl.foreground,
+                        &setting->cpuctl.topapp
+                    };
+
+                    for (int i = 0; i < 4; i++) {
+                        cJSON* group_obj = cJSON_GetObjectItem(cpuctl_obj, groups[i]);
+                        if (group_obj) {
+                            // uclamp_min (0-100)
+                            cJSON* uclamp_min = cJSON_GetObjectItem(group_obj, "uclamp_min");
+                            if (uclamp_min && cJSON_IsNumber(uclamp_min)) {
+                                int val = uclamp_min->valueint;
+                                if (val < 0) val = 0;
+                                if (val > 100) val = 100;
+                                group_ptrs[i]->uclamp_min = val;
+                            }
+                            else {
+                                group_ptrs[i]->uclamp_min = -1;
+                            }
+
+                            // uclamp_max (0-100)
+                            cJSON* uclamp_max = cJSON_GetObjectItem(group_obj, "uclamp_max");
+                            if (uclamp_max && cJSON_IsNumber(uclamp_max)) {
+                                int val = uclamp_max->valueint;
+                                if (val < 0) val = 0;
+                                if (val > 100) val = 100;
+                                group_ptrs[i]->uclamp_max = val;
+                            }
+                            else {
+                                group_ptrs[i]->uclamp_max = -1;
+                            }
+
+                            // latency_sensitive (0/1)
+                            cJSON* latency_sensitive = cJSON_GetObjectItem(group_obj, "latency_sensitive");
+                            if (latency_sensitive) {
+                                if (cJSON_IsNumber(latency_sensitive)) {
+                                    group_ptrs[i]->latency_sensitive = latency_sensitive->valueint ? 1 : 0;
+                                }
+                                else if (cJSON_IsBool(latency_sensitive)) {
+                                    group_ptrs[i]->latency_sensitive = cJSON_IsTrue(latency_sensitive) ? 1 : 0;
+                                }
+                                else {
+                                    group_ptrs[i]->latency_sensitive = -1;
+                                }
+                            }
+                            else {
+                                group_ptrs[i]->latency_sensitive = -1;
+                            }
+
+                            // shares (2-262144)
+                            cJSON* shares = cJSON_GetObjectItem(group_obj, "shares");
+                            if (shares && cJSON_IsNumber(shares)) {
+                                int val = shares->valueint;
+                                if (val < 2) val = 2;
+                                if (val > 262144) val = 262144;
+                                group_ptrs[i]->shares = val;
+                            }
+                            else {
+                                group_ptrs[i]->shares = -1;
+                            }
+                        }
+                        else {
+                            // 该组未配置，全部标记为未设置
+                            group_ptrs[i]->uclamp_min = -1;
+                            group_ptrs[i]->uclamp_max = -1;
+                            group_ptrs[i]->latency_sensitive = -1;
+                            group_ptrs[i]->shares = -1;
+                        }
+                    }
+                }
+
                 i++;
                 special_apps_count++;
                 package = strtok(NULL, ",");
@@ -1818,6 +2163,12 @@ void handle_inotify_events(int inotify_fd, int wd_mode_file, int wd_config_file,
 }
 
 int main() {
+    // 备份并清空日志
+    backup_and_clear_log();
+
+    // 清理旧的日志备份
+    cleanup_old_logs();
+
     log_message("启动调度服务");
 
     // 确保以root权限运行
@@ -1918,6 +2269,8 @@ int main() {
         if (ret > 0 && inotify_fd >= 0 && FD_ISSET(inotify_fd, &fds)) {
             handle_inotify_events(inotify_fd, wd_mode_file, wd_config_file, wd_config_dir);
         }
+
+
 
         // 处理前台应用检测
         char* current_app = get_foreground_app();
