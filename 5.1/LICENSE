@@ -1,0 +1,39 @@
+MIT License
+
+Copyright (c) 2025 慕容茹艳 (murongruyan)
+
+慕容调度模块 版本 5.1 - 智能配置生成系统
+现已开源！🎉
+
+本版本原为付费抢先体验版本，随着版本 5.3 的发布，
+根据我们的"滚动开源"策略，版本 5.1 现已免费开源。
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+版本 5.1 主要特性：
+- 智能CPU配置生成系统
+- 高级芯片型号检测算法  
+- 配置文件版本管理优化
+- 源码架构优化
+- CPU控制组参数调整
+
+感谢您使用慕容调度模块！
+项目主页: https://github.com/murongruyan/muronggameopt
