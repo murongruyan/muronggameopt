@@ -1,5 +1,5 @@
 {
-  "version": "5.0",
+  "version": "5.2",
   "powersave": {
     "cpu_policies": [
       {
@@ -8,61 +8,61 @@
         "max_freq": 1459200,
         "min_freq": 364000,
         "params": {
-          "target_loads": "75 902400:85",
-          "hispeed_freq": "0",
-          "hispeed_load": "90",
-          "up_rate_limit_us": "7000",
-          "down_rate_limit_us": "1000",
-          "boost": "-45",
-          "rtg_boost_freq": "0",
+          "target_loads": "85 787200:90",
+          "hispeed_freq": "787200",
+          "hispeed_load": "85",
+          "up_rate_limit_us": "4000",
+          "down_rate_limit_us": "0",
+          "boost": "-30",
+          "rtg_boost_freq": "787200",
           "target_load_shift": "2"
         }
       },
       {
         "cluster": 1,
         "governor": "walt",
-        "max_freq": 1708800,
+        "max_freq": 1824000,
         "min_freq": 499200,
         "params": {
-          "target_loads": "90 1708800:95",
-          "hispeed_freq": "0",
+          "target_loads": "85 729600:90 960000:95",
+          "hispeed_freq": "844800",
           "hispeed_load": "90",
-          "up_rate_limit_us": "7000",
-          "down_rate_limit_us": "1000",
-          "boost": "-65",
-          "rtg_boost_freq": "0",
+          "up_rate_limit_us": "4000",
+          "down_rate_limit_us": "0",
+          "boost": "-30",
+          "rtg_boost_freq": "614400",
           "target_load_shift": "2"
         }
       },
       {
         "cluster": 2,
         "governor": "walt",
-        "max_freq": 1708800,
+        "max_freq": 1612800,
         "min_freq": 499200,
         "params": {
-          "target_loads": "90 1708800:95",
-          "hispeed_freq": "0",
+          "target_loads": "85 729600:90 960000:95",
+          "hispeed_freq": "844800",
           "hispeed_load": "90",
-          "up_rate_limit_us": "7000",
+          "up_rate_limit_us": "4000",
           "down_rate_limit_us": "1000",
-          "boost": "-65",
-          "rtg_boost_freq": "0",
+          "boost": "-60",
+          "rtg_boost_freq": "614400",
           "target_load_shift": "2"
         }
       },
       {
         "cluster": 3,
         "governor": "walt",
-        "max_freq": 1708800,
+        "max_freq": 2112000,
         "min_freq": 480000,
         "params": {
-          "target_loads": "90 1708800:95",
-          "hispeed_freq": "0",
-          "hispeed_load": "85",
-          "up_rate_limit_us": "7000",
-          "down_rate_limit_us": "1000",
-          "boost": "-55",
-          "rtg_boost_freq": "0",
+          "target_loads": "85 1708800:90 2112000:95",
+          "hispeed_freq": "1593600",
+          "hispeed_load": "90",
+          "up_rate_limit_us": "4000",
+          "down_rate_limit_us": "0",
+          "boost": "-35",
+          "rtg_boost_freq": "787200",
           "target_load_shift": "2"
         }
       }
@@ -75,32 +75,32 @@
     },
     "ddr": {
       "min_freq": "ddr_min",
-      "max_freq": "ddr_min*3.824499"
+      "max_freq": "ddr_max*0.7"
     },
     "cpuctl": {
       "background": {
         "uclamp_min": 0,
-        "uclamp_max": 30,
+        "uclamp_max": 40,
         "latency_sensitive": 0,
-        "shares": 256
+        "shares": 192
       },
       "systembackground": {
         "uclamp_min": 0,
-        "uclamp_max": 30,
-        "latency_sensitive": 0,
-        "shares": 256
-      },
-      "foreground": {
-        "uclamp_min": 10,
         "uclamp_max": 50,
         "latency_sensitive": 0,
-        "shares": 512
+        "shares": 248
+      },
+      "foreground": {
+        "uclamp_min": 0,
+        "uclamp_max": 65,
+        "latency_sensitive": 0,
+        "shares": 356
       },
       "topapp": {
-        "uclamp_min": 35,
-        "uclamp_max": 70,
+        "uclamp_min": 15,
+        "uclamp_max": 65,
         "latency_sensitive": 1,
-        "shares": 768
+        "shares": 512
       }
     }
   },
@@ -112,9 +112,9 @@
         "max_freq": 1574400,
         "min_freq": 787200,
         "params": {
-          "target_loads": "65 1574400:75",
-          "hispeed_freq": "1344000",
-          "hispeed_load": "90",
+          "target_loads": "75 1574400:85",
+          "hispeed_freq": "787200",
+          "hispeed_load": "75",
           "up_rate_limit_us": "2000",
           "down_rate_limit_us": "1000",
           "boost": "-20",
@@ -125,31 +125,31 @@
       {
         "cluster": 1,
         "governor": "walt",
-        "max_freq": 2438400,
-        "min_freq": 960000,
+        "max_freq": 2630400,
+        "min_freq": 1190400,
         "params": {
-          "target_loads": "65 1497600:75 2131200:80",
-          "hispeed_freq": "1708800",
-          "hispeed_load": "75",
+          "target_loads": "70 1708800:75 2246400:80",
+          "hispeed_freq": "1401600",
+          "hispeed_load": "80",
           "up_rate_limit_us": "2000",
           "down_rate_limit_us": "1000",
-          "boost": "-15",
-          "rtg_boost_freq": "960000",
+          "boost": "-10",
+          "rtg_boost_freq": "729600",
           "target_load_shift": "2"
         }
       },
       {
         "cluster": 2,
         "governor": "walt",
-        "max_freq": 2131200,
-        "min_freq": 960000,
+        "max_freq": 960000,
+        "min_freq": 614400,
         "params": {
-          "target_loads": "75 1497600:85 1920000:90",
-          "hispeed_freq": "1612800",
+          "target_loads": "85",
+          "hispeed_freq": "844800",
           "hispeed_load": "85",
-          "up_rate_limit_us": "2000",
-          "down_rate_limit_us": "1000",
-          "boost": "-35",
+          "up_rate_limit_us": "5000",
+          "down_rate_limit_us": "2000",
+          "boost": "-25",
           "rtg_boost_freq": "729600",
           "target_load_shift": "2"
         }
@@ -160,13 +160,13 @@
         "max_freq": 2630400,
         "min_freq": 902400,
         "params": {
-          "target_loads": "70 1708800:80 2434800:85",
-          "hispeed_freq": "1708800",
-          "hispeed_load": "70",
-          "up_rate_limit_us": "2000",
+          "target_loads": "60 1708800:65 2246400:70",
+          "hispeed_freq": "1593600",
+          "hispeed_load": "75",
+          "up_rate_limit_us": "4000",
           "down_rate_limit_us": "1000",
-          "boost": "-40",
-          "rtg_boost_freq": "672000",
+          "boost": "-20",
+          "rtg_boost_freq": "787200",
           "target_load_shift": "2"
         }
       }
@@ -184,13 +184,13 @@
     "cpuctl": {
       "background": {
         "uclamp_min": 0,
-        "uclamp_max": 50,
+        "uclamp_max": 70,
         "latency_sensitive": 0,
         "shares": 512
       },
       "systembackground": {
         "uclamp_min": 0,
-        "uclamp_max": 50,
+        "uclamp_max": 70,
         "latency_sensitive": 0,
         "shares": 512
       },
@@ -201,7 +201,7 @@
         "shares": 568
       },
       "topapp": {
-        "uclamp_min": 30,
+        "uclamp_min": 0,
         "uclamp_max": 100,
         "latency_sensitive": 1,
         "shares": 1024
@@ -213,32 +213,32 @@
       {
         "cluster": 0,
         "governor": "walt",
-        "max_freq": 2035200,
-        "min_freq": 1248000,
+        "max_freq": 1804800,
+        "min_freq": 787200,
         "params": {
-          "target_loads": "65 1804800:75",
-          "hispeed_f极": "1344000",
-          "hispeed_load": "90",
+          "target_loads": "75 1574400:85",
+          "hispeed_freq": "787200",
+          "hispeed_load": "75",
           "up_rate_limit_us": "2000",
           "down_rate_limit_us": "1000",
-          "boost": "-10",
-          "rtg_boost_freq": "1248000",
+          "boost": "-20",
+          "rtg_boost_freq": "787200",
           "target_load_shift": "2"
         }
       },
       {
         "cluster": 1,
         "governor": "walt",
-        "max_freq": 2841600,
-        "min_freq": 1286400,
+        "max_freq": 2630400,
+        "min_freq": 1190400,
         "params": {
-          "target_loads": "70 1920000:75 2323200:85",
-          "hispeed_freq": "2035200",
+          "target_loads": "70 1708800:75 2246400:80",
+          "hispeed_freq": "1708800",
           "hispeed_load": "80",
-          "up_rate_limit_us": "2000",
-          "down_rate_limit_us": "1000",
-          "boost": "-20",
-          "rtg_boost_freq": "1286400",
+          "up_rate_limit_us": "0",
+          "down_rate_limit_us": "0",
+          "boost": "0",
+          "rtg_boost_freq": "729600",
           "target_load_shift": "2"
         }
       },
@@ -246,15 +246,15 @@
         "cluster": 2,
         "governor": "walt",
         "max_freq": 2630400,
-        "min_freq": 1286400,
+        "min_freq": 1190400,
         "params": {
-          "target_loads": "70 1920000:75 2323200:85",
-          "hispeed_freq": "2131200",
-          "hispeed_load": "80",
-          "up_rate_limit_us": "2000",
-          "down_rate_limit_us": "1000",
-          "boost": "-20",
-          "rtg_boost_freq": "1286400",
+          "target_loads": "70 1708800:75 2246400:80",
+          "hispeed_freq": "844800",
+          "hispeed_load": "85",
+          "up_rate_limit_us": "0",
+          "down_rate_limit_us": "0",
+          "boost": "0",
+          "rtg_boost_freq": "729600",
           "target_load_shift": "2"
         }
       },
@@ -264,13 +264,13 @@
         "max_freq": 2995200,
         "min_freq": 1248000,
         "params": {
-          "target_loads": "75 2246400:80 2630400:90",
-          "hispeed_freq": "2438400",
-          "hispeed_load": "85",
-          "up_rate_limit_us": "2000",
-          "down_rate_limit_us": "1000",
-          "boost": "-15",
-          "rtg_boost_freq": "1248000",
+          "target_loads": "70 1708800:75 2246400:80",
+          "hispeed_freq": "1920000",
+          "hispeed_load": "75",
+          "up_rate_limit_us": "0",
+          "down_rate_limit_us": "0",
+          "boost": "0",
+          "rtg_boost_freq": "787200",
           "target_load_shift": "2"
         }
       }
@@ -305,8 +305,8 @@
         "shares": 1024
       },
       "topapp": {
-        "uclamp_min": 0,
-        "uclamp_max": 50,
+        "uclamp_min": 30,
+        "uclamp_max": 100,
         "latency_sensitive": 1,
         "shares": 1024
       }
@@ -318,15 +318,15 @@
         "cluster": 0,
         "governor": "walt",
         "max_freq": 2265600,
-        "min_freq": 1248000,
+        "min_freq": 787200,
         "params": {
-          "target_loads": "65 1804800:75",
-          "hispeed_freq": "1344000",
-          "hispeed_load": "90",
+          "target_loads": "75 1574400:85",
+          "hispeed_freq": "787200",
+          "hispeed_load": "75",
           "up_rate_limit_us": "2000",
           "down_rate_limit_us": "1000",
-          "boost": "-10",
-          "rtg_boost_freq": "1248000",
+          "boost": "-20",
+          "rtg_boost_freq": "787200",
           "target_load_shift": "2"
         }
       },
@@ -336,13 +336,13 @@
         "max_freq": 3148800,
         "min_freq": 1286400,
         "params": {
-          "target_loads": "60 1920000:65 2323200:75",
-          "hispeed_freq": "2035200",
-          "hispeed_load": "70",
-          "up_rate_limit_us": "2000",
-          "down_rate_limit_us": "1000",
-          "boost": "-15",
-          "rtg_boost_freq": "1286400",
+          "target_loads": "65 1708800:70 2246400:75",
+          "hispeed_freq": "1708800",
+          "hispeed_load": "75",
+          "up_rate_limit_us": "0",
+          "down_rate_limit_us": "0",
+          "boost": "0",
+          "rtg_boost_freq": "729600",
           "target_load_shift": "2"
         }
       },
@@ -352,13 +352,13 @@
         "max_freq": 2956800,
         "min_freq": 1286400,
         "params": {
-          "target_loads": "60 1920000:65 2323200:75",
-          "hispeed_freq": "2131200",
-          "hispeed_load": "70",
-          "up_rate_limit_us": "2000",
-          "down_rate_limit_us": "1000",
-          "boost": "-15",
-          "rtg_boost_freq": "1286400",
+          "target_loads": "65 1708800:70 2246400:75",
+          "hispeed_freq": "1612800",
+          "hispeed_load": "75",
+          "up_rate_limit_us": "0",
+          "down_rate_limit_us": "0",
+          "boost": "0",
+          "rtg_boost_freq": "729600",
           "target_load_shift": "2"
         }
       },
@@ -366,15 +366,15 @@
         "cluster": 3,
         "governor": "walt",
         "max_freq": 3302400,
-        "min_freq": 1248000,
+        "min_freq": 1593600,
         "params": {
-          "target_loads": "55 2246400:60 2630400:70",
-          "hispeed_freq": "2438400",
-          "hispeed_load": "65",
-          "up_rate_limit_us": "2000",
-          "down_rate_limit_us": "1000",
-          "boost": "-10",
-          "rtg_boost_freq": "1248000",
+          "target_loads": "65 1708800:70 2246400:75",
+          "hispeed_freq": "1920000",
+          "hispeed_load": "70",
+          "up_rate_limit_us": "0",
+          "down_rate_limit_us": "0",
+          "boost": "0",
+          "rtg_boost_freq": "787200",
           "target_load_shift": "2"
         }
       }
@@ -409,7 +409,7 @@
         "shares": 1024
       },
       "topapp": {
-        "uclamp_min": 80,
+        "uclamp_min": 40,
         "uclamp_max": 100,
         "latency_sensitive": 1,
         "shares": 1024
@@ -421,39 +421,32 @@
       "package": "com.oplus.engineercamera,com.oplus.camera,com.android.launcher",
       "cpu_policies": [
         {
-          "max_freq": 1574400,
+          "max_freq": 2265600,
+          "governor": "walt",
+          "params": {
+            "up_rate_limit_us": "0"
+          }
+        },
+        {
+          "max_freq": 3148800,
+          "governor": "walt",
+          "params": {
+            "up_rate_limit_us": "0"
+          }
+        },
+        {
+          "max_freq": 2956800,
           "governor": "walt",
           "params": {
             "up_rate_limit_us": "0",
-            "down_rate_limit_us": "0",
             "boost": "0"
           }
         },
         {
-          "max_freq": 2630400,
+          "max_freq": 3302400,
           "governor": "walt",
           "params": {
-            "up_rate_limit_us": "0",
-            "down_rate_limit_us": "0",
-            "boost": "0"
-          }
-        },
-        {
-          "max_freq": 2630400,
-          "governor": "walt",
-          "params": {
-            "up_rate_limit_us": "0",
-            "down_rate_limit_us": "0",
-            "boost": "0"
-          }
-        },
-        {
-          "max_freq": 2630400,
-          "governor": "walt",
-          "params": {
-            "up_rate_limit_us": "0",
-            "down_rate_limit_us": "0",
-            "boost": "0"
+            "up_rate_limit_us": "0"
           }
         }
       ]

@@ -1,30 +1,4 @@
-/*
- * 慕容调度模块 (Murong Scheduling Module) v5.0
- * 企业级升级版本 - CPU控制组支持与企业级日志管理
- * 
- * Copyright (c) 2025 慕容茹艳 (murongruyan)
- * GitHub: https://github.com/murongruyan/muronggameopt
- * 
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- * 
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- * 
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
-
-#include <stdio.h>
+﻿#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -37,13 +11,13 @@
 #include <sys/mount.h>
 #include <sys/inotify.h>
 #include <sys/select.h>
+#include <stdarg.h>
 #include "cJSON.h"
 
 #define LOG_FILE "/data/adb/modules/muronggameopt/config/log.txt"
 #define LOG_BACKUP_DIR "/data/adb/modules/muronggameopt/config/log_backups"
 #define MODE_FILE "/data/adb/modules/muronggameopt/config/mode.txt"
 #define CPU_CONFIG_DIR "/data/adb/modules/muronggameopt/bin/cpu/"
-
 #define MAX_POLICIES 8
 #define MAX_GOV_PARAMS 20
 #define MAX_SPECIAL_APPS 32
@@ -57,6 +31,10 @@
 
 #define INOTIFY_EVENT_SIZE  (sizeof(struct inotify_event))
 #define INOTIFY_BUF_LEN     (1024 * (INOTIFY_EVENT_SIZE + 16))
+
+// 性能优化相关常量
+#define APP_CHECK_INTERVAL 2        // 应用检查间隔（秒）
+#define SELECT_TIMEOUT_SEC 1        // select超时时间（秒）
 
 typedef struct {
     int policy_num;
@@ -90,12 +68,12 @@ typedef struct {
     int max_freq;
 } DdrSettings;
 
-// ===================== cpuctl相关数据结构 =====================
+//cpuctl相关数据结构
 typedef struct {
     int uclamp_min;          // 0-100 (百分比)
     int uclamp_max;          // 0-100 (百分比)
     int latency_sensitive;   // 0或1
-    int shares;              // 2-262144
+    int shares;              // 2-1024 (CPU份额)
 } CpuCtlGroup;
 
 typedef struct {
@@ -104,6 +82,14 @@ typedef struct {
     CpuCtlGroup foreground;
     CpuCtlGroup topapp;
 } CpuCtlSettings;
+
+typedef enum {
+    PLATFORM_UNKNOWN = 0,
+    PLATFORM_QUALCOMM,
+    PLATFORM_MEDIATEK
+} PlatformType;
+
+PlatformType current_platform = PLATFORM_UNKNOWN;
 
 // 增强的特殊应用配置结构
 typedef struct {
@@ -156,7 +142,7 @@ int ddr_min = 0;
 int special_apps_count = 0;
 time_t special_apps_json_mtime = 0;
 char cpu_model[MAX_CPU_MODEL_LEN] = "unknown";
-char config_version[MAX_VERSION_LEN] = "1.0"; // 默认版本号
+char config_version[MAX_VERSION_LEN] = "5.2"; // 默认版本号
 
 // 函数声明
 void log_message(const char* message);
@@ -179,15 +165,26 @@ void clear_log_if_needed();
 void set_policy_file_permissions();
 int remount_sysfs_rw();
 void safe_strncpy(char* dest, const char* src, size_t dest_size);
+int safe_snprintf(char* dest, size_t dest_size, const char* format, ...);
+int safe_strcat(char* dest, size_t dest_size, const char* src);
 int file_exists(const char* path);
+void cleanup_resources(FILE* fp, char* buffer, cJSON* json);
 void apply_special_app_cpu_settings(const SpecialAppSetting* app_setting);
 void apply_special_app_ddr_settings(const SpecialAppSetting* app_setting);
 void apply_special_app_cpuset_settings(const SpecialAppSetting* app_setting);
 int extract_chip_model(const char* input);
 int is_numeric(const char* str);
 void handle_inotify_events(int inotify_fd, int wd_mode_file, int wd_config_file, int wd_config_dir);
-
-void load_config_version(); // 新增加载配置版本函数
+void load_config_version();
+void apply_ddr_settings_qualcomm();
+void apply_ddr_settings_mediatek();
+void try_mediatek_alternative_ddr_paths();
+void apply_special_app_ddr_settings_qualcomm(const SpecialAppSetting* app_setting);
+void apply_special_app_ddr_settings_mediatek(const SpecialAppSetting* app_setting);
+int initialize_application();
+void run_main_loop();
+char* handle_app_mode(const char* current_app);
+int process_foreground_app(const char* current_app, char* last_app);
 
 // 安全的字符串复制
 void safe_strncpy(char* dest, const char* src, size_t dest_size) {
@@ -201,9 +198,60 @@ void safe_strncpy(char* dest, const char* src, size_t dest_size) {
     }
 }
 
+// 安全的字符串格式化
+int safe_snprintf(char* dest, size_t dest_size, const char* format, ...) {
+    if (!dest || dest_size == 0) return -1;
+    
+    va_list args;
+    va_start(args, format);
+    int result = vsnprintf(dest, dest_size, format, args);
+    va_end(args);
+    
+    // 确保字符串以null结尾
+    dest[dest_size - 1] = '\0';
+    
+    return result;
+}
+
+// 安全的字符串连接函数
+int safe_strcat(char* dest, size_t dest_size, const char* src) {
+    if (!dest || !src || dest_size == 0) return -1;
+    
+    size_t dest_len = strlen(dest);
+    size_t src_len = strlen(src);
+    
+    // 检查是否有足够空间（包括null终止符）
+    if (dest_len + src_len >= dest_size) {
+        // 只复制能放下的部分
+        size_t available = dest_size - dest_len - 1;
+        if (available > 0) {
+            strncpy(dest + dest_len, src, available);
+            dest[dest_size - 1] = '\0';
+        }
+        return -1; // 表示截断
+    }
+    
+    // 安全连接
+    strcpy(dest + dest_len, src);
+    return 0;
+}
+
 // 检查文件是否存在
 int file_exists(const char* path) {
     return access(path, F_OK) == 0;
+}
+
+// 通用资源清理函数
+void cleanup_resources(FILE* fp, char* buffer, cJSON* json) {
+    if (fp) {
+        fclose(fp);
+    }
+    if (buffer) {
+        free(buffer);
+    }
+    if (json) {
+        cJSON_Delete(json);
+    }
 }
 
 // 日志备份函数
@@ -224,12 +272,12 @@ void backup_and_clear_log() {
     // 重命名当前日志文件
     if (rename(LOG_FILE, backup_path) == 0) {
         char log_msg[256];
-        snprintf(log_msg, sizeof(log_msg), "旧日志已备份为: %s", backup_path);
+        safe_snprintf(log_msg, sizeof(log_msg), "旧日志已备份为: %s", backup_path);
         log_message(log_msg);
     }
     else if (errno != ENOENT) { // 忽略文件不存在的错误
         char log_msg[256];
-        snprintf(log_msg, sizeof(log_msg), "日志备份失败: %s", strerror(errno));
+        safe_snprintf(log_msg, sizeof(log_msg), "日志备份失败: %s", strerror(errno));
         log_message(log_msg);
     }
 
@@ -258,11 +306,10 @@ void cleanup_old_logs() {
     if (n > 5) {
         for (int i = 0; i < n - 5; i++) {
             char filepath[256];
-            snprintf(filepath, sizeof(filepath), "%s/%s", LOG_BACKUP_DIR, namelist[i]->d_name);
-
+            safe_snprintf(filepath, sizeof(filepath), "%s/%s", LOG_BACKUP_DIR, namelist[i]->d_name);
             if (unlink(filepath) == 0) {
                 char log_msg[256];
-                snprintf(log_msg, sizeof(log_msg), "删除旧日志备份: %s", namelist[i]->d_name);
+                safe_snprintf(log_msg, sizeof(log_msg), "删除旧日志备份: %s", namelist[i]->d_name);
                 log_message(log_msg);
             }
 
@@ -319,7 +366,7 @@ int remount_sysfs_rw() {
     }
     else {
         char log_msg[128];
-        snprintf(log_msg, sizeof(log_msg), "重新挂载/sys失败: %s", strerror(errno));
+        safe_snprintf(log_msg, sizeof(log_msg), "重新挂载/sys失败: %s", strerror(errno));
         log_message(log_msg);
         return 0;
     }
@@ -329,12 +376,12 @@ int remount_sysfs_rw() {
 void set_policy_file_permissions() {
     for (int i = 0; i < policy_count; i++) {
         char path[256];
-        snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpufreq/policy%d", cpu_policies[i].policy_num);
+        safe_snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpufreq/policy%d", cpu_policies[i].policy_num);
 
         // 修改目录权限
         if (chmod(path, 0777) != 0) {
             char log_msg[256];
-            snprintf(log_msg, sizeof(log_msg), "修改目录权限失败: %s (错误: %s)", path, strerror(errno));
+            safe_snprintf(log_msg, sizeof(log_msg), "修改目录权限失败: %s (错误: %s)", path, strerror(errno));
             log_message(log_msg);
         }
 
@@ -349,11 +396,11 @@ void set_policy_file_permissions() {
 
         for (int j = 0; files[j]; j++) {
             char file_path[256];
-            snprintf(file_path, sizeof(file_path), "%s/%s", path, files[j]);
+            safe_snprintf(file_path, sizeof(file_path), "%s/%s", path, files[j]);
 
             if (chmod(file_path, 0666) != 0) {
                 char log_msg[256];
-                snprintf(log_msg, sizeof(log_msg), "修改文件权限失败: %s (错误: %s)", file_path, strerror(errno));
+                safe_snprintf(log_msg, sizeof(log_msg), "修改文件权限失败: %s (错误: %s)", file_path, strerror(errno));
                 log_message(log_msg);
             }
         }
@@ -422,7 +469,7 @@ int detect_cpu_model() {
             for (int k = 0; prop_keys[k]; k++) {
                 // 精确匹配键名（包含等号）
                 char key_pattern[64];
-                snprintf(key_pattern, sizeof(key_pattern), "%s=", prop_keys[k]);
+                safe_snprintf(key_pattern, sizeof(key_pattern), "%s=", prop_keys[k]);
 
                 if (strstr(line, key_pattern)) {
                     char* value = strchr(line, '=') + 1;
@@ -467,7 +514,7 @@ int detect_cpu_model() {
 
                         // 如果是纯数字，添加MT前缀
                         if (is_numeric(value) && strlen(value) == 4) {
-                            snprintf(cpu_model, MAX_CPU_MODEL_LEN, "MT%s", value);
+                            safe_snprintf(cpu_model, MAX_CPU_MODEL_LEN, "MT%s", value);
                             fclose(buildprop);
                             return 1;
                         }
@@ -507,7 +554,7 @@ int detect_cpu_model() {
 
             // 特殊处理soc_id：纯数字则添加SM前缀
             if (strstr(soc_files[i], "soc_id") && is_numeric(content)) {
-                snprintf(cpu_model, MAX_CPU_MODEL_LEN, "SM%s", content);
+                safe_snprintf(cpu_model, MAX_CPU_MODEL_LEN, "SM%s", content);
                 fclose(fp);
                 return 1;
             }
@@ -613,7 +660,7 @@ int detect_cpu_model() {
             while ((ptr = strstr(ptr, "mt"))) {
                 // 检查是否是有效的型号格式 (mtXXXX)
                 if (isdigit(ptr[2]) && isdigit(ptr[3]) && isdigit(ptr[4]) && isdigit(ptr[5])) {
-                    snprintf(cpu_model, MAX_CPU_MODEL_LEN, "MT%.4s", ptr + 2);
+                    safe_snprintf(cpu_model, MAX_CPU_MODEL_LEN, "MT%.4s", ptr + 2);
                     fclose(fp);
                     return 1;
                 }
@@ -649,7 +696,7 @@ int extract_chip_model(const char* input) {
         if (ptr) {
             // 对于数字开头的模式 (如soc_id中的纯数字)
             if (is_numeric(ptr) && strlen(ptr) <= 5) {
-                snprintf(cpu_model, MAX_CPU_MODEL_LEN, "SM%s", ptr);
+                safe_snprintf(cpu_model, MAX_CPU_MODEL_LEN, "SM%s", ptr);
                 return 1;
             }
 
@@ -682,7 +729,7 @@ int extract_chip_model(const char* input) {
         if (ptr) {
             // 对于纯数字（如soc_id中的情况）
             if (is_numeric(ptr) && strlen(ptr) == 4) {
-                snprintf(cpu_model, MAX_CPU_MODEL_LEN, "MT%s", ptr);
+                safe_snprintf(cpu_model, MAX_CPU_MODEL_LEN, "MT%s", ptr);
                 return 1;
             }
 
@@ -725,20 +772,20 @@ int extract_chip_model(const char* input) {
 
                 if (isdigit(*num_ptr)) {
                     char tmp[32];
-                    snprintf(tmp, sizeof(tmp), "MT%s", num_ptr);
+                    safe_snprintf(tmp, sizeof(tmp), "MT%s", num_ptr);
                     strcpy(cpu_model, tmp);
                 }
             }
             // 添加MT前缀如果是纯数字
             else if (is_numeric(cpu_model) && strlen(cpu_model) == 4) {
                 char tmp[32];
-                snprintf(tmp, sizeof(tmp), "MT%s", cpu_model);
+                safe_snprintf(tmp, sizeof(tmp), "MT%s", cpu_model);
                 strcpy(cpu_model, tmp);
             }
             // 确保MT前缀存在
             else if (strncmp(cpu_model, "MT", 2) != 0 && strlen(cpu_model) >= 4) {
                 char tmp[32];
-                snprintf(tmp, sizeof(tmp), "MT%s", cpu_model);
+                safe_snprintf(tmp, sizeof(tmp), "MT%s", cpu_model);
                 strcpy(cpu_model, tmp);
             }
 
@@ -771,13 +818,13 @@ int extract_chip_model(const char* input) {
     // 4. 尝试匹配通用数字型号 (如8250, 8650)
     if (is_numeric(input) && strlen(input) == 4) {
         // 优先假设是高通
-        snprintf(cpu_model, MAX_CPU_MODEL_LEN, "SM%s", input);
+        safe_snprintf(cpu_model, MAX_CPU_MODEL_LEN, "SM%s", input);
         return 1;
     }
 
     // 5. 尝试匹配小写mt开头的型号 (如mt6895)
     if (strstr(input, "mt") && isdigit(input[2]) && isdigit(input[3]) && isdigit(input[4]) && isdigit(input[5])) {
-        snprintf(cpu_model, MAX_CPU_MODEL_LEN, "MT%.4s", input + 2);
+        safe_snprintf(cpu_model, MAX_CPU_MODEL_LEN, "MT%.4s", input + 2);
         return 1;
     }
 
@@ -801,8 +848,8 @@ void detect_cpu_clusters() {
 
     // 1. 收集所有存在的策略
     for (int i = 0; i < MAX_POLICIES; i++) {
-        char path[128];
-        snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpufreq/policy%d", i);
+        char path[256];
+        safe_snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpufreq/policy%d", i);
         if (file_exists(path)) {
             cpu_policies[policy_count].policy_num = i;
             cpu_policies[policy_count].cluster_id = -1; // 未分配簇
@@ -814,7 +861,7 @@ void detect_cpu_clusters() {
     for (int i = 0; i < policy_count; i++) {
         int policy_num = cpu_policies[i].policy_num;
         char path[256];
-        snprintf(path, sizeof(path),
+        safe_snprintf(path, sizeof(path),
             "/sys/devices/system/cpu/cpufreq/policy%d/related_cpus",
             policy_num);
 
@@ -862,20 +909,20 @@ void detect_cpu_clusters() {
     char log_buf[1024] = "CPU集群检测结果:\n";
     for (int i = 0; i < cluster_count; i++) {
         char cluster_info[256];
-        snprintf(cluster_info, sizeof(cluster_info), "Cluster %d (CPUs: %s, 策略: [",
-            cpu_clusters[i].cluster_id, cpu_clusters[i].related_cpus);
+        safe_snprintf(cluster_info, sizeof(cluster_info), "Cluster %d (CPUs: %s, 策略: [",
+            i, cpu_clusters[i].related_cpus);
 
         for (int j = 0; j < cpu_clusters[i].policy_count; j++) {
             char policy_str[16];
-            snprintf(policy_str, sizeof(policy_str), "%d", cpu_clusters[i].policies[j]);
-            strcat(cluster_info, policy_str);
+            safe_snprintf(policy_str, sizeof(policy_str), "%d", cpu_clusters[i].policies[j]);
+            safe_strcat(cluster_info, sizeof(cluster_info), policy_str);
             if (j < cpu_clusters[i].policy_count - 1) {
-                strcat(cluster_info, ", ");
+                safe_strcat(cluster_info, sizeof(cluster_info), ", ");
             }
         }
-        strcat(cluster_info, "])\n");
+        safe_strcat(cluster_info, sizeof(cluster_info), "])\n");
 
-        strcat(log_buf, cluster_info);
+        safe_strcat(log_buf, sizeof(log_buf), cluster_info);
     }
     log_message(log_buf);
 }
@@ -883,7 +930,7 @@ void detect_cpu_clusters() {
 // 获取支持的调速器
 int get_supported_governors(int policy_num, char governors[][32], int max_count) {
     char path[128];
-    snprintf(path, sizeof(path),
+    safe_snprintf(path, sizeof(path),
         "/sys/devices/system/cpu/cpufreq/policy%d/scaling_available_governors",
         policy_num);
 
@@ -947,7 +994,7 @@ void set_governor_params(int policy_num, const char* governor) {
 
     // 检查调速器特定目录是否存在
     char gov_path[256];
-    snprintf(gov_path, sizeof(gov_path),
+    safe_snprintf(gov_path, sizeof(gov_path),
         "/sys/devices/system/cpu/cpufreq/policy%d/%s",
         policy_num, governor);
 
@@ -959,12 +1006,12 @@ void set_governor_params(int policy_num, const char* governor) {
 
         // 尝试调速器特定目录
         if (has_gov_dir) {
-            snprintf(param_path, sizeof(param_path),
+            safe_snprintf(param_path, sizeof(param_path),
                 "%s/%s", gov_path, policy_ptr->param_names[i]);
         }
         // 尝试主目录
         else {
-            snprintf(param_path, sizeof(param_path),
+            safe_snprintf(param_path, sizeof(param_path),
                 "/sys/devices/system/cpu/cpufreq/policy%d/%s",
                 policy_num, policy_ptr->param_names[i]);
         }
@@ -975,7 +1022,7 @@ void set_governor_params(int policy_num, const char* governor) {
         }
         else {
             char log_msg[256];
-            snprintf(log_msg, sizeof(log_msg),
+            safe_snprintf(log_msg, sizeof(log_msg),
                 "参数文件不存在: %s", param_path);
             log_message(log_msg);
         }
@@ -985,7 +1032,7 @@ void set_governor_params(int policy_num, const char* governor) {
 // 获取CPU配置文件路径
 const char* get_cpu_config_path() {
     static char path[256];
-    snprintf(path, sizeof(path), "%s%s.json", CPU_CONFIG_DIR, cpu_model);
+    safe_snprintf(path, sizeof(path), "%s%s.json", CPU_CONFIG_DIR, cpu_model);
     return path;
 }
 
@@ -999,7 +1046,7 @@ int lock_val(const char* path, const char* value) {
 
         if (result < 0) {
             char log_msg[256];
-            snprintf(log_msg, sizeof(log_msg), "写入失败: %s -> %s (错误: %s)",
+            safe_snprintf(log_msg, sizeof(log_msg), "写入失败: %s -> %s (错误: %s)",
                 path, value, strerror(errno));
             log_message(log_msg);
             return 0;
@@ -1010,7 +1057,7 @@ int lock_val(const char* path, const char* value) {
     // 如果第一次失败，尝试修改权限
     if (chmod(path, 0777) != 0) {
         char log_msg[256];
-        snprintf(log_msg, sizeof(log_msg), "修改权限失败: %s (错误: %s)",
+        safe_snprintf(log_msg, sizeof(log_msg), "修改权限失败: %s (错误: %s)",
             path, strerror(errno));
         log_message(log_msg);
     }
@@ -1020,7 +1067,7 @@ int lock_val(const char* path, const char* value) {
         if (fp) {
             if (fprintf(fp, "%s", value) < 0) {
                 char log_msg[256];
-                snprintf(log_msg, sizeof(log_msg), "再次写入失败: %s -> %s (错误: %s)",
+                safe_snprintf(log_msg, sizeof(log_msg), "再次写入失败: %s -> %s (错误: %s)",
                     path, value, strerror(errno));
                 log_message(log_msg);
             }
@@ -1032,7 +1079,7 @@ int lock_val(const char* path, const char* value) {
         }
         else {
             char log_msg[256];
-            snprintf(log_msg, sizeof(log_msg), "再次打开失败: %s (错误: %s)",
+            safe_snprintf(log_msg, sizeof(log_msg), "再次打开失败: %s (错误: %s)",
                 path, strerror(errno));
             log_message(log_msg);
         }
@@ -1040,11 +1087,11 @@ int lock_val(const char* path, const char* value) {
 
     // 使用echo命令作为最后手段
     char command[512];
-    snprintf(command, sizeof(command), "echo '%s' > '%s' 2>/dev/null", value, path);
+    safe_snprintf(command, sizeof(command), "echo '%s' > '%s' 2>/dev/null", value, path);
     int ret = system(command);
     if (ret != 0) {
         char log_msg[256];
-        snprintf(log_msg, sizeof(log_msg), "无法写入 %s: echo命令失败 (错误: %d)", path, ret);
+        safe_snprintf(log_msg, sizeof(log_msg), "无法写入 %s: echo命令失败 (错误: %d)", path, ret);
         log_message(log_msg);
         return 0;
     }
@@ -1055,12 +1102,22 @@ int lock_val(const char* path, const char* value) {
 // 获取前台应用
 char* get_foreground_app() {
     FILE* fp = popen("dumpsys window | grep mCurrentFocus", "r");
-    if (!fp) return strdup("unknown");
+    if (!fp) {
+        char* result = strdup("unknown");
+        if (!result) {
+            log_message("内存分配失败：get_foreground_app");
+            return NULL;
+        }
+        return result;
+    }
 
     char line[512];
     char* last_valid = NULL;
 
     while (fgets(line, sizeof(line), fp)) {
+        // 确保字符串以null结尾
+        line[sizeof(line) - 1] = '\0';
+        
         char* start = strchr(line, '{');
         char* end = strrchr(line, '}');  // 使用最后一个 } 作为结束点
 
@@ -1068,7 +1125,7 @@ char* get_foreground_app() {
             // 提取 {} 之间的内容
             size_t len = end - start - 1;
             char inner[256];
-            if (len > 0 && len < sizeof(inner)) {
+            if (len > 0 && len < sizeof(inner) - 1) {  // 预留null终止符空间
                 strncpy(inner, start + 1, len);
                 inner[len] = '\0';
 
@@ -1087,7 +1144,8 @@ char* get_foreground_app() {
                 if (slash) *slash = '\0';
 
                 // 验证包名格式 - 必须包含点号且长度合理
-                if (strlen(candidate) > 0) {
+                size_t candidate_len = strlen(candidate);
+                if (candidate_len > 0 && candidate_len < MAX_PACKAGE_LEN) {
                     // 检查是否包含点号（有效包名特征）
                     int has_dot = 0;
                     int has_valid_chars = 1;
@@ -1102,10 +1160,16 @@ char* get_foreground_app() {
                     }
 
                     // 有效包名必须包含点号，长度至少为3，且包含合法字符
-                    if (has_dot && has_valid_chars && strlen(candidate) >= 3) {
-                        // 保存最后一个有效包名
-                        if (last_valid) free(last_valid);
-                        last_valid = strdup(candidate);
+                    if (has_dot && has_valid_chars && candidate_len >= 3) {
+                        // 安全地分配新内存
+                        char* new_valid = strdup(candidate);
+                        if (new_valid) {
+                            // 释放之前的内存
+                            if (last_valid) free(last_valid);
+                            last_valid = new_valid;
+                        } else {
+                            log_message("内存分配失败：strdup in get_foreground_app");
+                        }
                     }
                 }
             }
@@ -1118,32 +1182,38 @@ char* get_foreground_app() {
     if (last_valid) {
         return last_valid;
     }
-    return strdup("unknown");
+    
+    char* result = strdup("unknown");
+    if (!result) {
+        log_message("内存分配失败：返回默认值");
+        return NULL;
+    }
+    return result;
 }
 
-// 检查授权状态
 
 
 // 加载配置文件中的版本号
 void load_config_version() {
-    safe_strncpy(config_version, "5.0", sizeof(config_version));
+    // 首先设置默认版本为5.1
+    safe_strncpy(config_version, "5.1", sizeof(config_version));
 
     const char* config_path = get_cpu_config_path();
 
     // 添加详细的日志信息
     char log_msg[256];
-    snprintf(log_msg, sizeof(log_msg), "检查配置文件: %s", config_path);
+    safe_snprintf(log_msg, sizeof(log_msg), "检查配置文件: %s", config_path);
     log_message(log_msg);
 
     if (!file_exists(config_path)) {
-        snprintf(log_msg, sizeof(log_msg), "配置文件不存在: %s", config_path);
+        safe_snprintf(log_msg, sizeof(log_msg), "配置文件不存在: %s", config_path);
         log_message(log_msg);
         return;
     }
 
     FILE* fp = fopen(config_path, "rb");
     if (!fp) {
-        snprintf(log_msg, sizeof(log_msg), "无法打开配置文件: %s (错误: %s)",
+        safe_snprintf(log_msg, sizeof(log_msg), "无法打开配置文件: %s (错误: %s)",
             config_path, strerror(errno));
         log_message(log_msg);
         return;
@@ -1151,30 +1221,37 @@ void load_config_version() {
 
     fseek(fp, 0, SEEK_END);
     long len = ftell(fp);
+    if (len <= 0) {
+        log_message("配置文件为空或读取失败");
+        cleanup_resources(fp, NULL, NULL);
+        return;
+    }
+    
     fseek(fp, 0, SEEK_SET);
     char* data = (char*)malloc(len + 1);
     if (!data) {
         log_message("内存分配失败");
-        fclose(fp);
+        cleanup_resources(fp, NULL, NULL);
         return;
     }
 
     size_t bytes_read = fread(data, 1, len, fp);
     data[bytes_read] = 0;
     fclose(fp);
+    fp = NULL; // 标记已关闭
 
     // 解析JSON
     cJSON* root = cJSON_Parse(data);
     if (!root) {
         const char* error_ptr = cJSON_GetErrorPtr();
         if (error_ptr) {
-            snprintf(log_msg, sizeof(log_msg), "JSON解析失败: %s (位置: %p)", error_ptr, error_ptr);
+            safe_snprintf(log_msg, sizeof(log_msg), "JSON解析失败: %s (位置: %p)", error_ptr, error_ptr);
             log_message(log_msg);
         }
         else {
             log_message("JSON解析失败: 未知错误");
         }
-        free(data);
+        cleanup_resources(NULL, data, NULL);
         return;
     }
 
@@ -1182,16 +1259,19 @@ void load_config_version() {
     cJSON* version = cJSON_GetObjectItem(root, "version");
     if (version && cJSON_IsString(version)) {
         safe_strncpy(config_version, version->valuestring, sizeof(config_version));
-        // 不记录版本号相关的日志
+        safe_snprintf(log_msg, sizeof(log_msg), "加载配置文件版本: %s", config_version);
+        log_message(log_msg);
+    }
+    else {
+        log_message("配置文件中未找到版本号，使用默认版本5.1");
     }
 
-    cJSON_Delete(root);
-    free(data);
+    // 统一资源清理
+    cleanup_resources(NULL, data, root);
 }
 
-// ===================== 应用cpuctl设置 =====================
+//应用cpuctl设置
 void apply_cpuctl_settings(const CpuCtlSettings* settings) {
-
     const char* groups[] = {
         "background",
         "system-background",
@@ -1208,37 +1288,34 @@ void apply_cpuctl_settings(const CpuCtlSettings* settings) {
 
     for (int i = 0; i < 4; i++) {
         char base_path[256];
-        snprintf(base_path, sizeof(base_path), "/dev/cpuctl/%s", groups[i]);
+        safe_snprintf(base_path, sizeof(base_path), "/dev/cpuctl/%s", groups[i]);
 
-        // 设置cpu.uclamp.min (0-100)
+        // 只在值有效时设置
         if (group_settings[i]->uclamp_min >= 0) {
             char path[512], value[16];
-            snprintf(path, sizeof(path), "%s/cpu.uclamp.min", base_path);
-            snprintf(value, sizeof(value), "%d", group_settings[i]->uclamp_min);
+            safe_snprintf(path, sizeof(path), "%s/cpu.uclamp.min", base_path);
+            safe_snprintf(value, sizeof(value), "%d", group_settings[i]->uclamp_min);
             lock_val(path, value);
         }
 
-        // 设置cpu.uclamp.max (0-100)
         if (group_settings[i]->uclamp_max >= 0) {
             char path[512], value[16];
-            snprintf(path, sizeof(path), "%s/cpu.uclamp.max", base_path);
-            snprintf(value, sizeof(value), "%d", group_settings[i]->uclamp_max);
+            safe_snprintf(path, sizeof(path), "%s/cpu.uclamp.max", base_path);
+            safe_snprintf(value, sizeof(value), "%d", group_settings[i]->uclamp_max);
             lock_val(path, value);
         }
 
-        // 设置cpu.uclamp.latency_sensitive (0/1)
         if (group_settings[i]->latency_sensitive >= 0) {
             char path[512], value[16];
-            snprintf(path, sizeof(path), "%s/cpu.uclamp.latency_sensitive", base_path);
-            snprintf(value, sizeof(value), "%d", group_settings[i]->latency_sensitive);
+            safe_snprintf(path, sizeof(path), "%s/cpu.uclamp.latency_sensitive", base_path);
+            safe_snprintf(value, sizeof(value), "%d", group_settings[i]->latency_sensitive);
             lock_val(path, value);
         }
 
-        // 设置cpu.shares (2-262144)
         if (group_settings[i]->shares >= 0) {
             char path[512], value[16];
-            snprintf(path, sizeof(path), "%s/cpu.shares", base_path);
-            snprintf(value, sizeof(value), "%d", group_settings[i]->shares);
+            safe_snprintf(path, sizeof(path), "%s/cpu.shares", base_path);
+            safe_snprintf(value, sizeof(value), "%d", group_settings[i]->shares);
             lock_val(path, value);
         }
     }
@@ -1246,7 +1323,6 @@ void apply_cpuctl_settings(const CpuCtlSettings* settings) {
 
 // 应用设置
 void apply_settings() {
-
     // 应用cpuset设置
     lock_val("/dev/cpuset/background/cpus", cpuset.background);
     lock_val("/dev/cpuset/system-background/cpus", cpuset.systembackground);
@@ -1259,24 +1335,24 @@ void apply_settings() {
         char path[256];
 
         // 设置最大/最小频率
-        snprintf(path, sizeof(path),
+        safe_snprintf(path, sizeof(path),
             "/sys/devices/system/cpu/cpufreq/policy%d/scaling_max_freq",
             policy->policy_num);
         char max_freq_str[32];
-        snprintf(max_freq_str, sizeof(max_freq_str), "%d", policy->max_freq);
+        safe_snprintf(max_freq_str, sizeof(max_freq_str), "%d", policy->max_freq);
         lock_val(path, max_freq_str);
 
-        snprintf(path, sizeof(path),
+        safe_snprintf(path, sizeof(path),
             "/sys/devices/system/cpu/cpufreq/policy%d/scaling_min_freq",
             policy->policy_num);
         char min_freq_str[32];
-        snprintf(min_freq_str, sizeof(min_freq_str), "%d", policy->min_freq);
+        safe_snprintf(min_freq_str, sizeof(min_freq_str), "%d", policy->min_freq);
         lock_val(path, min_freq_str);
 
         // 检查调速器是否支持
         if (!is_governor_supported(policy->policy_num, policy->governor)) {
             char log_msg[128];
-            snprintf(log_msg, sizeof(log_msg),
+            safe_snprintf(log_msg, sizeof(log_msg),
                 "调速器 %s 在policy%d上不支持，跳过设置",
                 policy->governor, policy->policy_num);
             log_message(log_msg);
@@ -1284,7 +1360,7 @@ void apply_settings() {
         }
 
         // 设置调速器
-        snprintf(path, sizeof(path),
+        safe_snprintf(path, sizeof(path),
             "/sys/devices/system/cpu/cpufreq/policy%d/scaling_governor",
             policy->policy_num);
         lock_val(path, policy->governor);
@@ -1299,40 +1375,226 @@ void apply_settings() {
 
 // 应用DDR设置
 void apply_ddr_settings() {
+    // 根据平台类型选择不同的DDR控制方法
+    switch (current_platform) {
+    case PLATFORM_QUALCOMM:
+        apply_ddr_settings_qualcomm();
+        break;
+    case PLATFORM_MEDIATEK:
+        apply_ddr_settings_mediatek();
+        break;
+    default:
+        log_message("未知平台，跳过DDR设置");
+        break;
+    }
+}
 
+// 高通平台的DDR设置
+void apply_ddr_settings_qualcomm() {
     DIR* dir = opendir("/sys/devices/system/cpu/bus_dcvs/DDR");
     if (!dir) {
-        log_message("无法打开DDR目录");
+        log_message("无法打开DDR目录 (高通平台)");
         return;
     }
 
     struct dirent* entry;
+    int settings_applied = 0;
+
     while ((entry = readdir(dir)) != NULL) {
         if (entry->d_type == DT_DIR && strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0) {
             char path[256];
 
             // 设置最小频率
-            snprintf(path, sizeof(path),
+            safe_snprintf(path, sizeof(path),
                 "/sys/devices/system/cpu/bus_dcvs/DDR/%s/min_freq",
                 entry->d_name);
             if (file_exists(path)) {
                 char min_freq_str[32];
-                snprintf(min_freq_str, sizeof(min_freq_str), "%d", ddr.min_freq);
-                lock_val(path, min_freq_str);
+                safe_snprintf(min_freq_str, sizeof(min_freq_str), "%d", ddr.min_freq);
+                if (lock_val(path, min_freq_str)) {
+                    settings_applied = 1;
+                }
             }
 
             // 设置最大频率
-            snprintf(path, sizeof(path),
+            safe_snprintf(path, sizeof(path),
                 "/sys/devices/system/cpu/bus_dcvs/DDR/%s/max_freq",
                 entry->d_name);
             if (file_exists(path)) {
                 char max_freq_str[32];
-                snprintf(max_freq_str, sizeof(max_freq_str), "%d", ddr.max_freq);
-                lock_val(path, max_freq_str);
+                safe_snprintf(max_freq_str, sizeof(max_freq_str), "%d", ddr.max_freq);
+                if (lock_val(path, max_freq_str)) {
+                    settings_applied = 1;
+                }
             }
         }
     }
     closedir(dir);
+
+    if (settings_applied) {
+    }
+    else {
+        log_message("高通平台: 未找到有效的DDR控制节点");
+    }
+}
+
+// 天玑平台的DDR设置
+void apply_ddr_settings_mediatek() {
+    // 尝试多个可能的dvfsrc路径
+    const char* possible_dvfsrc_paths[] = {
+        "/sys/devices/platform/soc/1c00f000.dvfsrc",
+        "/sys/devices/platform/1c00f000.dvfsrc",
+        "/sys/devices/platform/1c013000.dvfsrc",
+        "/sys/class/devfreq/mtk-dvfsrc-devfreq",
+        NULL
+    };
+
+    const char* dvfsrc_path = NULL;
+    for (int i = 0; possible_dvfsrc_paths[i] != NULL; i++) {
+        if (file_exists(possible_dvfsrc_paths[i])) {
+            dvfsrc_path = possible_dvfsrc_paths[i];
+            break;
+        }
+    }
+
+    if (dvfsrc_path == NULL) {
+        log_message("天玑平台: 未找到dvfsrc路径");
+        return;
+    }
+
+    char log_msg[256];
+    safe_snprintf(log_msg, sizeof(log_msg), "天玑平台找到dvfsrc路径: %s", dvfsrc_path);
+    log_message(log_msg);
+
+    // 构建min_freq和max_freq路径
+    char min_freq_path[256];
+    char max_freq_path[256];
+
+    if (strstr(dvfsrc_path, "devfreq") != NULL) {
+        // 如果是devfreq类型，路径直接使用
+        safe_snprintf(min_freq_path, sizeof(min_freq_path), "%s/min_freq", dvfsrc_path);
+        safe_snprintf(max_freq_path, sizeof(max_freq_path), "%s/max_freq", dvfsrc_path);
+    }
+    else {
+        // 如果是平台设备类型，路径需要追加
+        safe_snprintf(min_freq_path, sizeof(min_freq_path),
+            "%s/mtk-dvfsrc-devfreq/devfreq/mtk-dvfsrc-devfreq/min_freq", dvfsrc_path);
+        safe_snprintf(max_freq_path, sizeof(max_freq_path),
+            "%s/mtk-dvfsrc-devfreq/devfreq/mtk-dvfsrc-devfreq/max_freq", dvfsrc_path);
+    }
+
+    int settings_applied = 0;
+
+    // 设置最小频率
+    if (file_exists(min_freq_path)) {
+        char min_freq_str[32];
+        safe_snprintf(min_freq_str, sizeof(min_freq_str), "%d", ddr.min_freq);
+        if (lock_val(min_freq_path, min_freq_str)) {
+            settings_applied = 1;
+        }
+    }
+    else {
+        safe_snprintf(log_msg, sizeof(log_msg), "天玑平台min_freq文件不存在: %s", min_freq_path);
+        log_message(log_msg);
+    }
+
+    // 设置最大频率
+    if (file_exists(max_freq_path)) {
+        char max_freq_str[32];
+        safe_snprintf(max_freq_str, sizeof(max_freq_str), "%d", ddr.max_freq);
+        if (lock_val(max_freq_path, max_freq_str)) {
+            settings_applied = 1;
+        }
+    }
+    else {
+        safe_snprintf(log_msg, sizeof(log_msg), "天玑平台max_freq文件不存在: %s", max_freq_path);
+        log_message(log_msg);
+    }
+
+    if (settings_applied) {
+    }
+    else {
+        log_message("天玑平台: 未找到有效的DDR频率控制节点");
+
+        // 尝试备用路径 - 天玑平台可能使用不同的路径结构
+        try_mediatek_alternative_ddr_paths();
+    }
+}
+
+// 天玑平台备用DDR路径尝试
+void try_mediatek_alternative_ddr_paths() {
+    // 尝试查找可能的DDR控制节点
+    const char* search_paths[] = {
+        "/sys/devices/platform/soc/",
+        "/sys/class/devfreq/",
+        "/sys/kernel/debug/",
+        NULL
+    };
+
+    const char* ddr_keywords[] = {
+        "ddr",
+        "dram",
+        "memory",
+        "dvfsrc",
+        NULL
+    };
+
+    DIR* dir;
+    struct dirent* entry;
+    char path[256];
+    int found = 0;
+
+    log_message("尝试查找天玑平台备用DDR路径");
+
+    for (int i = 0; search_paths[i] != NULL; i++) {
+        dir = opendir(search_paths[i]);
+        if (!dir) continue;
+
+        while ((entry = readdir(dir)) != NULL) {
+            // 跳过.和..目录
+            if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+                continue;
+
+            // 检查是否包含DDR关键词
+            for (int j = 0; ddr_keywords[j] != NULL; j++) {
+                if (strstr(entry->d_name, ddr_keywords[j]) != NULL) {
+                    safe_snprintf(path, sizeof(path), "%s%s", search_paths[i], entry->d_name);
+
+                    char log_msg[256];
+                    safe_snprintf(log_msg, sizeof(log_msg), "找到可能的DDR控制节点: %s", path);
+                    log_message(log_msg);
+
+                    // 检查是否有min_freq和max_freq文件
+                    char min_path[256], max_path[256];
+                    safe_snprintf(min_path, sizeof(min_path), "%s/min_freq", path);
+                    safe_snprintf(max_path, sizeof(max_path), "%s/max_freq", path);
+
+                    if (file_exists(min_path) || file_exists(max_path)) {
+                        found = 1;
+
+                        // 设置最小频率
+                        if (file_exists(min_path)) {
+                            char min_freq_str[32];
+                            safe_snprintf(min_freq_str, sizeof(min_freq_str), "%d", ddr.min_freq);
+                            lock_val(min_path, min_freq_str);
+                        }
+
+                        // 设置最大频率
+                        if (file_exists(max_path)) {
+                            char max_freq_str[32];
+                            safe_snprintf(max_freq_str, sizeof(max_freq_str), "%d", ddr.max_freq);
+                            lock_val(max_path, max_freq_str);
+                        }
+                    }
+                }
+            }
+        }
+        closedir(dir);
+    }
+
+    if (!found) {
+        log_message("未找到天玑平台备用DDR控制节点");
+    }
 }
 
 // 加载模式设置JSON
@@ -1340,7 +1602,7 @@ void load_mode_settings_json(const char* mode) {
     const char* config_path = get_cpu_config_path();
     if (!file_exists(config_path)) {
         char error_msg[256];
-        snprintf(error_msg, sizeof(error_msg), "未找到CPU配置文件: %s", config_path);
+        safe_snprintf(error_msg, sizeof(error_msg), "未找到CPU配置文件: %s", config_path);
         log_message(error_msg);
         return;
     }
@@ -1348,7 +1610,7 @@ void load_mode_settings_json(const char* mode) {
     FILE* fp = fopen(config_path, "rb");
     if (!fp) {
         char error_msg[256];
-        snprintf(error_msg, sizeof(error_msg), "无法打开配置文件: %s (错误: %s)",
+        safe_snprintf(error_msg, sizeof(error_msg), "无法打开配置文件: %s (错误: %s)",
             config_path, strerror(errno));
         log_message(error_msg);
         return;
@@ -1357,13 +1619,18 @@ void load_mode_settings_json(const char* mode) {
     // 获取文件大小
     fseek(fp, 0, SEEK_END);
     long len = ftell(fp);
+    if (len <= 0) {
+        log_message("配置文件为空或读取失败");
+        cleanup_resources(fp, NULL, NULL);
+        return;
+    }
     fseek(fp, 0, SEEK_SET);
 
     // 分配内存
     char* data = (char*)malloc(len + 1);
     if (!data) {
         log_message("内存分配失败");
-        fclose(fp);
+        cleanup_resources(fp, NULL, NULL);
         return;
     }
 
@@ -1371,6 +1638,7 @@ void load_mode_settings_json(const char* mode) {
     size_t bytes_read = fread(data, 1, len, fp);
     data[bytes_read] = 0;
     fclose(fp);
+    fp = NULL; // 标记已关闭
 
     // 解析JSON
     cJSON* root = cJSON_Parse(data);
@@ -1378,10 +1646,10 @@ void load_mode_settings_json(const char* mode) {
         const char* error_ptr = cJSON_GetErrorPtr();
         if (error_ptr) {
             char error_msg[256];
-            snprintf(error_msg, sizeof(error_msg), "JSON解析失败: %s", error_ptr);
+            safe_snprintf(error_msg, sizeof(error_msg), "JSON解析失败: %s", error_ptr);
             log_message(error_msg);
         }
-        free(data);
+        cleanup_resources(NULL, data, NULL);
         return;
     }
 
@@ -1389,13 +1657,12 @@ void load_mode_settings_json(const char* mode) {
     cJSON* mode_obj = cJSON_GetObjectItem(root, mode);
     if (!mode_obj) {
         char error_msg[256];
-        snprintf(error_msg, sizeof(error_msg), "在JSON中未找到模式: %s", mode);
+        safe_snprintf(error_msg, sizeof(error_msg), "在JSON中未找到模式: %s", mode);
         log_message(error_msg);
         log_message("回退到均衡模式");
         mode_obj = cJSON_GetObjectItem(root, "balance");
         if (!mode_obj) {
-            cJSON_Delete(root);
-            free(data);
+            cleanup_resources(NULL, data, root);
             log_message("均衡模式也不存在");
             return;
         }
@@ -1581,12 +1848,12 @@ void load_mode_settings_json(const char* mode) {
                     group_ptrs[i]->latency_sensitive = -1;
                 }
 
-                // shares (2-262144)
+                // shares (2-1024)
                 cJSON* shares = cJSON_GetObjectItem(group_obj, "shares");
                 if (shares && cJSON_IsNumber(shares)) {
                     int val = shares->valueint;
                     if (val < 2) val = 2;
-                    if (val > 262144) val = 262144;
+                    if (val > 1024) val = 1024;
                     group_ptrs[i]->shares = val;
                 }
                 else {
@@ -1603,36 +1870,35 @@ void load_mode_settings_json(const char* mode) {
         }
     }
 
-    cJSON_Delete(root);
-    free(data);
+    // 统一资源清理
+    cleanup_resources(NULL, data, root);
 }
 
 // 应用特殊应用的CPU设置
 void apply_special_app_cpu_settings(const SpecialAppSetting* app_setting) {
-
     for (int i = 0; i < app_setting->policy_count && i < policy_count; i++) {
         int policy_num = cpu_policies[i].policy_num;
         char path[256];
 
         // 应用最大频率
         if (app_setting->policies[i].max_freq > 0) {
-            snprintf(path, sizeof(path),
+            safe_snprintf(path, sizeof(path),
                 "/sys/devices/system/cpu/cpufreq/policy%d/scaling_max_freq",
                 policy_num);
 
             char max_freq_str[32];
-            snprintf(max_freq_str, sizeof(max_freq_str), "%d", app_setting->policies[i].max_freq);
+            safe_snprintf(max_freq_str, sizeof(max_freq_str), "%d", app_setting->policies[i].max_freq);
             lock_val(path, max_freq_str);
         }
 
         // 应用最小频率
         if (app_setting->policies[i].min_freq > 0) {
-            snprintf(path, sizeof(path),
+            safe_snprintf(path, sizeof(path),
                 "/sys/devices/system/cpu/cpufreq/policy%d/scaling_min_freq",
                 policy_num);
 
             char min_freq_str[32];
-            snprintf(min_freq_str, sizeof(min_freq_str), "%d", app_setting->policies[i].min_freq);
+            safe_snprintf(min_freq_str, sizeof(min_freq_str), "%d", app_setting->policies[i].min_freq);
             lock_val(path, min_freq_str);
         }
 
@@ -1640,21 +1906,21 @@ void apply_special_app_cpu_settings(const SpecialAppSetting* app_setting) {
         if (strlen(app_setting->policies[i].governor) > 0 &&
             is_governor_supported(policy_num, app_setting->policies[i].governor)) {
 
-            snprintf(path, sizeof(path),
+            safe_snprintf(path, sizeof(path),
                 "/sys/devices/system/cpu/cpufreq/policy%d/scaling_governor",
                 policy_num);
             lock_val(path, app_setting->policies[i].governor);
 
             // 应用调速器参数
             char gov_path[256];
-            snprintf(gov_path, sizeof(gov_path),
+            safe_snprintf(gov_path, sizeof(gov_path),
                 "/sys/devices/system/cpu/cpufreq/policy%d/%s",
                 policy_num, app_setting->policies[i].governor);
 
             if (file_exists(gov_path)) {
                 for (int j = 0; j < app_setting->policies[i].param_count; j++) {
                     char param_path[256];
-                    snprintf(param_path, sizeof(param_path),
+                    safe_snprintf(param_path, sizeof(param_path),
                         "%s/%s", gov_path, app_setting->policies[i].param_names[j]);
 
                     if (file_exists(param_path)) {
@@ -1668,11 +1934,26 @@ void apply_special_app_cpu_settings(const SpecialAppSetting* app_setting) {
 
 // 应用特殊应用的DDR设置
 void apply_special_app_ddr_settings(const SpecialAppSetting* app_setting) {
-
     if (app_setting->ddr_min_freq <= 0 && app_setting->ddr_max_freq <= 0) {
         return;
     }
 
+    // 根据平台类型选择不同的DDR控制方法
+    switch (current_platform) {
+    case PLATFORM_QUALCOMM:
+        apply_special_app_ddr_settings_qualcomm(app_setting);
+        break;
+    case PLATFORM_MEDIATEK:
+        apply_special_app_ddr_settings_mediatek(app_setting);
+        break;
+    default:
+        log_message("未知平台，跳过特殊应用DDR设置");
+        break;
+    }
+}
+
+// 高通平台的特殊应用DDR设置
+void apply_special_app_ddr_settings_qualcomm(const SpecialAppSetting* app_setting) {
     DIR* dir = opendir("/sys/devices/system/cpu/bus_dcvs/DDR");
     if (!dir) {
         return;
@@ -1685,26 +1966,26 @@ void apply_special_app_ddr_settings(const SpecialAppSetting* app_setting) {
 
             // 应用最小频率
             if (app_setting->ddr_min_freq > 0) {
-                snprintf(path, sizeof(path),
+                safe_snprintf(path, sizeof(path),
                     "/sys/devices/system/cpu/bus_dcvs/DDR/%s/min_freq",
                     entry->d_name);
 
                 if (file_exists(path)) {
                     char min_freq_str[32];
-                    snprintf(min_freq_str, sizeof(min_freq_str), "%d", app_setting->ddr_min_freq);
+                    safe_snprintf(min_freq_str, sizeof(min_freq_str), "%d", app_setting->ddr_min_freq);
                     lock_val(path, min_freq_str);
                 }
             }
 
             // 应用最大频率
             if (app_setting->ddr_max_freq > 0) {
-                snprintf(path, sizeof(path),
+                safe_snprintf(path, sizeof(path),
                     "/sys/devices/system/cpu/bus_dcvs/DDR/%s/max_freq",
                     entry->d_name);
 
                 if (file_exists(path)) {
                     char max_freq_str[32];
-                    snprintf(max_freq_str, sizeof(max_freq_str), "%d", app_setting->ddr_max_freq);
+                    safe_snprintf(max_freq_str, sizeof(max_freq_str), "%d", app_setting->ddr_max_freq);
                     lock_val(path, max_freq_str);
                 }
             }
@@ -1713,9 +1994,61 @@ void apply_special_app_ddr_settings(const SpecialAppSetting* app_setting) {
     closedir(dir);
 }
 
+// 天玑平台的特殊应用DDR设置
+void apply_special_app_ddr_settings_mediatek(const SpecialAppSetting* app_setting) {
+    // 尝试多个可能的dvfsrc路径
+    const char* possible_dvfsrc_paths[] = {
+        "/sys/devices/platform/soc/1c00f000.dvfsrc",
+        "/sys/devices/platform/1c00f000.dvfsrc",
+        "/sys/devices/platform/1c013000.dvfsrc",
+        "/sys/class/devfreq/mtk-dvfsrc-devfreq",
+        NULL
+    };
+
+    const char* dvfsrc_path = NULL;
+    for (int i = 0; possible_dvfsrc_paths[i] != NULL; i++) {
+        if (file_exists(possible_dvfsrc_paths[i])) {
+            dvfsrc_path = possible_dvfsrc_paths[i];
+            break;
+        }
+    }
+
+    if (dvfsrc_path == NULL) {
+        return;
+    }
+
+    // 构建min_freq和max_freq路径
+    char min_freq_path[256];
+    char max_freq_path[256];
+
+    if (strstr(dvfsrc_path, "devfreq") != NULL) {
+        safe_snprintf(min_freq_path, sizeof(min_freq_path), "%s/min_freq", dvfsrc_path);
+        safe_snprintf(max_freq_path, sizeof(max_freq_path), "%s/max_freq", dvfsrc_path);
+    }
+    else {
+        safe_snprintf(min_freq_path, sizeof(min_freq_path),
+            "%s/mtk-dvfsrc-devfreq/devfreq/mtk-dvfsrc-devfreq/min_freq", dvfsrc_path);
+        safe_snprintf(max_freq_path, sizeof(max_freq_path),
+            "%s/mtk-dvfsrc-devfreq/devfreq/mtk-dvfsrc-devfreq/max_freq", dvfsrc_path);
+    }
+
+    // 应用最小频率
+    if (app_setting->ddr_min_freq > 0 && file_exists(min_freq_path)) {
+        char min_freq_str[32];
+        safe_snprintf(min_freq_str, sizeof(min_freq_str), "%d", app_setting->ddr_min_freq);
+        lock_val(min_freq_path, min_freq_str);
+    }
+
+    // 应用最大频率
+    if (app_setting->ddr_max_freq > 0 && file_exists(max_freq_path)) {
+        char max_freq_str[32];
+        safe_snprintf(max_freq_str, sizeof(max_freq_str), "%d", app_setting->ddr_max_freq);
+        lock_val(max_freq_path, max_freq_str);
+    }
+}
+
 // 应用特殊应用的cpuset设置
 void apply_special_app_cpuset_settings(const SpecialAppSetting* app_setting) {
-
     if (strlen(app_setting->cpuset_background) > 0) {
         lock_val("/dev/cpuset/background/cpus", app_setting->cpuset_background);
     }
@@ -1735,13 +2068,12 @@ void apply_special_app_cpuset_settings(const SpecialAppSetting* app_setting) {
 
 // 设置特殊应用设置
 void set_special_app_settings(const char* package) {
-
     for (int i = 0; i < special_apps_count; i++) {
         if (strcmp(special_apps_cache[i].package, package) == 0) {
             SpecialAppSetting* app_setting = &special_apps_cache[i];
 
             char log_header[512];
-            snprintf(log_header, sizeof(log_header),
+            safe_snprintf(log_header, sizeof(log_header),
                 "===== 应用特殊设置: %s =====", package);
             log_message(log_header);
 
@@ -1750,28 +2082,28 @@ void set_special_app_settings(const char* package) {
 
             // CPU策略设置
             if (app_setting->policy_count > 0) {
-                strcat(summary, "CPU策略[");
+                safe_strcat(summary, sizeof(summary), "CPU策略[");
                 for (int j = 0; j < app_setting->policy_count; j++) {
                     char policy_summary[256];
-                    snprintf(policy_summary, sizeof(policy_summary),
+                    safe_snprintf(policy_summary, sizeof(policy_summary),
                         "policy%d: min=%d max=%d gov=%s params=%d",
                         j,
                         app_setting->policies[j].min_freq,
                         app_setting->policies[j].max_freq,
                         app_setting->policies[j].governor,
                         app_setting->policies[j].param_count);
-                    strcat(summary, policy_summary);
-                    if (j < app_setting->policy_count - 1) strcat(summary, "; ");
+                    safe_strcat(summary, sizeof(summary), policy_summary);
+                    if (j < app_setting->policy_count - 1) safe_strcat(summary, sizeof(summary), "; ");
                 }
-                strcat(summary, "] ");
+                safe_strcat(summary, sizeof(summary), "] ");
             }
 
             // DDR设置
             if (app_setting->ddr_min_freq > 0 || app_setting->ddr_max_freq > 0) {
                 char ddr_summary[128];
-                snprintf(ddr_summary, sizeof(ddr_summary), "DDR: min=%d max=%d ",
+                safe_snprintf(ddr_summary, sizeof(ddr_summary), "DDR: min=%d max=%d ",
                     app_setting->ddr_min_freq, app_setting->ddr_max_freq);
-                strcat(summary, ddr_summary);
+                safe_strcat(summary, sizeof(summary), ddr_summary);
             }
 
             // Cpuset设置
@@ -1780,27 +2112,27 @@ void set_special_app_settings(const char* package) {
                 strlen(app_setting->cpuset_foreground) > 0 ||
                 strlen(app_setting->cpuset_topapp) > 0) {
 
-                strcat(summary, "Cpuset: [");
+                safe_strcat(summary, sizeof(summary), "Cpuset: [");
                 if (strlen(app_setting->cpuset_background) > 0) {
-                    strcat(summary, "bg=");
-                    strcat(summary, app_setting->cpuset_background);
-                    strcat(summary, ",");
+                    safe_strcat(summary, sizeof(summary), "bg=");
+                    safe_strcat(summary, sizeof(summary), app_setting->cpuset_background);
+                    safe_strcat(summary, sizeof(summary), ",");
                 }
                 if (strlen(app_setting->cpuset_systembackground) > 0) {
-                    strcat(summary, "sysbg=");
-                    strcat(summary, app_setting->cpuset_systembackground);
-                    strcat(summary, ",");
+                    safe_strcat(summary, sizeof(summary), "sysbg=");
+                    safe_strcat(summary, sizeof(summary), app_setting->cpuset_systembackground);
+                    safe_strcat(summary, sizeof(summary), ",");
                 }
                 if (strlen(app_setting->cpuset_foreground) > 0) {
-                    strcat(summary, "fg=");
-                    strcat(summary, app_setting->cpuset_foreground);
-                    strcat(summary, ",");
+                    safe_strcat(summary, sizeof(summary), "fg=");
+                    safe_strcat(summary, sizeof(summary), app_setting->cpuset_foreground);
+                    safe_strcat(summary, sizeof(summary), ",");
                 }
                 if (strlen(app_setting->cpuset_topapp) > 0) {
-                    strcat(summary, "topapp=");
-                    strcat(summary, app_setting->cpuset_topapp);
+                    safe_strcat(summary, sizeof(summary), "topapp=");
+                    safe_strcat(summary, sizeof(summary), app_setting->cpuset_topapp);
                 }
-                strcat(summary, "] ");
+                safe_strcat(summary, sizeof(summary), "] ");
             }
 
             // cpuctl设置
@@ -1808,13 +2140,33 @@ void set_special_app_settings(const char* package) {
                 app_setting->cpuctl.topapp.uclamp_max >= 0 ||
                 app_setting->cpuctl.topapp.shares >= 0) {
 
-                char cpuctl_summary[256];
-                snprintf(cpuctl_summary, sizeof(cpuctl_summary),
-                    "cpuctl: topapp[ min=%d max=%d shares=%d ]",
-                    app_setting->cpuctl.topapp.uclamp_min,
-                    app_setting->cpuctl.topapp.uclamp_max,
-                    app_setting->cpuctl.topapp.shares);
-                strcat(summary, cpuctl_summary);
+                char cpuctl_summary[256] = "cpuctl: topapp[";
+                int added = 0;
+
+                if (app_setting->cpuctl.topapp.uclamp_min >= 0) {
+                    char temp[32];
+                    safe_snprintf(temp, sizeof(temp), "min=%d", app_setting->cpuctl.topapp.uclamp_min);
+                    safe_strcat(cpuctl_summary, sizeof(cpuctl_summary), temp);
+                    added = 1;
+                }
+
+                if (app_setting->cpuctl.topapp.uclamp_max >= 0) {
+                    if (added) safe_strcat(cpuctl_summary, sizeof(cpuctl_summary), " ");
+                    char temp[32];
+                    safe_snprintf(temp, sizeof(temp), "max=%d", app_setting->cpuctl.topapp.uclamp_max);
+                    safe_strcat(cpuctl_summary, sizeof(cpuctl_summary), temp);
+                    added = 1;
+                }
+
+                if (app_setting->cpuctl.topapp.shares >= 0) {
+                    if (added) safe_strcat(cpuctl_summary, sizeof(cpuctl_summary), " ");
+                    char temp[32];
+                    safe_snprintf(temp, sizeof(temp), "shares=%d", app_setting->cpuctl.topapp.shares);
+                    safe_strcat(cpuctl_summary, sizeof(cpuctl_summary), temp);
+                }
+
+                safe_strcat(cpuctl_summary, sizeof(cpuctl_summary), "]");
+                safe_strcat(summary, sizeof(summary), cpuctl_summary);
             }
 
             log_message(summary);
@@ -1843,7 +2195,7 @@ void load_special_apps_cache() {
     struct stat st;
     if (stat(config_path, &st) != 0) {
         char log_msg[256];
-        snprintf(log_msg, sizeof(log_msg), "无法访问配置文件: %s (错误: %s)",
+        safe_snprintf(log_msg, sizeof(log_msg), "无法访问配置文件: %s (错误: %s)",
             config_path, strerror(errno));
         log_message(log_msg);
         return;
@@ -1853,7 +2205,7 @@ void load_special_apps_cache() {
     FILE* fp = fopen(config_path, "rb");
     if (!fp) {
         char log_msg[256];
-        snprintf(log_msg, sizeof(log_msg), "未找到特殊应用配置文件: %s (错误: %s)",
+        safe_snprintf(log_msg, sizeof(log_msg), "未找到特殊应用配置文件: %s (错误: %s)",
             config_path, strerror(errno));
         log_message(log_msg);
         return;
@@ -1861,13 +2213,20 @@ void load_special_apps_cache() {
 
     fseek(fp, 0, SEEK_END);
     long len = ftell(fp);
+    if (len <= 0) {
+        log_message("配置文件为空或读取失败");
+        cleanup_resources(fp, NULL, NULL);
+        return;
+    }
+    
     fseek(fp, 0, SEEK_SET);
     char* data = (char*)malloc(len + 1);
     if (!data) {
         log_message("内存分配失败");
-        fclose(fp);
+        cleanup_resources(fp, NULL, NULL);
         return;
     }
+    
     size_t bytes_read = fread(data, 1, len, fp);
     data[bytes_read] = 0;
     fclose(fp);
@@ -1877,21 +2236,20 @@ void load_special_apps_cache() {
         const char* error_ptr = cJSON_GetErrorPtr();
         if (error_ptr) {
             char error_msg[256];
-            snprintf(error_msg, sizeof(error_msg), "解析特殊应用JSON失败: %s", error_ptr);
+            safe_snprintf(error_msg, sizeof(error_msg), "解析特殊应用JSON失败: %s", error_ptr);
             log_message(error_msg);
         }
         else {
             log_message("解析特殊应用JSON失败");
         }
-        free(data);
+        cleanup_resources(NULL, data, NULL);
         return;
     }
 
     cJSON* special_apps = cJSON_GetObjectItem(root, "special_apps");
     if (!special_apps || !cJSON_IsArray(special_apps)) {
         log_message("特殊应用JSON格式无效或不存在");
-        cJSON_Delete(root);
-        free(data);
+        cleanup_resources(NULL, data, root);
         return;
     }
 
@@ -1909,6 +2267,28 @@ void load_special_apps_cache() {
             while (package && i < MAX_SPECIAL_APPS) {
                 SpecialAppSetting* setting = &special_apps_cache[i];
                 safe_strncpy(setting->package, package, sizeof(setting->package));
+
+                // 初始化所有cpuctl属性为-1（未设置）
+                CpuCtlSettings* cpuctl = &setting->cpuctl;
+                cpuctl->background.uclamp_min = -1;
+                cpuctl->background.uclamp_max = -1;
+                cpuctl->background.latency_sensitive = -1;
+                cpuctl->background.shares = -1;
+
+                cpuctl->systembackground.uclamp_min = -1;
+                cpuctl->systembackground.uclamp_max = -1;
+                cpuctl->systembackground.latency_sensitive = -1;
+                cpuctl->systembackground.shares = -1;
+
+                cpuctl->foreground.uclamp_min = -1;
+                cpuctl->foreground.uclamp_max = -1;
+                cpuctl->foreground.latency_sensitive = -1;
+                cpuctl->foreground.shares = -1;
+
+                cpuctl->topapp.uclamp_min = -1;
+                cpuctl->topapp.uclamp_max = -1;
+                cpuctl->topapp.latency_sensitive = -1;
+                cpuctl->topapp.shares = -1;
 
                 // 解析完整的CPU策略设置
                 cJSON* policies = cJSON_GetObjectItem(app, "cpu_policies");
@@ -2092,11 +2472,11 @@ void load_special_apps_cache() {
         }
     }
 
-    cJSON_Delete(root);
-    free(data);
+    // 统一资源清理
+    cleanup_resources(NULL, data, root);
 
     char log_msg[128];
-    snprintf(log_msg, sizeof(log_msg), "加载了 %d 个特殊应用设置", special_apps_count);
+    safe_snprintf(log_msg, sizeof(log_msg), "加载了 %d 个特殊应用设置", special_apps_count);
     log_message(log_msg);
 }
 
@@ -2148,34 +2528,44 @@ void handle_inotify_events(int inotify_fd, int wd_mode_file, int wd_config_file,
     }
 }
 
-int main() {
-    // 备份并清空日志
+// 应用初始化函数
+int initialize_application() {
+    // 备份并清理日志
     backup_and_clear_log();
-
-    // 清理旧的日志备份
     cleanup_old_logs();
 
     log_message("启动调度服务");
 
-    // 确保以root权限运行
+    // 检查root权限
     if (getuid() != 0) {
         log_message("错误：必须以root权限运行");
         return 1;
     }
 
+    // 检测CPU型号
     if (!detect_cpu_model()) {
         log_message("无法检测CPU型号，使用默认配置");
         safe_strncpy(cpu_model, "default", sizeof(cpu_model));
     }
 
+    // 设置平台类型
+    if (strncmp(cpu_model, "SM", 2) == 0) {
+        current_platform = PLATFORM_QUALCOMM;
+    } else if (strncmp(cpu_model, "MT", 2) == 0) {
+        current_platform = PLATFORM_MEDIATEK;
+    } else {
+        current_platform = PLATFORM_UNKNOWN;
+    }
+
     char log_msg[128];
-    snprintf(log_msg, sizeof(log_msg), "检测到CPU型号: %s", cpu_model);
+    safe_snprintf(log_msg, sizeof(log_msg), "检测到CPU型号: %s, 平台类型: %d",
+        cpu_model, current_platform);
     log_message(log_msg);
 
-    // 加载配置文件版本 - 必须在检测CPU型号之后调用！
+    // 加载配置版本
     load_config_version();
 
-    // 重新挂载/sys为可读写
+    // 重新挂载/sys为读写模式
     if (!remount_sysfs_rw()) {
         log_message("警告：无法重新挂载/sys，部分功能可能受限");
     }
@@ -2196,7 +2586,7 @@ int main() {
         fclose(fp);
     }
 
-    // 检测CPU簇
+    // 检测CPU集群
     detect_cpu_clusters();
 
     // 设置策略文件权限
@@ -2205,61 +2595,131 @@ int main() {
     // 加载特殊应用设置
     load_special_apps_cache();
 
-    // 初始化inotify
-    int inotify_fd = inotify_init1(IN_NONBLOCK);
-    if (inotify_fd < 0) {
-        log_message("无法初始化inotify");
+    return 0;
+}
+
+// 处理应用模式的函数
+char* handle_app_mode(const char* current_app) {
+    // 读取模式文件
+    FILE* mode_file = fopen(MODE_FILE, "r");
+    if (!mode_file) {
+        log_message("未找到模式文件");
+        return NULL;
     }
 
-    int wd_mode_file = -1;
-    int wd_config_file = -1;
-    int wd_config_dir = -1;
+    char* mode = (char*)malloc(64);
+    if (!mode) {
+        fclose(mode_file);
+        return NULL;
+    }
+    
+    strcpy(mode, "balance"); // 默认模式
+    char line[256];
 
-    // 添加inotify监听
-    if (inotify_fd >= 0) {
-        // 监听模式文件
-        wd_mode_file = inotify_add_watch(inotify_fd, MODE_FILE,
-            IN_MODIFY | IN_CLOSE_WRITE | IN_MOVED_TO);
-
-        // 监听CPU配置文件
-        const char* config_path = get_cpu_config_path();
-        wd_config_file = inotify_add_watch(inotify_fd, config_path,
-            IN_MODIFY | IN_CLOSE_WRITE | IN_MOVED_TO);
-
-        // 监听配置文件目录
-        wd_config_dir = inotify_add_watch(inotify_fd, CPU_CONFIG_DIR,
-            IN_MODIFY | IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE | IN_DELETE);
-
-        log_message("inotify监听已设置");
+    // 读取默认模式
+    if (fgets(line, sizeof(line), mode_file)) {
+        line[strcspn(line, "\n")] = 0;
+        safe_strncpy(mode, line, 64);
     }
 
-    char last_app[MAX_APP_NAME_LEN] = "";
-    struct timeval tv;
+    // 检查是否有应用特定的模式
+    while (fgets(line, sizeof(line), mode_file)) {
+        line[strcspn(line, "\n")] = 0;
+        char* package = strtok(line, " ");
+        char* custom_mode = strtok(NULL, " ");
 
-    while (1) {
-        // 设置超时时间为1秒
-        tv.tv_sec = 1;
-        tv.tv_usec = 0;
+        if (package && custom_mode && strcmp(package, current_app) == 0) {
+            safe_strncpy(mode, custom_mode, 64);
+            break;
+        }
+    }
+    
+    fclose(mode_file);
+    return mode;
+}
 
-        fd_set fds;
-        FD_ZERO(&fds);
+// 处理前台应用的函数
+int process_foreground_app(const char* current_app, char* last_app) {
+    if (strcmp(current_app, "unknown") != 0 &&
+        strcmp(current_app, last_app) != 0) {
+        safe_strncpy(last_app, current_app, MAX_APP_NAME_LEN);
 
-        if (inotify_fd >= 0) {
-            FD_SET(inotify_fd, &fds);
+        // 获取应用模式
+        char* mode = handle_app_mode(current_app);
+        if (!mode) {
+            return 0; // 继续循环
         }
 
-        // 使用select等待事件
-        int max_fd = inotify_fd;
-        int ret = select(max_fd + 1, &fds, NULL, NULL, &tv);
+        // 加载和应用设置
+        load_mode_settings_json(mode);
+        apply_settings();
+        apply_ddr_settings();
 
+        // 应用特殊应用设置（覆盖部分参数）
+        set_special_app_settings(current_app);
+
+        char log_msg[512];
+        safe_snprintf(log_msg, sizeof(log_msg),
+            "应用: %s | 模式: %s | 设置已应用",
+            current_app, mode);
+        log_message(log_msg);
+        
+        free(mode);
+    }
+    
+    return 1; // 成功处理
+}
+
+// 主循环函数
+void run_main_loop() {
+    // 初始化inotify
+    int inotify_fd = inotify_init();
+    if (inotify_fd < 0) {
+        log_message("inotify初始化失败");
+        return;
+    }
+
+    // 监控配置文件变化
+    int wd_mode_file = inotify_add_watch(inotify_fd, MODE_FILE, IN_MODIFY);
+    int wd_config_file = inotify_add_watch(inotify_fd, get_cpu_config_path(), IN_MODIFY);
+    int wd_config_dir = inotify_add_watch(inotify_fd, CPU_CONFIG_DIR, IN_MODIFY | IN_CREATE | IN_DELETE);
+
+    char last_app[MAX_APP_NAME_LEN] = "";
+    time_t last_app_check = 0;
+
+    while (1) {
+        fd_set fds;
+        struct timeval timeout;
+        
+        FD_ZERO(&fds);
+        FD_SET(inotify_fd, &fds);
+        
+        timeout.tv_sec = SELECT_TIMEOUT_SEC;
+        timeout.tv_usec = 0;
+        
+        int ret = select(inotify_fd + 1, &fds, NULL, NULL, &timeout);
+        
+        // 处理inotify事件
         if (ret > 0 && inotify_fd >= 0 && FD_ISSET(inotify_fd, &fds)) {
             handle_inotify_events(inotify_fd, wd_mode_file, wd_config_file, wd_config_dir);
         }
 
-
+        time_t now = time(NULL);
+        
+        // 控制应用检查频率，避免过于频繁的系统调用
+        if (now - last_app_check < APP_CHECK_INTERVAL) {
+            continue;
+        }
+        last_app_check = now;
 
         // 处理前台应用检测
         char* current_app = get_foreground_app();
+        
+        // 检查内存分配是否成功
+        if (!current_app) {
+            log_message("获取前台应用失败，跳过本次检查");
+            continue;
+        }
 
         // 新添加：过滤无效应用名称（长度过短、包含空格等）
         if (strlen(current_app) < 3 || strchr(current_app, ' ') != NULL) {
@@ -2275,60 +2735,25 @@ int main() {
             continue;
         }
 
-        if (strcmp(current_app, "unknown") != 0 &&
-            strcmp(current_app, last_app) != 0) {
-            safe_strncpy(last_app, current_app, sizeof(last_app));
-
-            // 读取模式文件
-            FILE* mode_file = fopen(MODE_FILE, "r");
-            if (!mode_file) {
-                log_message("未找到模式文件");
-                free(current_app);
-                continue;
-            }
-
-            char mode[64] = "balance";
-            char line[256];
-
-            if (fgets(line, sizeof(line), mode_file)) {
-                line[strcspn(line, "\n")] = 0;
-                safe_strncpy(mode, line, sizeof(mode));
-            }
-
-            // 检查是否有应用特定的模式
-            while (fgets(line, sizeof(line), mode_file)) {
-                line[strcspn(line, "\n")] = 0;
-                char* package = strtok(line, " ");
-                char* custom_mode = strtok(NULL, " ");
-
-                if (package && custom_mode && strcmp(package, current_app) == 0) {
-                    safe_strncpy(mode, custom_mode, sizeof(mode));
-                    break;
-                }
-            }
-            fclose(mode_file);
-
-            // 加载和应用设置
-            load_mode_settings_json(mode);
-            apply_settings();
-            apply_ddr_settings();
-
-            // 应用特殊应用设置（覆盖部分参数）
-            set_special_app_settings(current_app);
-
-            char log_msg[512];
-            snprintf(log_msg, sizeof(log_msg),
-                "应用: %s | 模式: %s | 设置已应用",
-                current_app, mode);
-            log_message(log_msg);
-        }
-
+        // 处理前台应用
+        process_foreground_app(current_app, last_app);
+        
         free(current_app);
     }
 
     if (inotify_fd >= 0) {
         close(inotify_fd);
     }
+}
+
+int main() {
+    // 初始化应用
+    if (initialize_application() != 0) {
+        return 1;
+    }
+
+    // 运行主循环
+    run_main_loop();
 
     return 0;
 }
