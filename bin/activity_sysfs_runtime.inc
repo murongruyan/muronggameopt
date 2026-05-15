@@ -526,12 +526,6 @@ const char* get_cpu_config_path() {
     return path;
 }
 
-const char* get_scheduler_config_path() {
-    static char path[256];
-    safe_snprintf(path, sizeof(path), "%s%s.scheduler.json", CPU_CONFIG_DIR, cpu_model);
-    return path;
-}
-
 static void build_cluster_layout_name(char* out, size_t out_size) {
     if (!out || out_size == 0) return;
     out[0] = '\0';
