@@ -1,0 +1,355 @@
+{
+  "version": "5.6",
+  "powersave": {
+    "cpu_policies": [
+      {
+        "cluster": 0,
+        "governor": "",
+        "max_freq": 1459200,
+        "min_freq": 384000,
+        "params": {
+          "hispeed_freq": "787200",
+          "hispeed_load": "90",
+          "rtg_boost_freq": "960000",
+          "target_loads": "80 787200:90"
+        }
+      },
+      {
+        "cluster": 1,
+        "governor": "",
+        "max_freq": 2438400,
+        "min_freq": 499200,
+        "params": {
+          "hispeed_freq": "1708800",
+          "hispeed_load": "90",
+          "rtg_boost_freq": "960000",
+          "target_loads": "80 787200:85 1708800:90"
+        }
+      },
+      {
+        "cluster": 2,
+        "governor": "",
+        "max_freq": 2438400,
+        "min_freq": 499200,
+        "params": {
+          "hispeed_freq": "1708800",
+          "hispeed_load": "90",
+          "rtg_boost_freq": "960000",
+          "target_loads": "80 787200:85 1708800:90"
+        }
+      },
+      {
+        "cluster": 3,
+        "governor": "",
+        "max_freq": 2803200,
+        "min_freq": 480000,
+        "params": {
+          "hispeed_freq": "1689600",
+          "hispeed_load": "90",
+          "rtg_boost_freq": "1017600",
+          "target_loads": "80 787200:85 1708800:90"
+        }
+      }
+    ],
+    "cpuset": {
+      "background": "0-2",
+      "systembackground": "0-1",
+      "foreground": "0-6",
+      "topapp": "0-7"
+    },
+    "ddr": {
+      "min_freq": "ddr_min",
+      "max_freq": "ddr_max"
+    },
+    "cpuctl": {
+      "background": {
+        "uclamp_min": 0,
+        "uclamp_max": 40,
+        "latency_sensitive": 0,
+        "shares": 192
+      },
+      "systembackground": {
+        "uclamp_min": 0,
+        "uclamp_max": 50,
+        "latency_sensitive": 0,
+        "shares": 260
+      },
+      "foreground": {
+        "uclamp_min": 0,
+        "uclamp_max": 60,
+        "latency_sensitive": 0,
+        "shares": 360
+      },
+      "topapp": {
+        "uclamp_min": 0,
+        "uclamp_max": 65,
+        "latency_sensitive": 1,
+        "shares": 480
+      }
+    }
+  },
+  "balance": {
+    "cpu_policies": [
+      {
+        "cluster": 0,
+        "governor": "",
+        "max_freq": 1574400,
+        "min_freq": 902400,
+        "params": {
+          "hispeed_freq": "1344000",
+          "hispeed_load": "80",
+          "rtg_boost_freq": "902400",
+          "target_loads": "80 1574400:90"
+        }
+      },
+      {
+        "cluster": 1,
+        "governor": "",
+        "max_freq": 2956800,
+        "min_freq": 960000,
+        "params": {
+          "hispeed_freq": "1708800",
+          "hispeed_load": "80",
+          "rtg_boost_freq": "1248000",
+          "target_loads": "70 1708800:75 2131200:80"
+        }
+      },
+      {
+        "cluster": 2,
+        "governor": "",
+        "max_freq": 2438400,
+        "min_freq": 960000,
+        "params": {
+          "hispeed_freq": "960000",
+          "hispeed_load": "90",
+          "rtg_boost_freq": "1248000",
+          "target_loads": "70 787200:75 960000:80"
+        }
+      },
+      {
+        "cluster": 3,
+        "governor": "",
+        "max_freq": 2995200,
+        "min_freq": 1017600,
+        "params": {
+          "hispeed_freq": "1708800",
+          "hispeed_load": "80",
+          "rtg_boost_freq": "1248000",
+          "target_loads": "70 1708800:75 2112000:80"
+        }
+      }
+    ],
+    "cpuset": {
+      "background": "0-2",
+      "systembackground": "0-1",
+      "foreground": "0-6",
+      "topapp": "0-7"
+    },
+    "ddr": {
+      "min_freq": "ddr_min",
+      "max_freq": "ddr_max"
+    },
+    "cpuctl": {
+      "background": {
+        "uclamp_min": 0,
+        "uclamp_max": 70,
+        "latency_sensitive": 0,
+        "shares": 512
+      },
+      "systembackground": {
+        "uclamp_min": 0,
+        "uclamp_max": 70,
+        "latency_sensitive": 0,
+        "shares": 512
+      },
+      "foreground": {
+        "uclamp_min": 10,
+        "uclamp_max": 80,
+        "latency_sensitive": 0,
+        "shares": 568
+      },
+      "topapp": {
+        "uclamp_min": 0,
+        "uclamp_max": 100,
+        "latency_sensitive": 1,
+        "shares": 1024
+      }
+    }
+  },
+  "performance": {
+    "cpu_policies": [
+      {
+        "cluster": 0,
+        "governor": "",
+        "max_freq": 1804800,
+        "min_freq": 902400,
+        "params": {
+          "hispeed_freq": "1574400",
+          "hispeed_load": "75",
+          "rtg_boost_freq": "1363200",
+          "target_loads": "80 787200:90"
+        }
+      },
+      {
+        "cluster": 1,
+        "governor": "",
+        "max_freq": 3148800,
+        "min_freq": 1401600,
+        "params": {
+          "hispeed_freq": "2438400",
+          "hispeed_load": "75",
+          "rtg_boost_freq": "960000",
+          "target_loads": "65 2131200:70 2630400:75"
+        }
+      },
+      {
+        "cluster": 2,
+        "governor": "",
+        "max_freq": 2438400,
+        "min_freq": 960000,
+        "params": {
+          "hispeed_freq": "1708800",
+          "hispeed_load": "75",
+          "rtg_boost_freq": "960000",
+          "target_loads": "65 960000:70 1708800:75"
+        }
+      },
+      {
+        "cluster": 3,
+        "governor": "",
+        "max_freq": 3302400,
+        "min_freq": 1248000,
+        "params": {
+          "hispeed_freq": "2246400",
+          "hispeed_load": "75",
+          "rtg_boost_freq": "1478400",
+          "target_loads": "65 2112000:70 2630400:75"
+        }
+      }
+    ],
+    "cpuset": {
+      "background": "0-2",
+      "systembackground": "0-1",
+      "foreground": "0-6",
+      "topapp": "0-7"
+    },
+    "ddr": {
+      "min_freq": "ddr_min",
+      "max_freq": "ddr_max"
+    },
+    "cpuctl": {
+      "background": {
+        "uclamp_min": 0,
+        "uclamp_max": 70,
+        "latency_sensitive": 0,
+        "shares": 768
+      },
+      "systembackground": {
+        "uclamp_min": 0,
+        "uclamp_max": 70,
+        "latency_sensitive": 0,
+        "shares": 768
+      },
+      "foreground": {
+        "uclamp_min": 20,
+        "uclamp_max": 100,
+        "latency_sensitive": 1,
+        "shares": 1024
+      },
+      "topapp": {
+        "uclamp_min": 30,
+        "uclamp_max": 100,
+        "latency_sensitive": 1,
+        "shares": 1024
+      }
+    }
+  },
+  "fast": {
+    "cpu_policies": [
+      {
+        "cluster": 0,
+        "governor": "",
+        "max_freq": 2265600,
+        "min_freq": 1248000,
+        "params": {
+          "hispeed_freq": "1804800",
+          "hispeed_load": "70",
+          "rtg_boost_freq": "1459200",
+          "target_loads": "80 787200:90"
+        }
+      },
+      {
+        "cluster": 1,
+        "governor": "walt",
+        "max_freq": 3148800,
+        "min_freq": 1612800,
+        "params": {
+          "hispeed_freq": "2630400",
+          "hispeed_load": "70",
+          "rtg_boost_freq": "1708800",
+          "target_loads": "70 2438400:75 2956800:80"
+        }
+      },
+      {
+        "cluster": 2,
+        "governor": "walt",
+        "max_freq": 2956800,
+        "min_freq": 1401600,
+        "params": {
+          "hispeed_freq": "1708800",
+          "hispeed_load": "70",
+          "rtg_boost_freq": "960000",
+          "target_loads": "70 1708800:75 2131200:80"
+        }
+      },
+      {
+        "cluster": 3,
+        "governor": "",
+        "max_freq": 3302400,
+        "min_freq": 1708800,
+        "params": {
+          "hispeed_freq": "2803200",
+          "hispeed_load": "70",
+          "rtg_boost_freq": "1708800",
+          "target_loads": "70 1708800:75 2995200:80"
+        }
+      }
+    ],
+    "cpuset": {
+      "background": "0-2",
+      "systembackground": "0-1",
+      "foreground": "0-6",
+      "topapp": "0-7"
+    },
+    "ddr": {
+      "min_freq": "ddr_max",
+      "max_freq": "ddr_max"
+    },
+    "cpuctl": {
+      "background": {
+        "uclamp_min": 0,
+        "uclamp_max": 100,
+        "latency_sensitive": 0,
+        "shares": 1024
+      },
+      "systembackground": {
+        "uclamp_min": 0,
+        "uclamp_max": 100,
+        "latency_sensitive": 0,
+        "shares": 1024
+      },
+      "foreground": {
+        "uclamp_min": 40,
+        "uclamp_max": 100,
+        "latency_sensitive": 1,
+        "shares": 1024
+      },
+      "topapp": {
+        "uclamp_min": 100,
+        "uclamp_max": 100,
+        "latency_sensitive": 1,
+        "shares": 1024
+      }
+    }
+  }
+}

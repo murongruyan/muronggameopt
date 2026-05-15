@@ -1,0 +1,11 @@
+#!/system/bin/sh
+MODDIR=${0%/*}
+export LD_LIBRARY_PATH="$MODDIR/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+cd "$MODDIR"
+
+#解锁权限
+target="/sys/devices/system/cpu/cpufreq"
+find "$target" -type f -exec chmod 777 {} \; 2>/dev/null
+find "$target" -type d -exec chmod 777 {} \; 2>/dev/null
+
+nohup "$MODDIR/bin/activity_diaodu" >/dev/null 2>&1 &

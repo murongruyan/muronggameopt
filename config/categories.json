@@ -1,0 +1,140 @@
+[
+  {
+    "friendly": "极速响应",
+    "packages": [
+      "com.miui.home",
+      "com.meizu.flyme.launcher",
+      "net.oneplus.launcher",
+      "com.oppo.launcher",
+      "com.mi.android.globallauncher",
+      "com.teslacoilsw.launcher",
+      "com.android.quicksearchbox",
+      "net.oneplus.h2launcher",
+      "com.oneplus.hydrogen.launcher",
+      "com.microsoft.launcher",
+      "org.lineageos.trebuchet",
+      "org.mokee.lawnchair",
+      "com.google.android.apps.nexuslauncher",
+      "com.android.launcher",
+      "com.bbk.launcher2",
+      "com.zte.mifavor.launcher"
+    ],
+    "activities": [
+      "com.tencent.mm.plugin.appbrand.ui.AppBrandLauncherUI",
+      "com.tencent.mm.plugin.appbrand.launching.AppBrandLaunchProxyUI"
+    ],
+    "default_action": {
+      "clusters": [
+        "middle",
+        "big"
+      ]
+    },
+    "category": "Launcher"
+  },
+  {
+    "friendly": "扫码",
+    "activities": [
+      "com.tencent.mm.plugin.scanner.ui.BaseScanUI",
+      "com.tencent.mobileqq.olympic.activity.ScanTorchActivity",
+      "com.alipay.mobile.scan.as.main.MainCaptureActivity",
+      "com.jd.lib.scan.lib.zxing.client.android.CaptureActivity",
+      "com.jd.lib.scan.lib.zxing.client.android.NewCaptureActivity",
+      "com.etao.feimagesearch.capture.CaptureActivity",
+      "com.bilibili.app.qrcode.QRcodeCaptureActivity",
+      "com.oplus.scanner.ui.main.CameraActivity",
+      "com.xiaomi.scanner.app.ScanActivity",
+      "com.flyme.scanner.CaptureActivity",
+      "com.tencent.wework.login.controller.LoginScannerActivity",
+      "kt.com.fcbox.hiveconsumer.app.business.scan.ScanActivity"
+    ],
+    "processes": [
+      "com.tencent.mobileqq:tool"
+    ],
+    "category": "Scanner"
+  },
+  {
+    "friendly": "相机",
+    "packages": [
+      "com.android.camera",
+      "com.xiaomi.scanner",
+      "com.oneplus.camera",
+      "com.google.android.GoogleCamera",
+      "com.oplus.camera",
+      "org.codeaurora.snapcam",
+      "com.meizu.media.camera"
+    ],
+    "activities": [
+      "com.tencent.mm.plugin.recordvideo.activity.MMRecordUI",
+      "com.tencent.aelight.camera.aebase.QIMCameraCaptureActivity",
+      "dov.com.qq.im.QIMCameraCaptureActivity"
+    ],
+    "processes": [
+      "com.tencent.mobileqq:peak"
+    ],
+    "category": "Camera"
+  },
+  {
+    "friendly": "小程序",
+    "processes": [
+      "com.tencent.mm:appbrand",
+      "com.tencent.mm:appbrand1",
+      "com.tencent.mm:toolsmp",
+      "com.tencent.mobileqq:mini",
+      "com.tencent.mobileqq:mini1"
+    ],
+    "default_action": {
+      "clusters": [
+        "middle",
+        "big"
+      ]
+    },
+    "category": "MiniProgram"
+  },
+  {
+    "friendly": "提高滑动性能",
+    "packages": [
+      "com.taobao.idlefish",
+      "com.taobao.taobao",
+      "com.android.browser",
+      "com.baidu.tieba_mini",
+      "com.baidu.tieba",
+      "com.jingdong.app.mall",
+      "com.tmall.wireless",
+      "com.sankuai.meituan",
+      "com.pupumall.customer",
+      "com.eg.android.AlipayGphone",
+      "com.android.vending",
+      "cn.xiaochuankeji.tieba",
+      "com.mfw.roadbook",
+      "com.heytap.browser",
+      "com.tencent.news"
+    ],
+    "default_action": {
+      "clusters": [
+        "middle",
+        "big"
+      ]
+    },
+    "category": "ScrollOpt"
+  },
+  {
+    "friendly": "白名单应用",
+    "packages": [
+      "com.miui.huanji",
+      "com.miui.backup",
+      "com.meizu.datamigration",
+      "com.android.providers.downloads.ui",
+      "android.process.mediaui",
+      "com.coloros.backuprestore",
+      "com.rarlab.rar",
+      "org.swiftapps.swiftbackup",
+      "xzr.konabess",
+      "com.oplus.ota",
+      "com.android.updater",
+      "com.termux",
+      "com.termux.x11",
+      "vegabobo.dsusideloader"
+    ],
+    "category": "WhiteList"
+  }
+]

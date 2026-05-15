@@ -1,0 +1,43 @@
+# IDE and editor files
+.idea/
+.vscode/
+.vs/
+*.iml
+
+# Local environment files
+local.properties
+.env
+
+# Logs and profiling
+*.log
+*.hprof
+
+# Temporary files
+*.tmp
+*.cache
+*.swp
+*.swo
+Thumbs.db
+.DS_Store
+
+# Archives and local packaging output
+*.zip
+*.7z
+*.rar
+
+# Private keys and signing files
+*.jks
+*.keystore
+*.key
+*.pem
+google-services.json
+
+# Backup and local scratch files
+*.bak
+*.bak_*
+*~
+
+# Local build intermediates only
+*.obj
+*.exe
+*.dll
