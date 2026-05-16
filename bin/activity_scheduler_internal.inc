@@ -1161,16 +1161,6 @@ static const ThreadJsonResolvedRule* resolve_thread_json_rule_locked(
     const ThreadJsonAppRule* app_rule_ptr = find_thread_app_rule_for_package_locked(package);
     if (app_rule_ptr) {
         const ThreadJsonAppRule& app_rule = *app_rule_ptr;
-        for (size_t i = 0; i < app_rule.custom_rules.size(); i++) {
-            const ThreadJsonCustomRule& custom_rule = app_rule.custom_rules[i];
-            if (thread_json_role_matches_locked(custom_rule.rule, tid, comm)) {
-                out_rule->action = &custom_rule.rule.action;
-                out_rule->safety = &app_rule.safety;
-                out_rule->role_kind = THREAD_JSON_ROLE_OTHER;
-                out_rule->rule_name = custom_rule.name.c_str();
-                return out_rule;
-            }
-        }
         static const int role_order[] = {
             THREAD_JSON_ROLE_MAIN,
             THREAD_JSON_ROLE_GFX,
@@ -1189,6 +1179,16 @@ static const ThreadJsonResolvedRule* resolve_thread_json_rule_locked(
                 out_rule->safety = &app_rule.safety;
                 out_rule->role_kind = role;
                 out_rule->rule_name = role_names[role];
+                return out_rule;
+            }
+        }
+        for (size_t i = 0; i < app_rule.custom_rules.size(); i++) {
+            const ThreadJsonCustomRule& custom_rule = app_rule.custom_rules[i];
+            if (thread_json_role_matches_locked(custom_rule.rule, tid, comm)) {
+                out_rule->action = &custom_rule.rule.action;
+                out_rule->safety = &app_rule.safety;
+                out_rule->role_kind = THREAD_JSON_ROLE_OTHER;
+                out_rule->rule_name = custom_rule.name.c_str();
                 return out_rule;
             }
         }
@@ -1845,6 +1845,48 @@ static bool resolve_affinity_template(const char* package, pid_t tid, const char
     return true;
 }
 
+static float get_busy_thread_usage_locked() {
+    float best = 0.0f;
+    for (auto& kv : g_threads) {
+        const ThreadRuntimeState& state = kv.second;
+        if (is_main_thread_name_for_package(g_foreground_package, state.comm.c_str(), state.tid) ||
+            is_render_thread_name(state.comm.c_str())) {
+            if (state.cpu_usage_pct > best) {
+                best = state.cpu_usage_pct;
+            }
+        }
+    }
+    return best;
+}
+
+static bool has_active_download_thread_locked() {
+    for (auto& kv : g_threads) {
+        const ThreadRuntimeState& state = kv.second;
+        if (is_download_thread_name(g_foreground_package, state.comm.c_str(), state.cpu_usage_pct)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+float get_busy_thread_usage() {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return get_busy_thread_usage_locked();
+}
+
+bool has_active_download_thread() {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return has_active_download_thread_locked();
+}
+
+pid_t get_foreground_pid_snapshot() {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return g_foreground_pid;
+}
+
+static void detach_frame_probe_locked() {
+}
+
 static void clear_bpf_u32_key_map_locked(int map_fd) {
     if (map_fd < 0) return;
     std::vector<uint32_t> keys;
@@ -1944,48 +1986,6 @@ static void pull_bpf_runtimes_locked(long long now_ms) {
     }
 }
 
-static float get_busy_thread_usage_locked() {
-    float best = 0.0f;
-    for (auto& kv : g_threads) {
-        const ThreadRuntimeState& state = kv.second;
-        if (is_main_thread_name_for_package(g_foreground_package, state.comm.c_str(), state.tid) ||
-            is_render_thread_name(state.comm.c_str())) {
-            if (state.cpu_usage_pct > best) {
-                best = state.cpu_usage_pct;
-            }
-        }
-    }
-    return best;
-}
-
-static bool has_active_download_thread_locked() {
-    for (auto& kv : g_threads) {
-        const ThreadRuntimeState& state = kv.second;
-        if (is_download_thread_name(g_foreground_package, state.comm.c_str(), state.cpu_usage_pct)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-float get_busy_thread_usage() {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    return get_busy_thread_usage_locked();
-}
-
-bool has_active_download_thread() {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    return has_active_download_thread_locked();
-}
-
-pid_t get_foreground_pid_snapshot() {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    return g_foreground_pid;
-}
-
-static void detach_frame_probe_locked() {
-}
-
 static int handle_process_event_signal(void* ctx, void* data, size_t size) {
     (void)ctx;
     if (!data || size < sizeof(ProcessEventSignal)) return 0;
@@ -2018,7 +2018,7 @@ static int handle_process_event_signal(void* ctx, void* data, size_t size) {
         char comm_buf[sizeof(signal->comm) + 1] = {0};
         memcpy(comm_buf, signal->comm, sizeof(signal->comm));
         comm_buf[sizeof(signal->comm)] = '\0';
-        
+
         const char* event_names[] = { "unknown", "fork", "exec", "setaffinity" };
         const char* event_name = (signal->type >= 1 && signal->type <= 3) ? event_names[signal->type] : "unknown";
 

@@ -75,7 +75,7 @@ void load_mode_settings_json(const char* mode) {
     g_dyn_params.low_load_lock_threshold = 0;
     g_dyn_params.load_ceiling_stages.clear();
     g_mode_runtime_features.scheduler_master_enabled = true;
-    g_mode_runtime_features.dynamic_thread_scheduler_enabled = true;
+    g_mode_runtime_features.bpf_thread_enabled = true;
     g_mode_runtime_features.scene_category_enabled = true;
     g_mode_runtime_features.base_profile_enabled = true;
     g_scheduler_session_config.learning_duration_ms = 120 * 1000;
@@ -88,13 +88,15 @@ void load_mode_settings_json(const char* mode) {
             (cJSON_IsBool(scheduler_master) || cJSON_IsNumber(scheduler_master))) {
             g_mode_runtime_features.scheduler_master_enabled = scheduler_master->valueint != 0;
         }
-        cJSON* dynamic_thread_scheduler_feature =
-            cJSON_GetObjectItem(features, "dynamic_thread_scheduler");
-        if (dynamic_thread_scheduler_feature &&
-            (cJSON_IsBool(dynamic_thread_scheduler_feature) ||
-             cJSON_IsNumber(dynamic_thread_scheduler_feature))) {
-            g_mode_runtime_features.dynamic_thread_scheduler_enabled =
-                dynamic_thread_scheduler_feature->valueint != 0;
+        cJSON* bpf_thread_feature = cJSON_GetObjectItem(features, "bpf_thread");
+        if (!bpf_thread_feature) {
+            bpf_thread_feature = cJSON_GetObjectItem(features, "dynamic_thread_scheduler");
+        }
+        if (bpf_thread_feature &&
+            (cJSON_IsBool(bpf_thread_feature) ||
+             cJSON_IsNumber(bpf_thread_feature))) {
+            g_mode_runtime_features.bpf_thread_enabled =
+                bpf_thread_feature->valueint != 0;
         }
         cJSON* scene_category = cJSON_GetObjectItem(features, "scene_category");
         if (scene_category &&
@@ -408,10 +410,10 @@ void load_mode_settings_json(const char* mode) {
         safe_snprintf(log_msg, sizeof(log_msg), "模式 %s 的线程调度配置已启用", mode);
         log_debug_message(log_msg);
         safe_snprintf(log_msg, sizeof(log_msg),
-                      "模式 %s 的功能开关 | master:%d | thread:%d | scene:%d | base:%d",
+                      "模式 %s 的功能开关 | master:%d | bpf:%d | scene:%d | base:%d",
                       mode,
                       g_mode_runtime_features.scheduler_master_enabled ? 1 : 0,
-                      g_mode_runtime_features.dynamic_thread_scheduler_enabled ? 1 : 0,
+                      g_mode_runtime_features.bpf_thread_enabled ? 1 : 0,
                       g_mode_runtime_features.scene_category_enabled ? 1 : 0,
                       g_mode_runtime_features.base_profile_enabled ? 1 : 0);
         log_debug_message(log_msg);

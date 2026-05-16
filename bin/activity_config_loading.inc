@@ -231,6 +231,163 @@ static void load_thread_json_role_rule_config(cJSON* role_obj, ThreadJsonRoleRul
     out->enabled = !out->selectors.empty();
 }
 
+static void load_thread_json_compact_action_config(cJSON* action_obj, ThreadJsonAction* out) {
+    load_thread_json_action_config(action_obj, out);
+    if (!out || !action_obj || !cJSON_IsObject(action_obj)) return;
+    cJSON* rr = cJSON_GetObjectItem(action_obj, "rr");
+    if (rr && cJSON_IsNumber(rr)) {
+        out->has_scheduler = true;
+        out->sched_policy = THREAD_JSON_SCHED_RR;
+        out->sched_priority = rr->valueint;
+        out->fallback_to_other = true;
+        out->reset_on_background = true;
+    }
+    cJSON* fifo = cJSON_GetObjectItem(action_obj, "fifo");
+    if (fifo && cJSON_IsNumber(fifo)) {
+        out->has_scheduler = true;
+        out->sched_policy = THREAD_JSON_SCHED_FIFO;
+        out->sched_priority = fifo->valueint;
+        out->fallback_to_other = true;
+        out->reset_on_background = true;
+    }
+}
+
+static int thread_rule_dsl_infer_match_kind(const std::string& lowered_pattern) {
+    if (lowered_pattern.find('*') != std::string::npos ||
+        lowered_pattern.find('?') != std::string::npos) {
+        return THREAD_JSON_MATCH_GLOB;
+    }
+    return THREAD_JSON_MATCH_CONTAINS;
+}
+
+static bool thread_rule_dsl_parse_rank_suffix(const std::string& raw_pattern,
+                                              std::string* out_pattern,
+                                              int* out_rank_start,
+                                              int* out_rank_end) {
+    if (out_pattern) *out_pattern = raw_pattern;
+    if (out_rank_start) *out_rank_start = 0;
+    if (out_rank_end) *out_rank_end = 0;
+    size_t at_pos = raw_pattern.rfind('@');
+    if (at_pos == std::string::npos || at_pos == 0 || at_pos + 1 >= raw_pattern.size()) {
+        return false;
+    }
+    std::string suffix = trim_copy(raw_pattern.substr(at_pos + 1));
+    if (suffix.empty()) return false;
+    bool all_digits = true;
+    for (size_t i = 0; i < suffix.size(); i++) {
+        char ch = suffix[i];
+        if (!(isdigit((unsigned char)ch) || ch == '-')) {
+            all_digits = false;
+            break;
+        }
+    }
+    if (!all_digits) return false;
+    int rank_start = 0;
+    int rank_end = 0;
+    parse_thread_json_rank_range(suffix.c_str(), &rank_start, &rank_end);
+    if (rank_start <= 0) return false;
+    if (rank_end < rank_start) rank_end = rank_start;
+    if (out_pattern) *out_pattern = trim_copy(raw_pattern.substr(0, at_pos));
+    if (out_rank_start) *out_rank_start = rank_start;
+    if (out_rank_end) *out_rank_end = rank_end;
+    return true;
+}
+
+static void thread_rule_dsl_append_selector_pattern(ThreadJsonRoleRule* out_rule,
+                                                    const std::string& pattern) {
+    if (!out_rule) return;
+    std::string normalized_pattern = trim_copy(pattern);
+    int rank_start = 0;
+    int rank_end = 0;
+    thread_rule_dsl_parse_rank_suffix(normalized_pattern, &normalized_pattern, &rank_start, &rank_end);
+    bool force_exact = !normalized_pattern.empty() && normalized_pattern[0] == '=';
+    if (force_exact) {
+        normalized_pattern = trim_copy(normalized_pattern.substr(1));
+    }
+    std::string lowered_pattern = scheduler_to_lower_copy(normalized_pattern.c_str());
+    if (lowered_pattern.empty()) return;
+    ThreadJsonSelector selector = {};
+    selector.match_kind = force_exact ? THREAD_JSON_MATCH_EXACT :
+                          thread_rule_dsl_infer_match_kind(lowered_pattern);
+    selector.patterns.push_back(lowered_pattern);
+    if (rank_start > 0) {
+        selector.cpu_rank = rank_start == rank_end ? rank_start : 0;
+        selector.cpu_rank_start = rank_start;
+        selector.cpu_rank_end = rank_end;
+    }
+    out_rule->selectors.push_back(selector);
+}
+
+static void load_thread_json_compact_match_field(cJSON* obj, ThreadJsonRoleRule* out_rule) {
+    if (!obj || !out_rule) return;
+    cJSON* match = cJSON_GetObjectItem(obj, "match");
+    if (!match) return;
+    if (cJSON_IsString(match) && match->valuestring && match->valuestring[0]) {
+        thread_rule_dsl_append_selector_pattern(out_rule, trim_copy(match->valuestring));
+        return;
+    }
+    if (!cJSON_IsArray(match)) return;
+    cJSON* item = NULL;
+    cJSON_ArrayForEach(item, match) {
+        if (!cJSON_IsString(item) || !item->valuestring || !item->valuestring[0]) continue;
+        thread_rule_dsl_append_selector_pattern(out_rule, trim_copy(item->valuestring));
+    }
+}
+
+static bool load_thread_json_compact_role_rule_config(cJSON* role_obj,
+                                                      int role_kind,
+                                                      ThreadJsonRoleRule* out) {
+    if (!out || !role_obj || !cJSON_IsObject(role_obj)) return false;
+    *out = {};
+    load_thread_json_compact_match_field(role_obj, out);
+    cJSON* limit = cJSON_GetObjectItem(role_obj, "limit");
+    if (limit && cJSON_IsNumber(limit) && limit->valueint > 0) {
+        out->limit = limit->valueint;
+    }
+    load_thread_json_compact_action_config(role_obj, &out->action);
+    if (out->limit <= 0 &&
+        (role_kind == THREAD_JSON_ROLE_MAIN ||
+         role_kind == THREAD_JSON_ROLE_GFX ||
+         role_kind == THREAD_JSON_ROLE_RENDER)) {
+        out->limit = 1;
+    }
+    out->enabled = !out->selectors.empty();
+    return out->enabled || out->action.has_cpus || out->action.has_clusters ||
+           out->action.has_nice || out->action.has_scheduler;
+}
+
+static bool thread_rule_json_key_is_bracket_rule(const char* key) {
+    if (!key) return false;
+    const char* open = strchr(key, '[');
+    const char* close = strrchr(key, ']');
+    return open && close && close > open + 1;
+}
+
+static void load_thread_json_compact_alias_rule(const char* key,
+                                                cJSON* alias_obj,
+                                                ThreadJsonAppRule* out) {
+    if (!key || !alias_obj || !out || !cJSON_IsObject(alias_obj)) return;
+    const char* open = strchr(key, '[');
+    const char* close = strrchr(key, ']');
+    if (!open || !close || close <= open + 1) return;
+    std::string pattern = std::string(open + 1, (size_t)(close - open - 1));
+    pattern = trim_copy(pattern);
+    if (pattern.empty()) return;
+    ThreadJsonCustomRule custom_rule = {};
+    custom_rule.name = pattern;
+    custom_rule.rule.limit = 0;
+    thread_rule_dsl_append_selector_pattern(&custom_rule.rule, pattern);
+    cJSON* limit = cJSON_GetObjectItem(alias_obj, "limit");
+    if (limit && cJSON_IsNumber(limit) && limit->valueint > 0) {
+        custom_rule.rule.limit = limit->valueint;
+    }
+    load_thread_json_compact_action_config(alias_obj, &custom_rule.rule.action);
+    custom_rule.rule.enabled = !custom_rule.rule.selectors.empty();
+    if (custom_rule.rule.enabled) {
+        out->custom_rules.push_back(custom_rule);
+    }
+}
+
 static void load_thread_json_safety_config(cJSON* safety_obj, ThreadJsonSafetyConfig* out) {
     if (!out) return;
     memset(out, 0, sizeof(*out));
@@ -323,6 +480,15 @@ static void load_thread_json_app_rule_config(cJSON* app_obj, ThreadJsonAppRule* 
                                   out->default_action.has_scheduler;
     }
 
+    cJSON* compact_other = cJSON_GetObjectItem(app_obj, "other");
+    if (!out->has_default_action && compact_other && cJSON_IsObject(compact_other)) {
+        load_thread_json_compact_action_config(compact_other, &out->default_action);
+        out->has_default_action = out->default_action.has_clusters ||
+                                  out->default_action.has_cpus ||
+                                  out->default_action.has_nice ||
+                                  out->default_action.has_scheduler;
+    }
+
     cJSON* threads = cJSON_GetObjectItem(app_obj, "threads");
     if (threads && cJSON_IsObject(threads)) {
         static const struct {
@@ -359,6 +525,30 @@ static void load_thread_json_app_rule_config(cJSON* app_obj, ThreadJsonAppRule* 
                 }
             }
         }
+    }
+
+    static const struct {
+        const char* key;
+        int role;
+    } compact_role_map[] = {
+        {"main", THREAD_JSON_ROLE_MAIN},
+        {"gfx", THREAD_JSON_ROLE_GFX},
+        {"render", THREAD_JSON_ROLE_RENDER},
+        {"worker", THREAD_JSON_ROLE_WORKER}
+    };
+    for (size_t i = 0; i < sizeof(compact_role_map) / sizeof(compact_role_map[0]); i++) {
+        if (out->roles[compact_role_map[i].role].enabled) continue;
+        cJSON* role_obj = cJSON_GetObjectItem(app_obj, compact_role_map[i].key);
+        if (role_obj && cJSON_IsObject(role_obj)) {
+            load_thread_json_compact_role_rule_config(role_obj, compact_role_map[i].role,
+                                                      &out->roles[compact_role_map[i].role]);
+        }
+    }
+
+    cJSON* child = NULL;
+    cJSON_ArrayForEach(child, app_obj) {
+        if (!child->string || !thread_rule_json_key_is_bracket_rule(child->string)) continue;
+        load_thread_json_compact_alias_rule(child->string, child, out);
     }
 
     cJSON* safety = cJSON_GetObjectItem(app_obj, "safety");

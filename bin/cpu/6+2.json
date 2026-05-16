@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "apps": [
     {
       "friendly": "王者荣耀",
@@ -8,112 +8,11 @@
         "com.levelinfinite.sgameGlobal.midaspay",
         "com.levelinfinite.sgameGlobal"
       ],
-      "default_action": {
-        "cpus": "1-4"
-      },
-      "threads": {
-        "main": {
-          "selectors": [
-            {
-              "match": "contains",
-              "patterns": [
-                "unitymain",
-                "gamethread"
-              ]
-            }
-          ],
-          "limit": 1,
-          "action": {
-            "cpus": "6",
-            "nice": -10,
-            "scheduler": {
-              "policy": "fifo",
-              "priority": 1,
-              "fallback": "other",
-              "reset_on_background": true
-            }
-          }
-        },
-        "gfx": {
-          "selectors": [
-            {
-              "match": "contains",
-              "patterns": [
-                "unitygfx",
-                "gfxdevice"
-              ]
-            }
-          ],
-          "limit": 1,
-          "action": {
-            "cpus": "1-4",
-            "nice": -6,
-            "scheduler": {
-              "policy": "rr",
-              "priority": 10,
-              "fallback": "other",
-              "reset_on_background": true
-            }
-          }
-        },
-        "worker": {
-          "selectors": [
-            {
-              "match": "contains",
-              "patterns": [
-                "worker"
-              ]
-            }
-          ],
-          "limit": 3,
-          "action": {
-            "cpus": "4-5",
-            "nice": -2,
-            "scheduler": {
-              "policy": "rr",
-              "priority": 5,
-              "fallback": "other",
-              "reset_on_background": true
-            }
-          }
-        },
-        "custom": [
-          {
-            "name": "ThreadDash副核心",
-            "selectors": [
-              {
-                "match": "glob",
-                "patterns": [
-                  "thread-*"
-                ],
-                "cpu_rank": 1
-              }
-            ],
-            "limit": 1,
-            "action": {
-              "cpus": "1-4",
-              "nice": -2,
-              "scheduler": {
-                "policy": "rr",
-                "priority": 5,
-                "fallback": "other",
-                "reset_on_background": true
-              }
-            }
-          }
-        ]
-      },
-      "safety": {
-        "allow_rt": true,
-        "allow_fifo": true,
-        "rt_max_threads": 3,
-        "rt_priority_min": 1,
-        "rt_priority_max": 10,
-        "forbid_rt_roles": [
-          "download",
-          "other"
-        ]
-      }
+      "main": { "match": ["UnityMain"], "cpus": "6", "fifo": 1 },
+      "gfx": { "match": ["UnityGfx*"], "cpus": "1-4", "rr": 10 },
+      "worker": { "match": ["*worker*"], "limit": 3, "cpus": "4-5", "rr": 5 },
+      "extra:[Thread-*@1]": { "limit": 1, "cpus": "1-4", "rr": 5 },
+      "other": { "cpus": "1-4" }
     },
     {
       "friendly": "Unity主线程保底组",
@@ -123,87 +22,10 @@
         "com.Sunborn.SnqxExilium",
         "com.tencent.tmgp.speedmobile"
       ],
-      "default_action": {
-        "cpus": "1-4"
-      },
-      "threads": {
-        "main": {
-          "selectors": [
-            {
-              "match": "contains",
-              "patterns": [
-                "unitymain"
-              ]
-            }
-          ],
-          "limit": 1,
-          "action": {
-            "clusters": [
-              "big"
-            ],
-            "scheduler": {
-              "policy": "fifo",
-              "priority": 1,
-              "fallback": "other",
-              "reset_on_background": true
-            }
-          }
-        },
-        "gfx": {
-          "selectors": [
-            {
-              "match": "contains",
-              "patterns": [
-                "unitygfx",
-                "gfxdevice"
-              ]
-            }
-          ],
-          "limit": 1,
-          "action": {
-            "clusters": [
-              "big"
-            ],
-            "scheduler": {
-              "policy": "rr",
-              "priority": 10,
-              "fallback": "other",
-              "reset_on_background": true
-            }
-          }
-        },
-        "worker": {
-          "selectors": [
-            {
-              "match": "contains",
-              "patterns": [
-                "worker"
-              ]
-            }
-          ],
-          "limit": 3,
-          "action": {
-            "cpus": "4-5",
-            "scheduler": {
-              "policy": "rr",
-              "priority": 5,
-              "fallback": "other",
-              "reset_on_background": true
-            }
-          }
-        }
-      },
-      "safety": {
-        "allow_rt": true,
-        "allow_fifo": true,
-        "rt_max_threads": 3,
-        "rt_priority_min": 1,
-        "rt_priority_max": 10,
-        "forbid_rt_roles": [
-          "download",
-          "other"
-        ]
-      }
+      "main": { "match": ["UnityMain"], "clusters": ["big"], "fifo": 1 },
+      "gfx": { "match": ["UnityGfx*"], "clusters": ["big"], "rr": 10 },
+      "worker": { "match": ["*worker*"], "limit": 3, "cpus": "4-5", "rr": 5 },
+      "other": { "cpus": "1-4" }
     },
     {
       "friendly": "Unity重型三段",
@@ -218,260 +40,30 @@
         "com.dragonli.projectsnow.lhm",
         "com.miHoYo.Nap"
       ],
-      "default_action": {
-        "cpus": "1-4"
-      },
-      "threads": {
-        "main": {
-          "selectors": [
-            {
-              "match": "contains",
-              "patterns": [
-                "unitymain"
-              ]
-            }
-          ],
-          "limit": 1,
-          "action": {
-            "clusters": [
-              "big"
-            ],
-            "scheduler": {
-              "policy": "fifo",
-              "priority": 1,
-              "fallback": "other",
-              "reset_on_background": true
-            }
-          }
-        },
-        "gfx": {
-          "selectors": [
-            {
-              "match": "contains",
-              "patterns": [
-                "unitygfx",
-                "gfxdevice"
-              ]
-            }
-          ],
-          "limit": 1,
-          "action": {
-            "clusters": [
-              "big"
-            ],
-            "scheduler": {
-              "policy": "rr",
-              "priority": 10,
-              "fallback": "other",
-              "reset_on_background": true
-            }
-          }
-        },
-        "worker": {
-          "selectors": [
-            {
-              "match": "contains",
-              "patterns": [
-                "worker"
-              ]
-            }
-          ],
-          "limit": 3,
-          "action": {
-            "cpus": "4-5",
-            "scheduler": {
-              "policy": "rr",
-              "priority": 5,
-              "fallback": "other",
-              "reset_on_background": true
-            }
-          }
-        }
-      },
-      "safety": {
-        "allow_rt": true,
-        "allow_fifo": true,
-        "rt_max_threads": 3,
-        "rt_priority_min": 1,
-        "rt_priority_max": 10,
-        "forbid_rt_roles": [
-          "download",
-          "other"
-        ]
-      }
+      "main": { "match": ["UnityMain"], "clusters": ["big"], "fifo": 1 },
+      "gfx": { "match": ["UnityGfx*"], "clusters": ["big"], "rr": 10 },
+      "worker": { "match": ["*worker*"], "limit": 3, "cpus": "4-5", "rr": 5 },
+      "other": { "cpus": "1-4" }
     },
     {
       "friendly": "跑跑卡丁车",
       "packages": [
         "com.tencent.tmgp.WePop"
       ],
-      "default_action": {
-        "cpus": "1-4"
-      },
-      "threads": {
-        "main": {
-          "selectors": [
-            {
-              "match": "contains",
-              "patterns": [
-                "unitymain"
-              ]
-            }
-          ],
-          "limit": 1,
-          "action": {
-            "clusters": [
-              "big"
-            ],
-            "scheduler": {
-              "policy": "fifo",
-              "priority": 1,
-              "fallback": "other",
-              "reset_on_background": true
-            }
-          }
-        },
-        "custom": [
-          {
-            "name": "UnityChoreograp保底",
-            "selectors": [
-              {
-                "match": "contains",
-                "patterns": [
-                  "unitychoreograp"
-                ]
-              }
-            ],
-            "limit": 1,
-            "action": {
-              "clusters": [
-                "big"
-              ],
-              "scheduler": {
-                "policy": "rr",
-                "priority": 10,
-                "fallback": "other",
-                "reset_on_background": true
-              }
-            }
-          },
-          {
-            "name": "JobWorker中段",
-            "selectors": [
-              {
-                "match": "glob",
-                "patterns": [
-                  "job.worker*"
-                ]
-              }
-            ],
-            "limit": 3,
-            "action": {
-              "cpus": "4-5",
-              "scheduler": {
-                "policy": "rr",
-                "priority": 5,
-                "fallback": "other",
-                "reset_on_background": true
-              }
-            }
-          }
-        ]
-      },
-      "safety": {
-        "allow_rt": true,
-        "allow_fifo": true,
-        "rt_max_threads": 3,
-        "rt_priority_min": 1,
-        "rt_priority_max": 10,
-        "forbid_rt_roles": [
-          "download",
-          "other"
-        ]
-      }
+      "main": { "match": ["UnityMain"], "clusters": ["big"], "fifo": 1 },
+      "extra:[UnityChoreograp*]": { "limit": 1, "clusters": ["big"], "rr": 10 },
+      "extra:[Job.worker*]": { "limit": 3, "cpus": "4-5", "rr": 5 },
+      "other": { "cpus": "1-4" }
     },
     {
       "friendly": "元气骑士",
       "packages": [
         "com.ChillyRoom.DungeonShooter"
       ],
-      "default_action": {
-        "cpus": "1-4"
-      },
-      "threads": {
-        "main": {
-          "selectors": [
-            {
-              "match": "contains",
-              "patterns": [
-                "unitymain"
-              ]
-            }
-          ],
-          "limit": 1,
-          "action": {
-            "clusters": [
-              "big"
-            ],
-            "scheduler": {
-              "policy": "fifo",
-              "priority": 1,
-              "fallback": "other",
-              "reset_on_background": true
-            }
-          }
-        },
-        "gfx": {
-          "selectors": [
-            {
-              "match": "contains",
-              "patterns": [
-                "unitygfx"
-              ]
-            }
-          ],
-          "limit": 1,
-          "action": {
-            "clusters": [
-              "big"
-            ],
-            "scheduler": {
-              "policy": "rr",
-              "priority": 10,
-              "fallback": "other",
-              "reset_on_background": true
-            }
-          }
-        },
-        "custom": [
-          {
-            "name": "Thread1x1xb411中段",
-            "selectors": [
-              {
-                "match": "contains",
-                "patterns": [
-                  "thread 1x1xb411"
-                ]
-              }
-            ],
-            "limit": 1,
-            "action": {
-              "cpus": "4-5"
-            }
-          }
-        ]
-      },
-      "safety": {
-        "allow_rt": true,
-        "allow_fifo": true,
-        "rt_max_threads": 2,
-        "rt_priority_min": 1,
-        "rt_priority_max": 10,
-        "forbid_rt_roles": [
-          "download",
-          "other"
-        ]
-      }
+      "main": { "match": ["UnityMain"], "clusters": ["big"], "fifo": 1 },
+      "gfx": { "match": ["UnityGfx*"], "clusters": ["big"], "rr": 10 },
+      "extra:[Thread 1x1xb411]": { "limit": 1, "cpus": "4-5" },
+      "other": { "cpus": "1-4" }
     },
     {
       "friendly": "Unity主大核+Gfx中段",
@@ -498,130 +90,18 @@
         "com.sofunny.Sausage",
         "com.playmini.miniworld"
       ],
-      "default_action": {
-        "cpus": "1-4"
-      },
-      "threads": {
-        "main": {
-          "selectors": [
-            {
-              "match": "contains",
-              "patterns": [
-                "unitymain"
-              ]
-            }
-          ],
-          "limit": 1,
-          "action": {
-            "clusters": [
-              "big"
-            ],
-            "scheduler": {
-              "policy": "fifo",
-              "priority": 1,
-              "fallback": "other",
-              "reset_on_background": true
-            }
-          }
-        },
-        "gfx": {
-          "selectors": [
-            {
-              "match": "contains",
-              "patterns": [
-                "unitygfx",
-                "gfxdevice"
-              ]
-            }
-          ],
-          "limit": 1,
-          "action": {
-            "cpus": "4-5",
-            "scheduler": {
-              "policy": "rr",
-              "priority": 10,
-              "fallback": "other",
-              "reset_on_background": true
-            }
-          }
-        }
-      },
-      "safety": {
-        "allow_rt": true,
-        "allow_fifo": true,
-        "rt_max_threads": 2,
-        "rt_priority_min": 1,
-        "rt_priority_max": 10,
-        "forbid_rt_roles": [
-          "download",
-          "other"
-        ]
-      }
+      "main": { "match": ["UnityMain"], "clusters": ["big"], "fifo": 1 },
+      "gfx": { "match": ["UnityGfx*"], "cpus": "4-5", "rr": 10 },
+      "other": { "cpus": "1-4" }
     },
     {
       "friendly": "深空之眼",
       "packages": [
         "com.yongshi.tenojo.ys"
       ],
-      "default_action": {
-        "cpus": "1-4"
-      },
-      "threads": {
-        "main": {
-          "selectors": [
-            {
-              "match": "contains",
-              "patterns": [
-                "unitymain"
-              ]
-            }
-          ],
-          "limit": 1,
-          "action": {
-            "clusters": [
-              "big"
-            ],
-            "scheduler": {
-              "policy": "fifo",
-              "priority": 1,
-              "fallback": "other",
-              "reset_on_background": true
-            }
-          }
-        },
-        "gfx": {
-          "selectors": [
-            {
-              "match": "contains",
-              "patterns": [
-                "unitygfx",
-                "gfxdevice"
-              ]
-            }
-          ],
-          "limit": 1,
-          "action": {
-            "cpus": "4-5",
-            "scheduler": {
-              "policy": "rr",
-              "priority": 1,
-              "fallback": "other",
-              "reset_on_background": true
-            }
-          }
-        }
-      },
-      "safety": {
-        "allow_rt": true,
-        "allow_fifo": true,
-        "rt_max_threads": 2,
-        "rt_priority_min": 1,
-        "rt_priority_max": 10,
-        "forbid_rt_roles": [
-          "download",
-          "other"
-        ]
-      }
+      "main": { "match": ["UnityMain"], "clusters": ["big"], "fifo": 1 },
+      "gfx": { "match": ["UnityGfx*"], "cpus": "4-5", "rr": 10 },
+      "other": { "cpus": "1-4" }
     },
     {
       "friendly": "轻量Unity主大核+Gfx大核",
@@ -633,67 +113,9 @@
         "com.tencent.tmgp.cod",
         "com.bandainamcoent.idolmaster_gakuen"
       ],
-      "default_action": {
-        "cpus": "1-5"
-      },
-      "threads": {
-        "main": {
-          "selectors": [
-            {
-              "match": "contains",
-              "patterns": [
-                "unitymain"
-              ]
-            }
-          ],
-          "limit": 1,
-          "action": {
-            "clusters": [
-              "big"
-            ],
-            "scheduler": {
-              "policy": "fifo",
-              "priority": 1,
-              "fallback": "other",
-              "reset_on_background": true
-            }
-          }
-        },
-        "gfx": {
-          "selectors": [
-            {
-              "match": "contains",
-              "patterns": [
-                "unitygfx",
-                "gfxdevice"
-              ]
-            }
-          ],
-          "limit": 1,
-          "action": {
-            "clusters": [
-              "big"
-            ],
-            "scheduler": {
-              "policy": "rr",
-              "priority": 10,
-              "fallback": "other",
-              "reset_on_background": true
-            }
-          }
-        }
-      },
-      "safety": {
-        "allow_rt": true,
-        "allow_fifo": true,
-        "rt_max_threads": 2,
-        "rt_priority_min": 1,
-        "rt_priority_max": 10,
-        "forbid_rt_roles": [
-          "download",
-          "other"
-        ]
-      }
+      "main": { "match": ["UnityMain"], "clusters": ["big"], "fifo": 1 },
+      "gfx": { "match": ["UnityGfx*"], "clusters": ["big"], "rr": 10 },
+      "other": { "cpus": "1-5" }
     },
     {
       "friendly": "轻量主线程保底",
@@ -707,155 +129,25 @@
         "com.leiting.xian",
         "com.netease.lrs"
       ],
-      "default_action": {
-        "cpus": "1-5"
-      },
-      "threads": {
-        "main": {
-          "selectors": [
-            {
-              "match": "contains",
-              "patterns": [
-                "unitymain"
-              ]
-            }
-          ],
-          "limit": 1,
-          "action": {
-            "clusters": [
-              "big"
-            ],
-            "scheduler": {
-              "policy": "fifo",
-              "priority": 1,
-              "fallback": "other",
-              "reset_on_background": true
-            }
-          }
-        }
-      },
-      "safety": {
-        "allow_rt": true,
-        "allow_fifo": true,
-        "rt_max_threads": 1,
-        "rt_priority_min": 1,
-        "rt_priority_max": 10,
-        "forbid_rt_roles": [
-          "download",
-          "other"
-        ]
-      }
+      "main": { "match": ["UnityMain"], "clusters": ["big"], "fifo": 1 },
+      "other": { "cpus": "1-5" }
     },
     {
       "friendly": "第五人格",
       "packages": [
         "com.netease.dwrg.nearme.gamecenter"
       ],
-      "default_action": {
-        "cpus": "1-5"
-      },
-      "threads": {
-        "render": {
-          "selectors": [
-            {
-              "match": "glob",
-              "patterns": [
-                "*rthread*"
-              ]
-            }
-          ],
-          "limit": 1,
-          "action": {
-            "clusters": [
-              "big"
-            ],
-            "scheduler": {
-              "policy": "rr",
-              "priority": 1,
-              "fallback": "other",
-              "reset_on_background": true
-            }
-          }
-        }
-      },
-      "safety": {
-        "allow_rt": true,
-        "allow_fifo": false,
-        "rt_max_threads": 1,
-        "rt_priority_min": 1,
-        "rt_priority_max": 10,
-        "forbid_rt_roles": [
-          "download",
-          "other"
-        ]
-      }
+      "render": { "match": ["*rthread*"], "clusters": ["big"], "rr": 1 },
+      "other": { "cpus": "1-5" }
     },
     {
       "friendly": "和平精英国服",
       "packages": [
         "com.tencent.tmgp.pubgmhd"
       ],
-      "default_action": {
-        "cpus": "1-5"
-      },
-      "threads": {
-        "main": {
-          "selectors": [
-            {
-              "match": "glob",
-              "patterns": [
-                "thread-*"
-              ],
-              "cpu_rank_range": "1-2"
-            }
-          ],
-          "limit": 2,
-          "action": {
-            "clusters": [
-              "big"
-            ],
-            "scheduler": {
-              "policy": "rr",
-              "priority": 10,
-              "fallback": "other",
-              "reset_on_background": true
-            }
-          }
-        },
-        "render": {
-          "selectors": [
-            {
-              "match": "glob",
-              "patterns": [
-                "*rthread*"
-              ]
-            }
-          ],
-          "limit": 1,
-          "action": {
-            "clusters": [
-              "big"
-            ],
-            "scheduler": {
-              "policy": "rr",
-              "priority": 1,
-              "fallback": "other",
-              "reset_on_background": true
-            }
-          }
-        }
-      },
-      "safety": {
-        "allow_rt": true,
-        "allow_fifo": false,
-        "rt_max_threads": 3,
-        "rt_priority_min": 1,
-        "rt_priority_max": 10,
-        "forbid_rt_roles": [
-          "download",
-          "other"
-        ]
-      }
+      "main": { "match": ["Thread-[0-20]"], "limit": 2, "clusters": ["big"], "rr": 10 },
+      "render": { "match": ["*rthread*"], "clusters": ["big"], "rr": 1 },
+      "other": { "cpus": "1-5" }
     },
     {
       "friendly": "PUBG海外系",
@@ -863,73 +155,9 @@
         "com.pubg.krmobile",
         "com.tencent.ig"
       ],
-      "default_action": {
-        "cpus": "1-5"
-      },
-      "threads": {
-        "main": {
-          "selectors": [
-            {
-              "match": "contains",
-              "patterns": [
-                "gamethread"
-              ]
-            },
-            {
-              "match": "glob",
-              "patterns": [
-                "thread-*"
-              ],
-              "cpu_rank": 1
-            }
-          ],
-          "limit": 1,
-          "action": {
-            "clusters": [
-              "big"
-            ],
-            "scheduler": {
-              "policy": "fifo",
-              "priority": 1,
-              "fallback": "other",
-              "reset_on_background": true
-            }
-          }
-        },
-        "render": {
-          "selectors": [
-            {
-              "match": "glob",
-              "patterns": [
-                "*rthread*"
-              ]
-            }
-          ],
-          "limit": 1,
-          "action": {
-            "clusters": [
-              "big"
-            ],
-            "scheduler": {
-              "policy": "rr",
-              "priority": 10,
-              "fallback": "other",
-              "reset_on_background": true
-            }
-          }
-        }
-      },
-      "safety": {
-        "allow_rt": true,
-        "allow_fifo": true,
-        "rt_max_threads": 2,
-        "rt_priority_min": 1,
-        "rt_priority_max": 10,
-        "forbid_rt_roles": [
-          "download",
-          "other"
-        ]
-      }
+      "main": { "match": ["GameThread", "Thread-[0-20]"], "clusters": ["big"], "fifo": 1 },
+      "render": { "match": ["*rthread*"], "clusters": ["big"], "rr": 10 },
+      "other": { "cpus": "1-5" }
     },
     {
       "friendly": "高占用Thread型",
@@ -941,67 +169,9 @@
         "com.tencent.mf.uam",
         "com.netease.race"
       ],
-      "default_action": {
-        "cpus": "1-5"
-      },
-      "threads": {
-        "render": {
-          "selectors": [
-            {
-              "match": "glob",
-              "patterns": [
-                "*rthread*"
-              ]
-            }
-          ],
-          "limit": 1,
-          "action": {
-            "clusters": [
-              "big"
-            ],
-            "scheduler": {
-              "policy": "rr",
-              "priority": 5,
-              "fallback": "other",
-              "reset_on_background": true
-            }
-          }
-        },
-        "worker": {
-          "selectors": [
-            {
-              "match": "glob",
-              "patterns": [
-                "*thread-*",
-                "*thread*"
-              ]
-            }
-          ],
-          "limit": 2,
-          "action": {
-            "clusters": [
-              "big"
-            ],
-            "scheduler": {
-              "policy": "rr",
-              "priority": 10,
-              "fallback": "other",
-              "reset_on_background": true
-            }
-          }
-        }
-      },
-      "safety": {
-        "allow_rt": true,
-        "allow_fifo": false,
-        "rt_max_threads": 3,
-        "rt_priority_min": 1,
-        "rt_priority_max": 10,
-        "forbid_rt_roles": [
-          "download",
-          "other"
-        ]
-      }
+      "render": { "match": ["*rthread*"], "clusters": ["big"], "rr": 5 },
+      "worker": { "match": ["*thread*"], "limit": 2, "clusters": ["big"], "rr": 10 },
+      "other": { "cpus": "1-5" }
     },
     {
       "friendly": "高占用Thread型-渲染更保守",
@@ -1011,340 +181,46 @@
         "com.tencent.tmgp.dfm",
         "com.netease.yyslscn"
       ],
-      "default_action": {
-        "cpus": "1-5"
-      },
-      "threads": {
-        "render": {
-          "selectors": [
-            {
-              "match": "glob",
-              "patterns": [
-                "*rthread*"
-              ]
-            }
-          ],
-          "limit": 1,
-          "action": {
-            "clusters": [
-              "big"
-            ],
-            "scheduler": {
-              "policy": "rr",
-              "priority": 1,
-              "fallback": "other",
-              "reset_on_background": true
-            }
-          }
-        },
-        "worker": {
-          "selectors": [
-            {
-              "match": "glob",
-              "patterns": [
-                "*thread-*",
-                "*thread*"
-              ]
-            }
-          ],
-          "limit": 2,
-          "action": {
-            "clusters": [
-              "big"
-            ],
-            "scheduler": {
-              "policy": "rr",
-              "priority": 10,
-              "fallback": "other",
-              "reset_on_background": true
-            }
-          }
-        }
-      },
-      "safety": {
-        "allow_rt": true,
-        "allow_fifo": false,
-        "rt_max_threads": 3,
-        "rt_priority_min": 1,
-        "rt_priority_max": 10,
-        "forbid_rt_roles": [
-          "download",
-          "other"
-        ]
-      }
+      "render": { "match": ["*rthread*"], "clusters": ["big"], "rr": 1 },
+      "worker": { "match": ["*thread*"], "limit": 2, "clusters": ["big"], "rr": 10 },
+      "other": { "cpus": "1-5" }
     },
     {
       "friendly": "极品飞车集结",
       "packages": [
         "com.tencent.nfsonline"
       ],
-      "default_action": {
-        "cpus": "1-4"
-      },
-      "threads": {
-        "main": {
-          "selectors": [
-            {
-              "match": "contains",
-              "patterns": [
-                "unitymain"
-              ]
-            }
-          ],
-          "limit": 1,
-          "action": {
-            "clusters": [
-              "big"
-            ],
-            "scheduler": {
-              "policy": "fifo",
-              "priority": 1,
-              "fallback": "other",
-              "reset_on_background": true
-            }
-          }
-        },
-        "gfx": {
-          "selectors": [
-            {
-              "match": "contains",
-              "patterns": [
-                "unitygfx",
-                "gfxdevice"
-              ]
-            }
-          ],
-          "limit": 1,
-          "action": {
-            "cpus": "4-5",
-            "scheduler": {
-              "policy": "rr",
-              "priority": 10,
-              "fallback": "other",
-              "reset_on_background": true
-            }
-          }
-        },
-        "render": {
-          "selectors": [
-            {
-              "match": "glob",
-              "patterns": [
-                "*rthread*"
-              ]
-            }
-          ],
-          "limit": 1,
-          "action": {
-            "clusters": [
-              "big"
-            ],
-            "scheduler": {
-              "policy": "rr",
-              "priority": 1,
-              "fallback": "other",
-              "reset_on_background": true
-            }
-          }
-        },
-        "worker": {
-          "selectors": [
-            {
-              "match": "glob",
-              "patterns": [
-                "*thread*"
-              ]
-            }
-          ],
-          "limit": 2,
-          "action": {
-            "clusters": [
-              "big"
-            ],
-            "scheduler": {
-              "policy": "rr",
-              "priority": 10,
-              "fallback": "other",
-              "reset_on_background": true
-            }
-          }
-        }
-      },
-      "safety": {
-        "allow_rt": true,
-        "allow_fifo": true,
-        "rt_max_threads": 4,
-        "rt_priority_min": 1,
-        "rt_priority_max": 10,
-        "forbid_rt_roles": [
-          "download",
-          "other"
-        ]
-      }
+      "main": { "match": ["UnityMain"], "clusters": ["big"], "fifo": 1 },
+      "gfx": { "match": ["UnityGfx*"], "cpus": "4-5", "rr": 10 },
+      "render": { "match": ["*rthread*"], "clusters": ["big"], "rr": 1 },
+      "worker": { "match": ["*thread*"], "limit": 2, "clusters": ["big"], "rr": 10 },
+      "other": { "cpus": "1-4" }
     },
     {
       "friendly": "无畏契约手游",
       "packages": [
         "com.tencent.tmgp.codev"
       ],
-      "default_action": {
-        "cpus": "1-5"
-      },
-      "threads": {
-        "worker": {
-          "selectors": [
-            {
-              "match": "glob",
-              "patterns": [
-                "*thread*"
-              ]
-            }
-          ],
-          "limit": 2,
-          "action": {
-            "clusters": [
-              "big"
-            ],
-            "scheduler": {
-              "policy": "rr",
-              "priority": 10,
-              "fallback": "other",
-              "reset_on_background": true
-            }
-          }
-        }
-      },
-      "safety": {
-        "allow_rt": true,
-        "allow_fifo": false,
-        "rt_max_threads": 2,
-        "rt_priority_min": 1,
-        "rt_priority_max": 10,
-        "forbid_rt_roles": [
-          "download",
-          "other"
-        ]
-      }
+      "worker": { "match": ["*thread*"], "limit": 2, "clusters": ["big"], "rr": 10 },
+      "other": { "cpus": "1-5" }
     },
     {
       "friendly": "洛克王国世界",
       "packages": [
         "com.tencent.nrc"
       ],
-      "default_action": {
-        "cpus": "0-5"
-      },
-      "threads": {
-        "worker": {
-          "selectors": [
-            {
-              "match": "glob",
-              "patterns": [
-                "*thread*"
-              ]
-            }
-          ],
-          "limit": 2,
-          "action": {
-            "clusters": [
-              "big"
-            ],
-            "scheduler": {
-              "policy": "rr",
-              "priority": 10,
-              "fallback": "other",
-              "reset_on_background": true
-            }
-          }
-        },
-        "custom": [
-          {
-            "name": "Task线程中段",
-            "selectors": [
-              {
-                "match": "glob",
-                "patterns": [
-                  "task*"
-                ]
-              }
-            ],
-            "limit": 2,
-            "action": {
-              "cpus": "4-5"
-            }
-          },
-          {
-            "name": "Loading线程下放",
-            "selectors": [
-              {
-                "match": "glob",
-                "patterns": [
-                  "*loading"
-                ]
-              }
-            ],
-            "limit": 2,
-            "action": {
-              "cpus": "1-4"
-            }
-          }
-        ]
-      },
-      "safety": {
-        "allow_rt": true,
-        "allow_fifo": false,
-        "rt_max_threads": 2,
-        "rt_priority_min": 1,
-        "rt_priority_max": 10,
-        "forbid_rt_roles": [
-          "download",
-          "other"
-        ]
-      }
+      "worker": { "match": ["*thread*"], "limit": 2, "clusters": ["big"], "rr": 10 },
+      "extra:[task*]": { "limit": 2, "cpus": "4-5" },
+      "extra:[*loading]": { "limit": 2, "cpus": "1-4" },
+      "other": { "cpus": "0-5" }
     },
     {
       "friendly": "异环",
       "packages": [
         "com.hottagames.yh.laohu"
       ],
-      "default_action": {
-        "cpus": "1-5"
-      },
-      "threads": {
-        "worker": {
-          "selectors": [
-            {
-              "match": "glob",
-              "patterns": [
-                "*thread"
-              ]
-            }
-          ],
-          "limit": 2,
-          "action": {
-            "clusters": [
-              "big"
-            ],
-            "scheduler": {
-              "policy": "rr",
-              "priority": 10,
-              "fallback": "other",
-              "reset_on_background": true
-            }
-          }
-        }
-      },
-      "safety": {
-        "allow_rt": true,
-        "allow_fifo": false,
-        "rt_max_threads": 2,
-        "rt_priority_min": 1,
-        "rt_priority_max": 10,
-        "forbid_rt_roles": [
-          "download",
-          "other"
-        ]
-      }
+      "worker": { "match": ["*thread"], "limit": 2, "clusters": ["big"], "rr": 10 },
+      "other": { "cpus": "1-5" }
     },
     {
       "friendly": "前台轻应用-小核优先",
@@ -1355,25 +231,7 @@
         "com.dragon.read",
         "io.legado.app.release"
       ],
-      "default_action": {
-        "cpus": "1-3"
-      },
-      "threads": {},
-      "safety": {
-        "allow_rt": false,
-        "allow_fifo": false,
-        "rt_max_threads": 0,
-        "rt_priority_min": 1,
-        "rt_priority_max": 1,
-        "forbid_rt_roles": [
-          "main",
-          "gfx",
-          "render",
-          "worker",
-          "download",
-          "other"
-        ]
-      }
+      "other": { "cpus": "1-3" }
     },
     {
       "friendly": "前台轻应用-线程突发",
@@ -1394,66 +252,18 @@
         "com.eg.android.AlipayGphone",
         "com.tencent.mobileqq"
       ],
-      "default_action": {
-        "cpus": "1-3"
-      },
-      "threads": {
-        "worker": {
-          "selectors": [
-            {
-              "match": "glob",
-              "patterns": [
-                "*thread*"
-              ]
-            }
-          ],
-          "limit": 2,
-          "action": {
-            "cpus": "6-7"
-          }
-        },
-        "custom": [
-          {
-            "name": "Binder与常驻中段",
-            "selectors": [
-              {
-                "match": "contains",
-                "patterns": [
-                  "binder",
-                  ".coolapk.market",
-                  "glide-source-th",
-                  "platform-single",
-                  "runnerwrapper_8",
-                  "jdfiledownloade",
-                  "jit thread pool",
-                  "doraemon-proces",
-                  "mediacodec_",
-                  "ijk_external_re"
-                ]
-              }
-            ],
-            "limit": 6,
-            "action": {
-              "cpus": "1-5"
-            }
-          }
-        ]
-      },
-      "safety": {
-        "allow_rt": false,
-        "allow_fifo": false,
-        "rt_max_threads": 0,
-        "rt_priority_min": 1,
-        "rt_priority_max": 1,
-        "forbid_rt_roles": [
-          "main",
-          "gfx",
-          "render",
-          "worker",
-          "download",
-          "other"
-        ]
-      }
+      "worker": { "match": ["*thread*"], "limit": 2, "cpus": "6-7" },
+      "extra:[binder]": { "limit": 6, "cpus": "1-5" },
+      "extra:[.coolapk.market]": { "limit": 6, "cpus": "1-5" },
+      "extra:[glide-source-th]": { "limit": 6, "cpus": "1-5" },
+      "extra:[platform-single]": { "limit": 6, "cpus": "1-5" },
+      "extra:[runnerwrapper_8]": { "limit": 6, "cpus": "1-5" },
+      "extra:[jdfiledownloade]": { "limit": 6, "cpus": "1-5" },
+      "extra:[jit thread pool]": { "limit": 6, "cpus": "1-5" },
+      "extra:[doraemon-proces]": { "limit": 6, "cpus": "1-5" },
+      "extra:[mediacodec_]": { "limit": 6, "cpus": "1-5" },
+      "extra:[ijk_external_re]": { "limit": 6, "cpus": "1-5" },
+      "other": { "cpus": "1-3" }
     },
     {
       "friendly": "前台轻应用-专项中段",
@@ -1463,126 +273,28 @@
         "com.autonavi.minimap",
         "com.tencent.mm"
       ],
-      "default_action": {
-        "cpus": "1-3"
-      },
-      "threads": {
-        "custom": [
-          {
-            "name": "专项中段线程",
-            "selectors": [
-              {
-                "match": "contains",
-                "patterns": [
-                  "heaptaskdaemon",
-                  "videodec_",
-                  "weexjsbridgeth",
-                  "javascriptthrea",
-                  "map-logical",
-                  "utonavi.minimap",
-                  "com.tencent.mm",
-                  "default_matrix_",
-                  "binder"
-                ]
-              }
-            ],
-            "limit": 8,
-            "action": {
-              "cpus": "1-5"
-            }
-          }
-        ]
-      },
-      "safety": {
-        "allow_rt": false,
-        "allow_fifo": false,
-        "rt_max_threads": 0,
-        "rt_priority_min": 1,
-        "rt_priority_max": 1,
-        "forbid_rt_roles": [
-          "main",
-          "gfx",
-          "render",
-          "worker",
-          "download",
-          "other"
-        ]
-      }
+      "extra:[heaptaskdaemon]": { "limit": 8, "cpus": "1-5" },
+      "extra:[videodec_]": { "limit": 8, "cpus": "1-5" },
+      "extra:[weexjsbridgeth]": { "limit": 8, "cpus": "1-5" },
+      "extra:[javascriptthrea]": { "limit": 8, "cpus": "1-5" },
+      "extra:[map-logical]": { "limit": 8, "cpus": "1-5" },
+      "extra:[utonavi.minimap]": { "limit": 8, "cpus": "1-5" },
+      "extra:[com.tencent.mm]": { "limit": 8, "cpus": "1-5" },
+      "extra:[default_matrix_]": { "limit": 8, "cpus": "1-5" },
+      "extra:[binder]": { "limit": 8, "cpus": "1-5" },
+      "other": { "cpus": "1-3" }
     },
     {
       "friendly": "前台短视频",
       "packages": [
         "com.ss.android.ugc.aweme"
       ],
-      "default_action": {
-        "cpus": "1-3"
-      },
-      "threads": {
-        "render": {
-          "selectors": [
-            {
-              "match": "glob",
-              "patterns": [
-                "*rthread*",
-                "*vdecod*"
-              ]
-            }
-          ],
-          "limit": 2,
-          "action": {
-            "cpus": "6-7"
-          }
-        },
-        "custom": [
-          {
-            "name": "音频与堆任务中段",
-            "selectors": [
-              {
-                "match": "contains",
-                "patterns": [
-                  "audiotrack",
-                  "heaptaskdaemon"
-                ]
-              }
-            ],
-            "limit": 4,
-            "action": {
-              "cpus": "1-5"
-            }
-          },
-          {
-            "name": "编解码回落中段",
-            "selectors": [
-              {
-                "match": "contains",
-                "patterns": [
-                  "codec",
-                  "#pty-"
-                ]
-              }
-            ],
-            "limit": 4,
-            "action": {
-              "cpus": "1-4"
-            }
-          }
-        ]
-      },
-      "safety": {
-        "allow_rt": false,
-        "allow_fifo": false,
-        "rt_max_threads": 0,
-        "rt_priority_min": 1,
-        "rt_priority_max": 1,
-        "forbid_rt_roles": [
-          "main",
-          "gfx",
-          "render",
-          "worker",
-          "download",
-          "other"
-        ]
-      }
+      "render": { "match": ["*rthread*", "*vdecod*"], "limit": 2, "cpus": "6-7" },
+      "extra:[audiotrack]": { "limit": 4, "cpus": "1-5" },
+      "extra:[heaptaskdaemon]": { "limit": 4, "cpus": "1-5" },
+      "extra:[codec]": { "limit": 4, "cpus": "1-4" },
+      "extra:[#pty-]": { "limit": 4, "cpus": "1-4" },
+      "other": { "cpus": "1-3" }
     },
     {
       "friendly": "SurfaceFlinger常驻",
@@ -1590,115 +302,13 @@
       "packages": [
         "surfaceflinger"
       ],
-      "default_action": {
-        "cpus": "0-5"
-      },
-      "threads": {
-        "custom": [
-          {
-            "name": "RenderEngine顶簇",
-            "selectors": [
-              {
-                "match": "exact",
-                "patterns": [
-                  "renderengine"
-                ]
-              }
-            ],
-            "limit": 1,
-            "action": {
-              "clusters": [
-                "top"
-              ],
-              "scheduler": {
-                "policy": "fifo",
-                "priority": 10,
-                "fallback": "other",
-                "reset_on_background": true
-              }
-            }
-          },
-          {
-            "name": "主循环顶簇",
-            "selectors": [
-              {
-                "match": "exact",
-                "patterns": [
-                  "surfaceflinger"
-                ]
-              }
-            ],
-            "limit": 1,
-            "action": {
-              "clusters": [
-                "top"
-              ],
-              "scheduler": {
-                "policy": "fifo",
-                "priority": 5,
-                "fallback": "other",
-                "reset_on_background": true
-              }
-            }
-          },
-          {
-            "name": "SF热点线程顶簇",
-            "selectors": [
-              {
-                "match": "glob",
-                "patterns": [
-                  "sf*",
-                  "*sync*",
-                  "app*"
-                ]
-              }
-            ],
-            "limit": 4,
-            "action": {
-              "clusters": [
-                "top"
-              ],
-              "scheduler": {
-                "policy": "fifo",
-                "priority": 10,
-                "fallback": "other",
-                "reset_on_background": true
-              }
-            }
-          },
-          {
-            "name": "Binder回落",
-            "selectors": [
-              {
-                "match": "glob",
-                "patterns": [
-                  "binder:*"
-                ]
-              }
-            ],
-            "limit": 8,
-            "action": {
-              "cpus": "0-5",
-              "scheduler": {
-                "policy": "other",
-                "fallback": "other",
-                "reset_on_background": true
-              }
-            }
-          }
-        ]
-      },
-      "safety": {
-        "allow_rt": true,
-        "allow_fifo": true,
-        "rt_max_threads": 4,
-        "rt_priority_min": 1,
-        "rt_priority_max": 10,
-        "forbid_rt_roles": [
-          "download",
-          "other"
-        ]
-      }
+      "extra:[=renderengine]": { "limit": 1, "clusters": ["top"], "fifo": 10 },
+      "extra:[=surfaceflinger]": { "limit": 1, "clusters": ["top"], "fifo": 5 },
+      "extra:[sf*]": { "limit": 4, "clusters": ["top"], "fifo": 10 },
+      "extra:[*sync*]": { "limit": 4, "clusters": ["top"], "fifo": 10 },
+      "extra:[app*]": { "limit": 4, "clusters": ["top"], "fifo": 10 },
+      "extra:[binder:*]": { "limit": 8, "cpus": "0-5" },
+      "other": { "cpus": "0-5" }
     },
     {
       "friendly": "显示Composer常驻",
@@ -1707,62 +317,9 @@
         "vendor.qti.hardware.display.composer-service",
         "android.hardware.graphics.composer3-service"
       ],
-      "default_action": {
-        "cpus": "0-5"
-      },
-      "threads": {
-        "custom": [
-          {
-            "name": "RenderEngine顶簇",
-            "selectors": [
-              {
-                "match": "exact",
-                "patterns": [
-                  "renderengine"
-                ]
-              }
-            ],
-            "limit": 1,
-            "action": {
-              "clusters": [
-                "top"
-              ]
-            }
-          },
-          {
-            "name": "ReceiveThread顶簇",
-            "selectors": [
-              {
-                "match": "exact",
-                "patterns": [
-                  "receivethread"
-                ]
-              }
-            ],
-            "limit": 1,
-            "action": {
-              "clusters": [
-                "top"
-              ]
-            }
-          }
-        ]
-      },
-      "safety": {
-        "allow_rt": false,
-        "allow_fifo": false,
-        "rt_max_threads": 0,
-        "rt_priority_min": 1,
-        "rt_priority_max": 1,
-        "forbid_rt_roles": [
-          "main",
-          "gfx",
-          "render",
-          "worker",
-          "download",
-          "other"
-        ]
-      }
+      "extra:[=renderengine]": { "limit": 1, "clusters": ["top"] },
+      "extra:[=receivethread]": { "limit": 1, "clusters": ["top"] },
+      "other": { "cpus": "0-5" }
     }
   ]
 }

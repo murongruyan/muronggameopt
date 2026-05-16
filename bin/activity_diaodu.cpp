@@ -39,28 +39,10 @@ struct ring_buffer_opts {
     size_t sz;
 };
 
-enum probe_attach_mode {
-    PROBE_ATTACH_MODE_DEFAULT = 0,
-};
-
-struct bpf_uprobe_opts {
-    size_t sz;
-    size_t ref_ctr_offset;
-    uint64_t bpf_cookie;
-    bool retprobe;
-    const char* func_name;
-    probe_attach_mode attach_mode;
-};
-
 extern "C" {
 struct bpf_program* bpf_object__next_program(const struct bpf_object* obj, struct bpf_program* prev);
 const char* bpf_program__name(const struct bpf_program* prog);
 const char* bpf_program__section_name(const struct bpf_program* prog);
-struct bpf_link* bpf_program__attach_uprobe_opts(const struct bpf_program* prog,
-                                                 int pid,
-                                                 const char* binary_path,
-                                                 size_t func_offset,
-                                                 const struct bpf_uprobe_opts* opts);
 struct ring_buffer* ring_buffer__new(int map_fd,
                                      ring_buffer_sample_fn sample_cb,
                                      void* ctx,
@@ -269,7 +251,7 @@ static std::vector<SceneCategoryRule> g_scene_category_rules;
 
 typedef struct {
     bool scheduler_master_enabled;
-    bool dynamic_thread_scheduler_enabled;
+    bool bpf_thread_enabled;
     bool scene_category_enabled;
     bool base_profile_enabled;
 } RuntimeFeatureSwitches;
@@ -486,7 +468,7 @@ void set_stune_topapp(int prefer_idle, int boost, mode_t pre_perm, mode_t post_p
 void log_debug_message(const char* message);
 void load_scene_categories_config();
 static long long get_current_time_ms();
-bool is_dynamic_thread_scheduler_enabled_for_app(const char* package);
+bool is_bpf_thread_enabled_for_app(const char* package);
 static bool execute_command_all(const char* cmd, std::string& out);
 static std::string trim_copy(const std::string& text);
 static std::string scheduler_to_lower_copy(const char* text);
@@ -579,7 +561,7 @@ static const SceneCategoryRule* find_scene_category_rule_global(const char* pack
 
 static RuntimeFeatureSwitches normalize_runtime_feature_switches(RuntimeFeatureSwitches switches) {
     if (!switches.scheduler_master_enabled) {
-        switches.dynamic_thread_scheduler_enabled = false;
+        switches.bpf_thread_enabled = false;
         switches.scene_category_enabled = false;
         switches.base_profile_enabled = false;
     }
@@ -612,14 +594,14 @@ static RuntimeFeatureSwitches resolve_runtime_feature_switches_for_app(const cha
         return switches;
     }
     if (is_scheduler_control_panel_package(package)) {
-        switches.dynamic_thread_scheduler_enabled = false;
+        switches.bpf_thread_enabled = false;
         return normalize_runtime_feature_switches(switches);
     }
     return normalize_runtime_feature_switches(switches);
 }
 
-bool is_dynamic_thread_scheduler_enabled_for_app(const char* package) {
-    return resolve_runtime_feature_switches_for_app(package).dynamic_thread_scheduler_enabled;
+bool is_bpf_thread_enabled_for_app(const char* package) {
+    return resolve_runtime_feature_switches_for_app(package).bpf_thread_enabled;
 }
 
 static int freq_table_load(int policy_num, FreqTable* table) {
@@ -1343,7 +1325,6 @@ int process_foreground_app(const char* current_app, char* last_app) {
 
         UnifiedScheduler::notify_foreground_app_changed(current_app);
         UnifiedScheduler::refresh_bpf_targets_now();
-
         if (g_dyn_params.debug_log) {
             char log_msg[512];
             safe_snprintf(log_msg, sizeof(log_msg),
@@ -1352,10 +1333,10 @@ int process_foreground_app(const char* current_app, char* last_app) {
             log_debug_message(log_msg);
             RuntimeFeatureSwitches app_features = resolve_runtime_feature_switches_for_app(current_app);
             safe_snprintf(log_msg, sizeof(log_msg),
-                          "应用功能开关 | app:%s | master:%d | dynamic_thread:%d | scene:%d | base:%d",
+                          "应用功能开关 | app:%s | master:%d | bpf_thread:%d | scene:%d | base:%d",
                           current_app,
                           app_features.scheduler_master_enabled ? 1 : 0,
-                          app_features.dynamic_thread_scheduler_enabled ? 1 : 0,
+                          app_features.bpf_thread_enabled ? 1 : 0,
                           app_features.scene_category_enabled ? 1 : 0,
                           app_features.base_profile_enabled ? 1 : 0);
             log_debug_message(log_msg);

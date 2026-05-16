@@ -90,23 +90,21 @@ static void* runtime_monitor_thread(void* arg) {
     (void)arg;
     while (!g_runtime_thread_stop.load()) {
         if (should_pause_our_game_scheduler()) {
-            // 【关键修复】如果被官调挂起，彻底清理我们的痕迹，防止 0.4W 的后台鬼火漏电
             std::lock_guard<std::mutex> lock(g_mutex);
-            detach_frame_probe_locked(); // 停止额外采样轮询
+            detach_frame_probe_locked();
             if (!g_threads.empty()) {
-                // 释放所有被我们绑过核的线程，让官调完全接管
                 restore_all_thread_runtime_adjustments_locked("paused_by_scheduler_conflict");
                 clear_thread_runtime_map_locked();
                 clear_target_tid_map_locked();
             }
-            usleep(1000 * 1000); // 挂起时降低轮询频率到 1 秒
+            usleep(1000 * 1000);
             continue;
         }
         {
             std::lock_guard<std::mutex> lock(g_mutex);
             refresh_foreground_pid_locked(false);
             detach_frame_probe_locked();
-            if (is_dynamic_thread_scheduler_enabled_for_app(g_foreground_package)) {
+            if (is_bpf_thread_enabled_for_app(g_foreground_package)) {
                 sync_target_tgid_locked();
                 poll_process_event_ring_locked();
                 collect_foreground_threads_locked();
@@ -115,7 +113,7 @@ static void* runtime_monitor_thread(void* arg) {
             } else {
                 if (!g_threads.empty()) {
                     restore_all_thread_runtime_adjustments_locked(
-                        "dynamic_thread_scheduler_disabled");
+                        "bpf_thread_disabled");
                     clear_thread_runtime_map_locked();
                     clear_target_tid_map_locked();
                 }
@@ -140,14 +138,14 @@ void refresh_bpf_targets_now() {
     std::lock_guard<std::mutex> lock(g_mutex);
     refresh_foreground_pid_locked(true);
     detach_frame_probe_locked();
-    if (is_dynamic_thread_scheduler_enabled_for_app(g_foreground_package)) {
+    if (is_bpf_thread_enabled_for_app(g_foreground_package)) {
         sync_target_tgid_locked();
         poll_process_event_ring_locked();
         collect_foreground_threads_locked();
         sync_render_thread_targets_locked(true);
     } else {
         if (!g_threads.empty()) {
-            restore_all_thread_runtime_adjustments_locked("dynamic_thread_scheduler_disabled");
+            restore_all_thread_runtime_adjustments_locked("bpf_thread_disabled");
             clear_thread_runtime_map_locked();
             clear_target_tid_map_locked();
         }
@@ -206,11 +204,12 @@ void run_scheduler_step() {
     if (should_pause_our_game_scheduler()) {
         return;
     }
-    if (!is_dynamic_thread_scheduler_enabled_for_app(g_current_foreground_app)) {
+
+    if (!is_bpf_thread_enabled_for_app(g_current_foreground_app)) {
         std::lock_guard<std::mutex> lock(g_mutex);
         clear_performance_boosts();
         if (!g_threads.empty()) {
-            restore_all_thread_runtime_adjustments_locked("dynamic_thread_scheduler_disabled");
+            restore_all_thread_runtime_adjustments_locked("bpf_thread_disabled");
         }
         return;
     }

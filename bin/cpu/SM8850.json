@@ -41,7 +41,7 @@
     },
     "features": {
       "scheduler_master": true,
-      "dynamic_thread_scheduler": true,
+      "bpf_thread": true,
       "scene_category": true,
       "base_profile": true
     },
@@ -113,7 +113,7 @@
     },
     "features": {
       "scheduler_master": true,
-      "dynamic_thread_scheduler": true,
+      "bpf_thread": true,
       "scene_category": true,
       "base_profile": true
     },
@@ -185,7 +185,7 @@
     },
     "features": {
       "scheduler_master": true,
-      "dynamic_thread_scheduler": true,
+      "bpf_thread": true,
       "scene_category": true,
       "base_profile": true
     },
@@ -257,7 +257,7 @@
     },
     "features": {
       "scheduler_master": true,
-      "dynamic_thread_scheduler": true,
+      "bpf_thread": true,
       "scene_category": true,
       "base_profile": true
     },
