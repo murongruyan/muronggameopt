@@ -22,6 +22,8 @@
 #include <string>
 #include "activity_common.inc"
 #include <unordered_map>
+#include <map>
+#include <shared_mutex>
 #include <mutex>
 #include <algorithm>
 #include <sched.h>
@@ -202,6 +204,11 @@ typedef struct {
     int limit;
     bool loading_only;
     ThreadJsonAction action;
+    int stable_hold_ms;
+    int rebind_cooldown_ms;
+    int selection_change_threshold_ms;
+    bool pin_once;
+    bool prefer_existing_binding;
 } ThreadJsonRoleRule;
 
 typedef struct {

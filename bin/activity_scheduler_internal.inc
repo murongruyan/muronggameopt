@@ -24,6 +24,7 @@ struct ThreadRuntimeState {
     pid_t tid;
     std::string package;
     std::string comm;
+    long long discovered_ms;
     unsigned long long last_ticks;
     long long last_sample_ms;
     unsigned long long pending_runtime_ns;
@@ -51,12 +52,32 @@ struct ThreadRuntimeState {
     int applied_sched_policy;
     int applied_sched_priority;
     long long last_event_log_ms;
+    /* Phase1~4: 静态规则层专用字段 */
+    bool has_explicit_affinity_rule;
+    long long last_static_bind_ms;
+    long long static_bind_cooldown_ms;
+    int selection_epoch;
 };
 
 struct LearningSample {
     float fps_error;
     float power_estimate;
 };
+
+struct SelectionEpochState {
+    int epoch;
+    int last_lookup_loop_tick;
+    std::vector<pid_t> selected_tids;
+    long long stable_since_ms;
+    bool has_pending;
+    std::vector<pid_t> pending_tids;
+    long long pending_since_ms;
+    long long last_reselect_ms;
+    long long selection_change_threshold_ms;
+};
+
+static const long long kSelectionChangeThresholdMs = 2000;
+static const long long kRebindCooldownMs = 3000;
 
 enum ProcessEventType {
     PROCESS_EVENT_FORK = 1,
@@ -71,11 +92,25 @@ struct ProcessEventSignal {
     __s32 type;
 };
 
+enum ThreadJsonRuleSource {
+    THREAD_JSON_RULE_SOURCE_UNKNOWN = 0,
+    THREAD_JSON_RULE_SOURCE_ROLE,
+    THREAD_JSON_RULE_SOURCE_CUSTOM,
+    THREAD_JSON_RULE_SOURCE_DEFAULT,
+    THREAD_JSON_RULE_SOURCE_SCENE_DEFAULT
+};
+
 struct ThreadJsonResolvedRule {
     const ThreadJsonAction* action;
     const ThreadJsonSafetyConfig* safety;
     int role_kind;
     const char* rule_name;
+    ThreadJsonRuleSource source_kind;
+    int stable_hold_ms;
+    int rebind_cooldown_ms;
+    int selection_change_threshold_ms;
+    bool pin_once;
+    bool prefer_existing_binding;
 };
 
 struct LockedClassAssignment {
@@ -116,6 +151,9 @@ static long long g_last_thread_scan_ms = 0;
 static AllCpuStats g_prev_stats = {};
 static int g_prev_stats_valid = 0;
 static long long g_last_learning_adjust_ms = 0;
+static bool g_foreground_explicit_thread_rule_active = false;
+static std::map<uint64_t, SelectionEpochState> g_selection_epochs;
+static long long g_last_epoch_stale_cleanup_ms = 0;
 static pthread_t g_runtime_tid;
 static std::atomic<int> g_runtime_thread_started(0);
 static std::atomic<int> g_runtime_thread_stop(0);
@@ -339,6 +377,7 @@ static void ensure_thread_state_for_tid_locked(pid_t pid, const char* package, p
         state.pid = pid;
         state.tid = tid;
         state.package = package ? package : "";
+        state.discovered_ms = get_current_time_ms();
         state.last_ticks = 0;
         state.last_sample_ms = get_current_time_ms();
         state.pending_runtime_ns = 0;
@@ -612,6 +651,26 @@ static bool cpu_mask_equals(const std::vector<int>& a, const std::vector<int>& b
     return true;
 }
 
+static bool is_thread_affinity_mask_matching_locked(pid_t tid, const std::vector<int>& expected_cpus) {
+    if (tid <= 0 || expected_cpus.empty()) return false;
+    cpu_set_t expected_mask;
+    cpu_set_t actual_mask;
+    CPU_ZERO(&expected_mask);
+    CPU_ZERO(&actual_mask);
+    for (size_t i = 0; i < expected_cpus.size(); i++) {
+        if (expected_cpus[i] >= 0 && expected_cpus[i] < CPU_SETSIZE) {
+            CPU_SET(expected_cpus[i], &expected_mask);
+        }
+    }
+    if (sched_getaffinity(tid, sizeof(actual_mask), &actual_mask) != 0) return false;
+    for (int cpu = 0; cpu < CPU_SETSIZE; cpu++) {
+        bool expected = CPU_ISSET(cpu, &expected_mask) != 0;
+        bool actual = CPU_ISSET(cpu, &actual_mask) != 0;
+        if (expected != actual) return false;
+    }
+    return true;
+}
+
 static bool is_thread_freeze_candidate_locked(pid_t tid, const char* comm, float cpu_usage_pct) {
     if (!comm || !comm[0]) return false;
     if (!is_game_like_package_name(g_foreground_package)) return false;
@@ -845,6 +904,61 @@ static bool cpu_exists_in_topology(int cpu) {
     return false;
 }
 
+static int get_cluster_id_for_cpu(int cpu) {
+    for (int c = 0; c < cluster_count; c++) {
+        for (int i = 0; i < cpu_clusters[c].cpu_count; i++) {
+            if (cpu_clusters[c].cpu_ids[i] == cpu) return c;
+        }
+    }
+    return -1;
+}
+
+static bool has_primary_render_companion_for_package_locked(const char* package, pid_t exclude_tid) {
+    if (!package || !package[0]) return false;
+    for (auto& kv : g_threads) {
+        const ThreadRuntimeState& other = kv.second;
+        if (other.tid == exclude_tid) continue;
+        if (other.package.empty() || strcmp(other.package.c_str(), package) != 0) continue;
+        if (!is_primary_render_like_thread_name(other.comm.c_str())) continue;
+        return true;
+    }
+    return false;
+}
+
+static bool build_main_spawn_prewarm_mask_locked(int single_cpu, std::vector<int>& cpus) {
+    cpus.clear();
+    int cluster_id = get_cluster_id_for_cpu(single_cpu);
+    if (cluster_id < 0) return false;
+    append_cluster_mask(cpus, cluster_id, false, false);
+    if (cpus.size() <= 1 && cluster_id > 0) {
+        append_cluster_mask(cpus, cluster_id - 1, false, false);
+    }
+    normalize_cpu_mask(cpus);
+    return cpus.size() > 1;
+}
+
+static bool maybe_expand_main_single_core_mask_for_spawn_locked(
+    ThreadRuntimeState& state,
+    const ThreadJsonResolvedRule* matched_rule,
+    long long now_ms,
+    std::vector<int>& explicit_cpus,
+    int& explicit_cluster) {
+    static const long long kMainSpawnPrewarmMs = 3000;
+    if (!matched_rule || matched_rule->role_kind != THREAD_JSON_ROLE_MAIN) return false;
+    if (explicit_cpus.size() != 1) return false;
+    if (state.pid <= 0 || state.pid != g_foreground_pid) return false;
+    if (state.package.empty() || strcmp(state.package.c_str(), g_foreground_package) != 0) return false;
+    if (!is_game_package_name(state.package.c_str())) return false;
+    if (state.discovered_ms <= 0 || now_ms - state.discovered_ms > kMainSpawnPrewarmMs) return false;
+    if (has_primary_render_companion_for_package_locked(state.package.c_str(), state.tid)) return false;
+
+    std::vector<int> prewarm_cpus;
+    if (!build_main_spawn_prewarm_mask_locked(explicit_cpus[0], prewarm_cpus)) return false;
+    explicit_cpus = prewarm_cpus;
+    explicit_cluster = highest_cluster_for_mask(explicit_cpus);
+    return true;
+}
+
 static void append_cpu_if_present(std::vector<int>& cpus, int cpu) {
     if (!cpu_exists_in_topology(cpu)) return;
     for (size_t i = 0; i < cpus.size(); i++) {
@@ -902,7 +1016,9 @@ static bool thread_json_package_matches_rule(const char* package, const ThreadJs
             }
             continue;
         }
-        if (lowered_pkg == item || lowered_pkg.find(item) != std::string::npos) {
+        // Package rules should not use implicit substring matching, otherwise
+        // shorter ids like com.tencent.tmgp.cod will hijack com.tencent.tmgp.codev.
+        if (lowered_pkg == item) {
             return true;
         }
     }
@@ -936,8 +1052,16 @@ static const ThreadJsonAppRule* find_thread_app_rule_for_package_locked(const ch
     return &g_thread_app_rules[(size_t)index];
 }
 
+static bool thread_json_app_rule_has_explicit_affinity_locked(const ThreadJsonAppRule& app_rule);
+
 static void refresh_active_thread_app_rule_locked(const char* package) {
     g_active_thread_app_rule_index = find_thread_app_rule_index_for_package_locked(package);
+    g_foreground_explicit_thread_rule_active = false;
+    if (!package || !package[0] || strcmp(package, "unknown") == 0) return;
+    if (g_active_thread_app_rule_index < 0 ||
+        g_active_thread_app_rule_index >= (int)g_thread_app_rules.size()) return;
+    g_foreground_explicit_thread_rule_active = thread_json_app_rule_has_explicit_affinity_locked(
+        g_thread_app_rules[(size_t)g_active_thread_app_rule_index]);
 }
 
 static bool thread_json_action_has_explicit_affinity_locked(const ThreadJsonAction& action) {
@@ -974,6 +1098,13 @@ static bool active_thread_app_rule_uses_explicit_affinity_locked() {
     }
     return thread_json_app_rule_has_explicit_affinity_locked(
         g_thread_app_rules[(size_t)g_active_thread_app_rule_index]);
+}
+
+static bool should_suppress_dynamic_thread_scheduler_locked(const char* package) {
+    if (!package || !package[0] || strcmp(package, "unknown") == 0) return false;
+    if (!g_foreground_explicit_thread_rule_active) return false;
+    if (!g_foreground_package[0] || strcmp(package, g_foreground_package) != 0) return false;
+    return true;
 }
 
 static void apply_active_scheduler_session_override_locked() {
@@ -1080,31 +1211,99 @@ static bool thread_json_role_limit_allowed_locked(
     pid_t tid) {
     if (rule.limit <= 0) return true;
     auto target_it = g_threads.find((int)tid);
-    if (target_it == g_threads.end()) {
-        return true;
-    }
+    if (target_it == g_threads.end()) return true;
+
     const ThreadRuntimeState& target_state = target_it->second;
-    std::vector<std::pair<float, pid_t>> ranked;
-    for (auto& kv : g_threads) {
-        const ThreadRuntimeState& other = kv.second;
-        if (other.pid != target_state.pid) continue;
-        if (other.package != target_state.package) continue;
-        if (!thread_json_role_selector_match_locked(rule, other.tid, other.comm.c_str())) {
-            continue;
+    long long now_ms = get_current_time_ms();
+    uint64_t rule_key = (uint64_t)(uintptr_t)&rule;
+    SelectionEpochState& epoch = g_selection_epochs[rule_key];
+    int loop_tick = g_runtime_stats.loop_ticks.load();
+    bool computed_this_tick = (epoch.last_lookup_loop_tick == loop_tick);
+
+    if (!computed_this_tick) {
+        std::vector<std::pair<float, pid_t>> ranked;
+        for (auto& kv : g_threads) {
+            const ThreadRuntimeState& other = kv.second;
+            if (other.pid != target_state.pid) continue;
+            if (other.package != target_state.package) continue;
+            if (!thread_json_role_selector_match_locked(rule, other.tid, other.comm.c_str())) continue;
+            ranked.push_back(std::make_pair(other.cpu_usage_pct, other.tid));
         }
-        ranked.push_back(std::make_pair(other.cpu_usage_pct, other.tid));
+        std::sort(ranked.begin(), ranked.end(), [](const std::pair<float, pid_t>& a,
+                                                   const std::pair<float, pid_t>& b) {
+            if (a.first != b.first) return a.first > b.first;
+            return a.second < b.second;
+        });
+        std::vector<pid_t> current_top;
+        for (int i = 0; i < (int)ranked.size() && i < rule.limit; i++) {
+            current_top.push_back(ranked[(size_t)i].second);
+        }
+
+        if (epoch.selected_tids.empty()) {
+            epoch.epoch = 1;
+            epoch.selected_tids = current_top;
+            epoch.stable_since_ms = now_ms;
+            epoch.last_reselect_ms = now_ms;
+            epoch.selection_change_threshold_ms = rule.selection_change_threshold_ms > 0 ?
+                rule.selection_change_threshold_ms : kSelectionChangeThresholdMs;
+        } else {
+            bool same_set = (current_top.size() == epoch.selected_tids.size());
+            if (same_set) {
+                for (size_t i = 0; i < current_top.size(); i++) {
+                    if (current_top[i] != epoch.selected_tids[i]) { same_set = false; break; }
+                }
+            }
+            if (same_set) {
+                epoch.has_pending = false;
+                epoch.pending_tids.clear();
+            } else {
+                if (!epoch.has_pending) {
+                    epoch.has_pending = true;
+                    epoch.pending_tids = current_top;
+                    epoch.pending_since_ms = now_ms;
+                } else if (epoch.pending_tids == current_top) {
+                    if (now_ms - epoch.pending_since_ms >= epoch.selection_change_threshold_ms) {
+                        epoch.epoch++;
+                        epoch.selected_tids = current_top;
+                        epoch.stable_since_ms = now_ms;
+                        epoch.last_reselect_ms = now_ms;
+                        epoch.has_pending = false;
+                        epoch.pending_tids.clear();
+                    }
+                } else {
+                    epoch.pending_tids = current_top;
+                    epoch.pending_since_ms = now_ms;
+                }
+            }
+        }
+        epoch.last_lookup_loop_tick = loop_tick;
     }
-    std::sort(ranked.begin(), ranked.end(), [](const std::pair<float, pid_t>& a,
-                                               const std::pair<float, pid_t>& b) {
-        if (a.first != b.first) return a.first > b.first;
-        return a.second < b.second;
-    });
-    for (int i = 0; i < (int)ranked.size(); i++) {
-        if (ranked[(size_t)i].second == tid) {
-            return i < rule.limit;
+
+    for (size_t i = 0; i < epoch.selected_tids.size(); i++) {
+        if (epoch.selected_tids[i] == (pid_t)tid) {
+            target_it->second.selection_epoch = epoch.epoch;
+            return true;
         }
     }
     return false;
+}
+
+static void cleanup_stale_selection_epochs_locked() {
+    long long now_ms = get_current_time_ms();
+    if (now_ms - g_last_epoch_stale_cleanup_ms < 60000) return;
+    g_last_epoch_stale_cleanup_ms = now_ms;
+    for (auto it = g_selection_epochs.begin(); it != g_selection_epochs.end(); ) {
+        bool any_alive = false;
+        for (pid_t t : it->second.selected_tids) {
+            if (g_threads.find((int)t) != g_threads.end()) { any_alive = true; break; }
+        }
+        if (!any_alive) { it = g_selection_epochs.erase(it); }
+        else { ++it; }
+    }
+}
+
+static void clear_all_selection_epochs_locked() {
+    g_selection_epochs.clear();
 }
 
 static bool thread_json_role_matches_locked(
@@ -1158,6 +1357,12 @@ static const ThreadJsonResolvedRule* resolve_thread_json_rule_locked(
     out_rule->safety = NULL;
     out_rule->role_kind = THREAD_JSON_ROLE_OTHER;
     out_rule->rule_name = "unknown";
+    out_rule->source_kind = THREAD_JSON_RULE_SOURCE_UNKNOWN;
+    out_rule->stable_hold_ms = 0;
+    out_rule->rebind_cooldown_ms = 0;
+    out_rule->selection_change_threshold_ms = 0;
+    out_rule->pin_once = false;
+    out_rule->prefer_existing_binding = false;
     const ThreadJsonAppRule* app_rule_ptr = find_thread_app_rule_for_package_locked(package);
     if (app_rule_ptr) {
         const ThreadJsonAppRule& app_rule = *app_rule_ptr;
@@ -1179,6 +1384,13 @@ static const ThreadJsonResolvedRule* resolve_thread_json_rule_locked(
                 out_rule->safety = &app_rule.safety;
                 out_rule->role_kind = role;
                 out_rule->rule_name = role_names[role];
+                out_rule->source_kind = THREAD_JSON_RULE_SOURCE_ROLE;
+                /* 复制角色级稳定参数 */
+                out_rule->stable_hold_ms = app_rule.roles[role].stable_hold_ms;
+                out_rule->rebind_cooldown_ms = app_rule.roles[role].rebind_cooldown_ms;
+                out_rule->selection_change_threshold_ms = app_rule.roles[role].selection_change_threshold_ms;
+                out_rule->pin_once = app_rule.roles[role].pin_once;
+                out_rule->prefer_existing_binding = app_rule.roles[role].prefer_existing_binding;
                 return out_rule;
             }
         }
@@ -1189,6 +1401,13 @@ static const ThreadJsonResolvedRule* resolve_thread_json_rule_locked(
                 out_rule->safety = &app_rule.safety;
                 out_rule->role_kind = THREAD_JSON_ROLE_OTHER;
                 out_rule->rule_name = custom_rule.name.c_str();
+                out_rule->source_kind = THREAD_JSON_RULE_SOURCE_CUSTOM;
+                /* 复制自定义规则稳定参数 */
+                out_rule->stable_hold_ms = custom_rule.rule.stable_hold_ms;
+                out_rule->rebind_cooldown_ms = custom_rule.rule.rebind_cooldown_ms;
+                out_rule->selection_change_threshold_ms = custom_rule.rule.selection_change_threshold_ms;
+                out_rule->pin_once = custom_rule.rule.pin_once;
+                out_rule->prefer_existing_binding = custom_rule.rule.prefer_existing_binding;
                 return out_rule;
             }
         }
@@ -1197,6 +1416,7 @@ static const ThreadJsonResolvedRule* resolve_thread_json_rule_locked(
             out_rule->safety = &app_rule.safety;
             out_rule->role_kind = THREAD_JSON_ROLE_OTHER;
             out_rule->rule_name = "default";
+            out_rule->source_kind = THREAD_JSON_RULE_SOURCE_DEFAULT;
             return out_rule;
         }
     }
@@ -1208,6 +1428,7 @@ static const ThreadJsonResolvedRule* resolve_thread_json_rule_locked(
         out_rule->safety = app_rule_ptr ? &app_rule_ptr->safety : &kSceneDefaultSafety;
         out_rule->role_kind = THREAD_JSON_ROLE_OTHER;
         out_rule->rule_name = scene_rule->category.c_str();
+        out_rule->source_kind = THREAD_JSON_RULE_SOURCE_SCENE_DEFAULT;
         return out_rule;
     }
     return NULL;
@@ -2453,6 +2674,7 @@ static void sample_proc_runtime_locked(
         state.pid = pid;
         state.tid = tid;
         state.package = package ? package : "";
+        state.discovered_ms = now_ms;
         state.last_ticks = total_ticks;
         state.last_sample_ms = now_ms;
         state.pending_runtime_ns = 0;
@@ -2908,19 +3130,6 @@ static bool is_thread_assignment_matching_locked(
     return CPU_EQUAL(&expected_mask, &actual_mask);
 }
 
-static LockedClassAssignment choose_locked_assignment_for_class_locked(ThreadClass cls) {
-    if (cls >= THREAD_CLASS_MAIN && cls <= THREAD_CLASS_BACKGROUND) {
-        const LockedClassAssignment& exact = g_scheduler_session.class_assignments[(int)cls];
-        if (exact.valid) return exact;
-    }
-    const LockedClassAssignment& other = g_scheduler_session.class_assignments[(int)THREAD_CLASS_BACKGROUND];
-    if (other.valid) return other;
-    LockedClassAssignment invalid = {};
-    invalid.valid = false;
-    invalid.cluster = -1;
-    return invalid;
-}
-
 static bool snapshot_locked_assignments_locked(long long now_ms) {
     struct Candidate {
         bool valid;
@@ -3019,7 +3228,22 @@ static void update_scheduler_session_locked(long long now_ms) {
     }
     if (g_scheduler_session.phase == SESSION_LEARNING &&
         now_ms - g_scheduler_session.learning_started_ms >= g_scheduler_session_config.learning_duration_ms) {
-        snapshot_locked_assignments_locked(now_ms);
+        /* 锁定前确保分配已稳定 */
+        bool all_stable = true;
+        if (now_ms - g_scheduler_session.learning_started_ms < g_scheduler_session_config.learning_duration_ms * 2) {
+            for (auto& kv : g_threads) {
+                if (kv.second.pid != g_scheduler_session.pid) continue;
+                if (kv.second.assigned_cluster < 0) continue;
+                if (kv.second.last_migrate_ms > 0 &&
+                    now_ms - kv.second.last_migrate_ms < kSelectionChangeThresholdMs) {
+                    all_stable = false;
+                    break;
+                }
+            }
+        }
+        if (all_stable) {
+            snapshot_locked_assignments_locked(now_ms);
+        }
     }
 }
 
@@ -3036,13 +3260,21 @@ static bool guard_locked_assignments_locked(long long now_ms) {
         ThreadRuntimeState& state = kv.second;
         if (state.pid != g_scheduler_session.pid) continue;
         if (state.package != g_scheduler_session.package) continue;
-        ThreadClass role = classify_thread_role_for_lock(state.tid, state.comm.c_str(), state.cpu_usage_pct);
-        LockedClassAssignment assignment = choose_locked_assignment_for_class_locked(role);
-        if (!assignment.valid) continue;
-        bool assigned_match = (state.assigned_cluster == assignment.cluster) &&
-                              cpu_mask_equals(state.assigned_cpus, assignment.cpus);
+        /* 跳过显式规则线程 */
+        if (state.has_explicit_affinity_rule) continue;
+        /* 跳过从未分配过的线程 */
+        if (state.assigned_cluster < 0) continue;
+        /* 直接使用锁定时的分配，不重新分类 */
+        LockedClassAssignment assignment = {};
+        assignment.valid = true;
+        assignment.cluster = state.assigned_cluster;
+        assignment.cpus = state.assigned_cpus;
         bool actual_match = is_thread_assignment_matching_locked(state.tid, assignment);
-        if (assigned_match && actual_match) continue;
+        if (actual_match) continue;
+        /* 重绑冷却 */
+        if (state.last_migrate_ms > 0 && now_ms - state.last_migrate_ms < kRebindCooldownMs) {
+            continue;
+        }
         if (!g_official_tuner_disabled) {
             sync_official_tuner_for_game(g_foreground_package);
         }
@@ -3051,8 +3283,7 @@ static bool guard_locked_assignments_locked(long long now_ms) {
             set_thread_affinity(state.tid, assignment.cluster);
         if (applied) {
             g_runtime_stats.guard_reapply_count.fetch_add(1);
-            state.assigned_cluster = assignment.cluster;
-            state.assigned_cpus = assignment.cpus;
+            state.last_migrate_ms = now_ms;
             state.last_migrate_ms = now_ms;
             char msg[320];
             safe_snprintf(msg, sizeof(msg),
@@ -3060,7 +3291,7 @@ static bool guard_locked_assignments_locked(long long now_ms) {
                           g_scheduler_session.package,
                           (int)g_scheduler_session.pid,
                           (int)state.tid,
-                          thread_class_to_string(role),
+                          thread_class_to_string(state.cls),
                           assignment.cluster,
                           (int)assignment.cpus.size());
             log_scheduler_probe_once(msg);
@@ -3068,7 +3299,7 @@ static bool guard_locked_assignments_locked(long long now_ms) {
                            g_scheduler_session.package,
                            (int)g_scheduler_session.pid,
                            (int)state.tid,
-                           thread_class_to_string(role),
+                           thread_class_to_string(state.cls),
                            assignment.cluster,
                            (int)assignment.cpus.size());
         }

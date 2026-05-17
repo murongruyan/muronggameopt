@@ -67,6 +67,7 @@ void notify_foreground_app_changed(const char* package) {
     g_last_pid_lookup_ms = 0;
     g_last_render_tid_sync_ms = 0;
     g_threads.clear();
+    clear_all_selection_epochs_locked();
     clear_performance_boosts();
     detach_frame_probe_locked();
     sync_target_tgid_locked();
@@ -161,6 +162,7 @@ void reload_thread_config_now() {
     clear_performance_boosts();
     g_learning_samples.clear();
     g_threads.clear();
+    clear_all_selection_epochs_locked();
     g_foreground_pid = -1;
     g_last_pid_lookup_ms = 0;
     g_last_thread_scan_ms = 0;
@@ -227,10 +229,17 @@ void run_scheduler_step() {
 
     {
         std::lock_guard<std::mutex> lock(g_mutex);
-        apply_active_scheduler_session_override_locked();
-        update_scheduler_session_locked(now_ms);
-        if (guard_locked_assignments_locked(now_ms)) {
-            goto freq_only;
+        /* 命中显式规则时，会话层彻底短路 — 不学习、不锁定、不守护 */
+        if (should_suppress_dynamic_thread_scheduler_locked(g_current_foreground_app)) {
+            if (g_scheduler_session.phase != SESSION_IDLE) {
+                reset_scheduler_session_locked("explicit_thread_affinity");
+            }
+        } else {
+            apply_active_scheduler_session_override_locked();
+            update_scheduler_session_locked(now_ms);
+            if (guard_locked_assignments_locked(now_ms)) {
+                goto freq_only;
+            }
         }
         for (auto& kv : g_threads) {
             ThreadRuntimeState& state = kv.second;
@@ -246,6 +255,7 @@ void run_scheduler_step() {
                 apply_thread_json_action_locked(state, matched_rule);
             } else {
                 restore_thread_runtime_adjustments_locked(state, "rule_not_matched");
+                state.has_explicit_affinity_rule = false;
             }
 
             std::vector<int> explicit_cpus;
@@ -257,7 +267,47 @@ void run_scheduler_step() {
                 has_explicit_mask = !explicit_cpus.empty();
                 if (has_explicit_mask) {
                     explicit_cluster = highest_cluster_for_mask(explicit_cpus);
+                    bool prewarm_expanded = maybe_expand_main_single_core_mask_for_spawn_locked(
+                        state, matched_rule, now_ms, explicit_cpus, explicit_cluster);
+                    if (prewarm_expanded && now_ms - state.last_event_log_ms > 2000) {
+                        char cpu_list[96] = {0};
+                        size_t pos = 0;
+                        for (size_t i = 0; i < explicit_cpus.size(); i++) {
+                            int written = safe_snprintf(
+                                cpu_list + pos,
+                                sizeof(cpu_list) - pos,
+                                "%s%d",
+                                i == 0 ? "" : ",",
+                                explicit_cpus[i]);
+                            if (written <= 0 || (size_t)written >= sizeof(cpu_list) - pos) break;
+                            pos += (size_t)written;
+                        }
+                        char msg[256];
+                        safe_snprintf(
+                            msg,
+                            sizeof(msg),
+                            "主线程预热放宽 | app:%s | tid:%d | comm:%s | prewarm_mask:%s",
+                            state_package ? state_package : "unknown",
+                            (int)state.tid,
+                            state.comm.c_str(),
+                            cpu_list[0] ? cpu_list : "unknown");
+                        log_affinity_message(msg);
+                        state.last_event_log_ms = now_ms;
+                    }
                 }
+            }
+            /* 标记显式规则命中 */
+            state.has_explicit_affinity_rule = has_explicit_mask && matched_rule &&
+                (matched_rule->source_kind != THREAD_JSON_RULE_SOURCE_DEFAULT &&
+                 matched_rule->source_kind != THREAD_JSON_RULE_SOURCE_SCENE_DEFAULT);
+            if (state.has_explicit_affinity_rule) {
+                if (matched_rule->rebind_cooldown_ms > 0) {
+                    state.static_bind_cooldown_ms = static_cast<long long>(matched_rule->rebind_cooldown_ms);
+                } else {
+                    state.static_bind_cooldown_ms = kRebindCooldownMs;
+                }
+            } else {
+                state.static_bind_cooldown_ms = 0;
             }
 
             if (!is_foreground_state) {
@@ -265,15 +315,54 @@ void run_scheduler_step() {
                 if (!has_explicit_mask) {
                     continue;
                 }
+                bool actual_mask_mismatch =
+                    !is_thread_affinity_mask_matching_locked(state.tid, explicit_cpus);
                 bool need_apply = (state.assigned_cluster != explicit_cluster) ||
-                                  !cpu_mask_equals(state.assigned_cpus, explicit_cpus);
+                                  !cpu_mask_equals(state.assigned_cpus, explicit_cpus) ||
+                                  actual_mask_mismatch;
                 if (need_apply &&
-                    (state.last_migrate_ms == 0 || now_ms - state.last_migrate_ms >= 500)) {
+                    (actual_mask_mismatch ||
+                     state.last_migrate_ms == 0 ||
+                     now_ms - state.last_migrate_ms >= 500)) {
                     bool applied = set_thread_affinity_mask(state.tid, explicit_cpus);
                     if (applied) {
                         state.assigned_cluster = explicit_cluster;
                         state.last_migrate_ms = now_ms;
                         state.assigned_cpus = explicit_cpus;
+                    }
+                }
+                continue;
+            }
+
+            /* ===== 静态规则快速路径 — 跳过动态分类/迁移/冻结 ===== */
+            if (state.has_explicit_affinity_rule && has_explicit_mask) {
+                /* 清除动态链路残留状态（冻结/稳定/热度），避免影响其他线程选核 */
+                state.frozen = false;
+                state.frozen_cpus.clear();
+                state.frozen_cluster = -1;
+                state.frozen_at_ms = 0;
+                state.target_stable_since_ms = 0;
+                state.last_target_cluster = -1;
+                state.last_target_cpus.clear();
+                state.first_hot_ms = 0;
+                state.hot_sample_count = 0;
+                bool actual_mask_mismatch =
+                    !is_thread_affinity_mask_matching_locked(state.tid, explicit_cpus);
+                bool mask_changed = (state.assigned_cluster != explicit_cluster) ||
+                                    !cpu_mask_equals(state.assigned_cpus, explicit_cpus) ||
+                                    actual_mask_mismatch;
+                if (mask_changed) {
+                    bool cooldown_ok = actual_mask_mismatch ||
+                        state.last_static_bind_ms == 0 ||
+                        now_ms - state.last_static_bind_ms >= state.static_bind_cooldown_ms;
+                    if (cooldown_ok) {
+                        bool applied = set_thread_affinity_mask(state.tid, explicit_cpus);
+                        if (applied) {
+                            state.assigned_cluster = explicit_cluster;
+                            state.last_migrate_ms = now_ms;
+                            state.last_static_bind_ms = now_ms;
+                            state.assigned_cpus = explicit_cpus;
+                        }
                     }
                 }
                 continue;
@@ -309,6 +398,15 @@ void run_scheduler_step() {
                 state.cls = THREAD_CLASS_BACKGROUND;
             }
             int target_cluster = select_target_cluster(state.cls, cluster_scores);
+            /* 主线程/渲染线程防漂移 */
+            if (state.cls == THREAD_CLASS_MAIN && state.assigned_cluster >= 0 &&
+                state.assigned_cluster != target_cluster &&
+                state.last_migrate_ms > 0 && now_ms - state.last_migrate_ms < 5000) {
+                target_cluster = state.assigned_cluster;
+            } else if (state.cls == THREAD_CLASS_RENDER && state.assigned_cluster >= 0 &&
+                       state.assigned_cluster != target_cluster) {
+                target_cluster = state.assigned_cluster;
+            }
             if (!has_explicit_mask) {
                 has_explicit_mask = resolve_affinity_template(
                     state_package, state.tid, state.comm.c_str(), state.cls, state.cpu_usage_pct, stats, explicit_cpus, explicit_cluster);
@@ -368,6 +466,8 @@ void run_scheduler_step() {
 
         }
     }
+    /* 定期清理不再使用的 epoch 状态 */
+    cleanup_stale_selection_epochs_locked();
 
 freq_only:
     for (int i = 0; i < cluster_count; i++) {

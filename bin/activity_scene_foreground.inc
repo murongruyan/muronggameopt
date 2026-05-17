@@ -245,19 +245,10 @@ char* get_foreground_app() {
           strcmp(dumpsys_pkg, last_mismatch_dumpsys) != 0) ||
          now_ms - last_mismatch_log_ms >= 15000)) {
         
-        // 【关键修复】降级由于悬挂进程导致的 cpuset 冲突日志
-        // 在现代 Android 版本中，处于 background 或 cached 状态的进程（如退到后台的王者荣耀）
-        // 极有可能并未被系统及时移出 top-app 的 cgroup，导致 cpuset 依然读取到旧进程
-        // 这是系统底层调度器的锅，不应高频报错干扰视线
-        if (strcmp(pkg_buf, "com.tencent.tmgp.sgame") == 0) {
-            // 王者在后台时，忽略与 dumpsys 的冲突，不再打印日志
-        } else {
-            char msg[256];
-            safe_snprintf(msg, sizeof(msg),
-                          "前台识别冲突 | cpuset:%s | dumpsys:%s | 采用:dumpsys",
-                          pkg_buf, dumpsys_pkg);
-            log_message(msg);
-        }
+        // cpuset 读到的是旧 app（系统 cgroup 悬挂），立即失效它的稳定计数
+        // 防止 cpuset_stable_hits >= 3 后与 dumpsys 产生冲突
+        cpuset_stable_hits = 0;
+        cached_cpuset_app[0] = '\0';
         
         last_mismatch_log_ms = now_ms;
         safe_strncpy(last_mismatch_cpuset, pkg_buf, sizeof(last_mismatch_cpuset));

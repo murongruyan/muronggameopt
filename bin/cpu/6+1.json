@@ -8,10 +8,31 @@
         "com.levelinfinite.sgameGlobal.midaspay",
         "com.levelinfinite.sgameGlobal"
       ],
-      "main": { "match": ["UnityMain"], "cpus": "6", "fifo": 1 },
-      "gfx": { "match": ["UnityGfx*"], "cpus": "4-6", "rr": 10 },
-      "worker": { "match": ["*worker*"], "limit": 3, "cpus": "4-5", "rr": 5 },
-      "other": { "cpus": "1-5" }
+      "main": {
+        "match": [
+          "UnityMain"
+        ],
+        "cpus": "6",
+        "fifo": 1
+      },
+      "gfx": {
+        "match": [
+          "UnityGfx*"
+        ],
+        "cpus": "4-6",
+        "rr": 10
+      },
+      "worker": {
+        "match": [
+          "*worker*"
+        ],
+        "limit": 3,
+        "cpus": "4-5",
+        "rr": 5
+      },
+      "other": {
+        "cpus": "1-5"
+      }
     },
     {
       "friendly": "Unity主线程保底组",
@@ -67,11 +88,34 @@
         "com.leiting.xian",
         "com.netease.lrs"
       ],
-      "main": { "match": ["UnityMain"], "cpus": "6", "fifo": 1 },
-      "gfx": { "match": ["UnityGfx*"], "cpus": "4-6", "rr": 10 },
-      "worker": { "match": ["*worker*"], "limit": 3, "cpus": "4-5", "rr": 5 },
-      "extra:[Thread 1x1xb411]": { "cpus": "6" },
-      "other": { "cpus": "1-5" }
+      "main": {
+        "match": [
+          "UnityMain"
+        ],
+        "cpus": "6",
+        "fifo": 1
+      },
+      "gfx": {
+        "match": [
+          "UnityGfx*"
+        ],
+        "cpus": "4-6",
+        "rr": 10
+      },
+      "worker": {
+        "match": [
+          "Job.worker*"
+        ],
+        "limit": 3,
+        "cpus": "4-5",
+        "rr": 5
+      },
+      "extra:[Thread 1x1xb411]": {
+        "cpus": "6"
+      },
+      "other": {
+        "cpus": "1-5"
+      }
     },
     {
       "friendly": "第五人格与PUBG",
@@ -81,9 +125,23 @@
         "com.pubg.krmobile",
         "com.tencent.ig"
       ],
-      "main": { "match": ["GameThread", "Thread-[0-20]"], "limit": 2, "cpus": "6", "rr": 10 },
-      "render": { "match": ["*rthread*"], "cpus": "4-5", "rr": 1 },
-      "other": { "cpus": "1-5" }
+      "main": {
+        "match": [
+          "GameThread"
+        ],
+        "cpus": "6",
+        "rr": 10
+      },
+      "render": {
+        "match": [
+          "*rthread*"
+        ],
+        "cpus": "4-5",
+        "rr": 1
+      },
+      "other": {
+        "cpus": "1-5"
+      }
     },
     {
       "friendly": "高占用Thread型",
@@ -100,9 +158,27 @@
         "com.netease.yyslscn",
         "com.tencent.tmgp.codev"
       ],
-      "render": { "match": ["*rthread*"], "cpus": "4-5", "rr": 5 },
-      "worker": { "match": ["*thread*"], "limit": 2, "cpus": "6", "rr": 10 },
-      "other": { "cpus": "1-5" }
+      "render": {
+        "match": [
+          "RenderThread*",
+          "RHIThread*"
+        ],
+        "cpus": "4-5",
+        "rr": 5
+      },
+      "worker": {
+        "match": [
+          "NativeThread",
+          "TaskGraphThread*",
+          "AsyncLoading*"
+        ],
+        "limit": 2,
+        "cpus": "6",
+        "rr": 10
+      },
+      "other": {
+        "cpus": "1-5"
+      }
     },
     {
       "friendly": "洛克王国世界与异环",
@@ -111,12 +187,39 @@
         "com.hottagames.yh.laohu",
         "com.tencent.nfsonline"
       ],
-      "main": { "match": ["GameThread", "UnityMain"], "cpus": "6", "fifo": 1 },
-      "render": { "match": ["RenderThread*", "RHIThread*"], "limit": 2, "cpus": "4-6" },
-      "worker": { "match": ["*thread*"], "limit": 2, "cpus": "6", "rr": 10 },
-      "extra:[task*]": { "limit": 2, "cpus": "4-5" },
-      "extra:[*loading]": { "limit": 2, "cpus": "0-4" },
-      "other": { "cpus": "1-5" }
+      "main": {
+        "match": [
+          "GameThread",
+          "UnityMain"
+        ],
+        "cpus": "6",
+        "fifo": 1
+      },
+      "render": {
+        "match": [
+          "RenderThread*",
+          "RHIThread*"
+        ],
+        "cpus": "4-6"
+      },
+      "worker": {
+        "match": [
+          "NativeThread",
+          "TaskGraphThread*",
+          "AsyncLoading*"
+        ],
+        "cpus": "6",
+        "rr": 10
+      },
+      "extra:[task*]": {
+        "cpus": "4-5"
+      },
+      "extra:[*loading]": {
+        "cpus": "0-4"
+      },
+      "other": {
+        "cpus": "1-5"
+      }
     },
     {
       "friendly": "前台轻应用-小核优先",
@@ -127,7 +230,9 @@
         "com.dragon.read",
         "io.legado.app.release"
       ],
-      "other": { "cpus": "1-3" }
+      "other": {
+        "cpus": "1-3"
+      }
     },
     {
       "friendly": "前台轻应用-线程突发",
@@ -148,18 +253,45 @@
         "com.eg.android.AlipayGphone",
         "com.tencent.mobileqq"
       ],
-      "worker": { "match": ["*thread*"], "limit": 2, "cpus": "6" },
-      "extra:[binder]": { "limit": 6, "cpus": "1-5" },
-      "extra:[.coolapk.market]": { "limit": 6, "cpus": "1-5" },
-      "extra:[glide-source-th]": { "limit": 6, "cpus": "1-5" },
-      "extra:[platform-single]": { "limit": 6, "cpus": "1-5" },
-      "extra:[runnerwrapper_8]": { "limit": 6, "cpus": "1-5" },
-      "extra:[jdfiledownloade]": { "limit": 6, "cpus": "1-5" },
-      "extra:[jit thread pool]": { "limit": 6, "cpus": "1-5" },
-      "extra:[doraemon-proces]": { "limit": 6, "cpus": "1-5" },
-      "extra:[mediacodec_]": { "limit": 6, "cpus": "1-5" },
-      "extra:[ijk_external_re]": { "limit": 6, "cpus": "1-5" },
-      "other": { "cpus": "1-3" }
+      "worker": {
+        "match": [
+          "*thread*"
+        ],
+        "cpus": "6"
+      },
+      "extra:[binder]": {
+        "cpus": "1-5"
+      },
+      "extra:[.coolapk.market]": {
+        "cpus": "1-5"
+      },
+      "extra:[glide-source-th]": {
+        "cpus": "1-5"
+      },
+      "extra:[platform-single]": {
+        "cpus": "1-5"
+      },
+      "extra:[runnerwrapper_8]": {
+        "cpus": "1-5"
+      },
+      "extra:[jdfiledownloade]": {
+        "cpus": "1-5"
+      },
+      "extra:[jit thread pool]": {
+        "cpus": "1-5"
+      },
+      "extra:[doraemon-proces]": {
+        "cpus": "1-5"
+      },
+      "extra:[mediacodec_]": {
+        "cpus": "1-5"
+      },
+      "extra:[ijk_external_re]": {
+        "cpus": "1-5"
+      },
+      "other": {
+        "cpus": "1-3"
+      }
     },
     {
       "friendly": "前台轻应用-专项中段",
@@ -169,28 +301,64 @@
         "com.autonavi.minimap",
         "com.tencent.mm"
       ],
-      "extra:[heaptaskdaemon]": { "limit": 8, "cpus": "1-5" },
-      "extra:[videodec_]": { "limit": 8, "cpus": "1-5" },
-      "extra:[weexjsbridgeth]": { "limit": 8, "cpus": "1-5" },
-      "extra:[javascriptthrea]": { "limit": 8, "cpus": "1-5" },
-      "extra:[map-logical]": { "limit": 8, "cpus": "1-5" },
-      "extra:[utonavi.minimap]": { "limit": 8, "cpus": "1-5" },
-      "extra:[com.tencent.mm]": { "limit": 8, "cpus": "1-5" },
-      "extra:[default_matrix_]": { "limit": 8, "cpus": "1-5" },
-      "extra:[binder]": { "limit": 8, "cpus": "1-5" },
-      "other": { "cpus": "1-3" }
+      "extra:[heaptaskdaemon]": {
+        "cpus": "1-5"
+      },
+      "extra:[videodec_]": {
+        "cpus": "1-5"
+      },
+      "extra:[weexjsbridgeth]": {
+        "cpus": "1-5"
+      },
+      "extra:[javascriptthrea]": {
+        "cpus": "1-5"
+      },
+      "extra:[map-logical]": {
+        "cpus": "1-5"
+      },
+      "extra:[utonavi.minimap]": {
+        "cpus": "1-5"
+      },
+      "extra:[com.tencent.mm]": {
+        "cpus": "1-5"
+      },
+      "extra:[default_matrix_]": {
+        "cpus": "1-5"
+      },
+      "extra:[binder]": {
+        "cpus": "1-5"
+      },
+      "other": {
+        "cpus": "1-3"
+      }
     },
     {
       "friendly": "前台短视频",
       "packages": [
         "com.ss.android.ugc.aweme"
       ],
-      "render": { "match": ["*rthread*", "*vdecod*"], "limit": 2, "cpus": "6" },
-      "extra:[audiotrack]": { "limit": 4, "cpus": "1-5" },
-      "extra:[heaptaskdaemon]": { "limit": 4, "cpus": "1-5" },
-      "extra:[codec]": { "limit": 4, "cpus": "1-4" },
-      "extra:[#pty-]": { "limit": 4, "cpus": "1-4" },
-      "other": { "cpus": "1-3" }
+      "render": {
+        "match": [
+          "*rthread*",
+          "*vdecod*"
+        ],
+        "cpus": "6"
+      },
+      "extra:[audiotrack]": {
+        "cpus": "1-5"
+      },
+      "extra:[heaptaskdaemon]": {
+        "cpus": "1-5"
+      },
+      "extra:[codec]": {
+        "cpus": "1-4"
+      },
+      "extra:[#pty-]": {
+        "cpus": "1-4"
+      },
+      "other": {
+        "cpus": "1-3"
+      }
     },
     {
       "friendly": "SurfaceFlinger常驻",
@@ -198,13 +366,35 @@
       "packages": [
         "surfaceflinger"
       ],
-      "extra:[=renderengine]": { "limit": 1, "cpus": "6", "fifo": 10 },
-      "extra:[=surfaceflinger]": { "limit": 1, "cpus": "6", "fifo": 5 },
-      "extra:[sf*]": { "limit": 4, "cpus": "6", "fifo": 10 },
-      "extra:[*sync*]": { "limit": 4, "cpus": "6", "fifo": 10 },
-      "extra:[app*]": { "limit": 4, "cpus": "6", "fifo": 10 },
-      "extra:[binder:*]": { "limit": 8, "cpus": "0-5" },
-      "other": { "cpus": "0-5" }
+      "extra:[=renderengine]": {
+        "cpus": "6",
+        "fifo": 10
+      },
+      "extra:[=surfaceflinger]": {
+        "cpus": "6",
+        "fifo": 5
+      },
+      "extra:[sf*]": {
+        "cpus": "6",
+        "nice": -5,
+        "limit": 1
+      },
+      "extra:[*sync*]": {
+        "cpus": "6",
+        "nice": -5,
+        "limit": 1
+      },
+      "extra:[app*]": {
+        "cpus": "6",
+        "nice": -5,
+        "limit": 1
+      },
+      "extra:[binder:*]": {
+        "cpus": "0-5"
+      },
+      "other": {
+        "cpus": "0-5"
+      }
     },
     {
       "friendly": "显示Composer常驻",
@@ -213,9 +403,17 @@
         "vendor.qti.hardware.display.composer-service",
         "android.hardware.graphics.composer3-service"
       ],
-      "extra:[=renderengine]": { "limit": 1, "cpus": "6" },
-      "extra:[=receivethread]": { "limit": 1, "cpus": "6" },
-      "other": { "cpus": "0-5" }
+      "extra:[=renderengine]": {
+        "limit": 1,
+        "cpus": "6"
+      },
+      "extra:[=receivethread]": {
+        "limit": 1,
+        "cpus": "6"
+      },
+      "other": {
+        "cpus": "0-5"
+      }
     }
   ]
 }
