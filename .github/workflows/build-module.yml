@@ -15,10 +15,10 @@ on:
         description: "模块 versionCode，如 57"
         required: true
       release_tag:
-        description: "GitHub Release 标签，默认 v<version>"
+        description: "GitHub Release 标签，默认固定标签 慕容调度"
         required: false
       release_name:
-        description: "Release 标题，默认 慕容调度免费版 <version>"
+        description: "Release 标题，默认 慕容调度"
         required: false
       release_notes:
         description: "Release 说明，会同步到 changelog.txt"
@@ -58,8 +58,11 @@ jobs:
             exit 1
           fi
 
-          RELEASE_TAG="${INPUT_RELEASE_TAG:-v${MODULE_VERSION}}"
-          RELEASE_NAME="${INPUT_RELEASE_NAME:-慕容调度免费版 ${MODULE_VERSION}}"
+          DEFAULT_RELEASE_TAG="慕容调度"
+          DEFAULT_RELEASE_NAME="慕容调度"
+
+          RELEASE_TAG="${INPUT_RELEASE_TAG:-${DEFAULT_RELEASE_TAG}}"
+          RELEASE_NAME="${INPUT_RELEASE_NAME:-${DEFAULT_RELEASE_NAME}}"
           ZIP_FILE_NAME="murongdiaodu-free-module-${MODULE_VERSION}.zip"
           ARTIFACT_NAME="murongdiaodu-free-module-${MODULE_VERSION}"
           RAW_BASE_URL="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}"
