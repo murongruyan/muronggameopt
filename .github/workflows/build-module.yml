@@ -1,0 +1,271 @@
+name: Build Free Module
+
+permissions:
+  contents: write
+
+on:
+  push:
+    branches: ["main", "master"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "模块版本号，如 5.68"
+        required: true
+      version_code:
+        description: "模块 versionCode，如 57"
+        required: true
+      release_tag:
+        description: "GitHub Release 标签，默认 v<version>"
+        required: false
+      release_name:
+        description: "Release 标题，默认 慕容调度免费版 <version>"
+        required: false
+      release_notes:
+        description: "Release 说明，会同步到 changelog.txt"
+        required: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prepare Release Metadata
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          INPUT_VERSION_CODE: ${{ github.event.inputs.version_code }}
+          INPUT_RELEASE_TAG: ${{ github.event.inputs.release_tag }}
+          INPUT_RELEASE_NAME: ${{ github.event.inputs.release_name }}
+          INPUT_RELEASE_NOTES: ${{ github.event.inputs.release_notes }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            MODULE_VERSION="${INPUT_VERSION}"
+            MODULE_VERSION_CODE="${INPUT_VERSION_CODE}"
+          else
+            MODULE_VERSION="$(grep '^version=' module.prop | head -n1 | cut -d= -f2-)"
+            MODULE_VERSION_CODE="$(grep '^versionCode=' module.prop | head -n1 | cut -d= -f2-)"
+          fi
+
+          if [[ -z "${MODULE_VERSION}" || -z "${MODULE_VERSION_CODE}" ]]; then
+            echo "Missing module version metadata."
+            exit 1
+          fi
+
+          RELEASE_TAG="${INPUT_RELEASE_TAG:-v${MODULE_VERSION}}"
+          RELEASE_NAME="${INPUT_RELEASE_NAME:-慕容调度免费版 ${MODULE_VERSION}}"
+          ZIP_FILE_NAME="murongdiaodu-free-module-${MODULE_VERSION}.zip"
+          ARTIFACT_NAME="murongdiaodu-free-module-${MODULE_VERSION}"
+          RAW_BASE_URL="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}"
+          RELEASE_NOTES_FILE="${RUNNER_TEMP}/free-module-release-notes.txt"
+
+          if [[ -n "${INPUT_RELEASE_NOTES:-}" ]]; then
+            printf '%s\n' "${INPUT_RELEASE_NOTES}" > "${RELEASE_NOTES_FILE}"
+          else
+            printf 'Release %s\n' "${MODULE_VERSION}" > "${RELEASE_NOTES_FILE}"
+          fi
+
+          {
+            echo "MODULE_VERSION=${MODULE_VERSION}"
+            echo "MODULE_VERSION_CODE=${MODULE_VERSION_CODE}"
+            echo "RELEASE_TAG=${RELEASE_TAG}"
+            echo "RELEASE_NAME=${RELEASE_NAME}"
+            echo "ZIP_FILE_NAME=${ZIP_FILE_NAME}"
+            echo "ARTIFACT_NAME=${ARTIFACT_NAME}"
+            echo "RAW_BASE_URL=${RAW_BASE_URL}"
+            echo "RELEASE_NOTES_FILE=${RELEASE_NOTES_FILE}"
+          } >> "${GITHUB_ENV}"
+
+      - name: Update Version Files
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          INPUT_RELEASE_NOTES: ${{ github.event.inputs.release_notes }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          version = os.environ["MODULE_VERSION"]
+          version_code = int(os.environ["MODULE_VERSION_CODE"])
+          release_tag = os.environ["RELEASE_TAG"]
+          zip_file_name = os.environ["ZIP_FILE_NAME"]
+          raw_base_url = os.environ["RAW_BASE_URL"]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          release_notes = os.environ.get("INPUT_RELEASE_NOTES", "").strip() or f"Release {version}"
+
+          module_prop = Path("module.prop")
+          lines = module_prop.read_text(encoding="utf-8").splitlines()
+          updated = []
+          seen_update_json = False
+          for line in lines:
+            if line.startswith("name="):
+              updated.append(f"name=慕容调度{version}")
+            elif line.startswith("version="):
+              updated.append(f"version={version}")
+            elif line.startswith("versionCode="):
+              updated.append(f"versionCode={version_code}")
+            elif line.startswith("updateJson="):
+              updated.append(f"updateJson={raw_base_url}/update3.json")
+              seen_update_json = True
+            else:
+              updated.append(line)
+          if not seen_update_json:
+            updated.append(f"updateJson={raw_base_url}/update3.json")
+          module_prop.write_text("\n".join(updated) + "\n", encoding="utf-8")
+
+          update_json = {
+            "version": version,
+            "versionCode": version_code,
+            "zipUrl": f"https://github.com/{repo}/releases/download/{release_tag}/{zip_file_name}",
+            "changelog": f"{raw_base_url}/changelog.txt",
+          }
+          Path("update3.json").write_text(
+            json.dumps(update_json, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+          )
+
+          changelog_path = Path("changelog.txt")
+          old = changelog_path.read_text(encoding="utf-8") if changelog_path.exists() else ""
+          timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+          entry = f"{version} | {timestamp}\n{release_notes}\n\n"
+          changelog_path.write_text(entry + old, encoding="utf-8")
+          PY
+
+      - name: Set Up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager --install "ndk;27.3.13750724"
+
+      - name: Install BPF Compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm libbpf-dev
+
+      - name: Build Runtime Binary
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          export ANDROID_NDK_ROOT="$ANDROID_SDK_ROOT/ndk/27.3.13750724"
+          export TOOLCHAIN="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64"
+          export SYSROOT="$TOOLCHAIN/sysroot"
+          export TARGET="aarch64-linux-android29"
+          export CLANG="$TOOLCHAIN/bin/${TARGET}-clang"
+          export CLANGXX="$TOOLCHAIN/bin/${TARGET}-clang++"
+
+          APP_DIR="线程源码"
+          BIN_DIR="bin"
+          CXX_SHARED_SO="$SYSROOT/usr/lib/aarch64-linux-android/libc++_shared.so"
+          test -f "$APP_DIR/monitor.skel.h"
+
+          clang -target bpf -g -O2 -D__TARGET_ARCH_arm64 \
+            -c "$APP_DIR/monitor.bpf.c" \
+            -o "$APP_DIR/monitor.bpf.o"
+
+          cp "$APP_DIR/monitor.bpf.o" "$BIN_DIR/monitor.bpf.o"
+
+          "$CLANGXX" \
+            --target="$TARGET" \
+            --sysroot="$SYSROOT" \
+            -I"$APP_DIR" \
+            -I"$APP_DIR/bpf" \
+            -std=c++17 -Wall -O3 -fPIE \
+            -c "$BIN_DIR/activity_diaodu.cpp" \
+            -o "$BIN_DIR/activity_diaodu.o"
+
+          "$CLANG" \
+            --target="$TARGET" \
+            --sysroot="$SYSROOT" \
+            -Wall -O3 -fPIE \
+            -c "$BIN_DIR/cJSON.c" \
+            -o "$BIN_DIR/cJSON.o"
+
+          "$CLANGXX" \
+            --target="$TARGET" \
+            --sysroot="$SYSROOT" \
+            -fPIE -pie \
+            -L"$APP_DIR" \
+            -o "$BIN_DIR/activity_diaodu" \
+            "$BIN_DIR/activity_diaodu.o" \
+            "$BIN_DIR/cJSON.o" \
+            -lbpf -lz -lc++_shared -lc -lm -ldl -latomic
+
+          cp "$CXX_SHARED_SO" "$BIN_DIR/libc++_shared.so"
+          rm -f "$BIN_DIR/activity_diaodu.o" "$BIN_DIR/cJSON.o"
+
+      - name: Package Flashable Zip
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          rm -rf dist
+          mkdir -p dist/module/META-INF dist/module/bin/cpu dist/module/config dist/module/vtools
+
+          cp module.prop dist/module/
+          cp customize.sh dist/module/
+          cp service.sh dist/module/
+          cp activity_diaodu.rc dist/module/
+          cp -a META-INF/. dist/module/META-INF/
+          cp -a config/. dist/module/config/
+          cp -a vtools/. dist/module/vtools/
+          cp bin/activity_diaodu dist/module/bin/
+          cp bin/libbpf.so dist/module/bin/
+          cp bin/monitor.bpf.o dist/module/bin/
+          cp bin/libc++_shared.so dist/module/bin/
+          cp bin/cpu/*.json dist/module/bin/cpu/
+
+          cd dist/module
+          zip -r "../${ZIP_FILE_NAME}" .
+
+      - name: Upload Module Zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: dist/${{ env.ZIP_FILE_NAME }}
+
+      - name: Commit Version Files
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add module.prop update3.json changelog.txt
+          if git diff --cached --quiet; then
+            echo "No version file changes to commit."
+          else
+            git commit -m "chore: release ${MODULE_VERSION} [skip ci]"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
+
+      - name: Capture Release Commit
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: echo "RELEASE_COMMIT_SHA=$(git rev-parse HEAD)" >> "${GITHUB_ENV}"
+
+      - name: Publish GitHub Release
+        if: github.event_name == 'workflow_dispatch'
+        uses: ncipollo/release-action@v1
+        with:
+          allowUpdates: true
+          artifactErrorsFailBuild: true
+          artifacts: dist/${{ env.ZIP_FILE_NAME }}
+          bodyFile: ${{ env.RELEASE_NOTES_FILE }}
+          commit: ${{ env.RELEASE_COMMIT_SHA }}
+          makeLatest: true
+          name: ${{ env.RELEASE_NAME }}
+          replacesArtifacts: true
+          tag: ${{ env.RELEASE_TAG }}

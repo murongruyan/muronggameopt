@@ -121,21 +121,6 @@ typedef struct {
 DynamicTuningParams g_dyn_params = {true, 85, 5, false, 0, {}};
 
 typedef struct {
-    int learning_duration_ms;
-    int guard_interval_ms;
-} SchedulerSessionConfig;
-
-static SchedulerSessionConfig g_scheduler_session_config = {
-    120 * 1000,
-    1000
-};
-
-static SchedulerSessionConfig g_scheduler_session_config_base = {
-    120 * 1000,
-    1000
-};
-
-typedef struct {
     std::vector<std::string> main_thread_patterns;
     std::vector<std::string> render_thread_patterns;
     std::vector<std::string> worker_thread_patterns;
@@ -229,8 +214,6 @@ typedef struct {
     std::string friendly;
     std::vector<std::string> packages;
     bool persistent_scope;
-    bool has_session;
-    SchedulerSessionConfig session;
     bool has_default_action;
     ThreadJsonAction default_action;
     ThreadJsonRoleRule roles[THREAD_JSON_ROLE_COUNT];
@@ -240,13 +223,12 @@ typedef struct {
 
 static std::vector<ThreadJsonAppRule> g_thread_app_rules;
 static int g_active_thread_app_rule_index = -1;
+static std::mutex g_thread_config_mutex;
 
 typedef struct {
     std::string friendly;
     std::string category;
     bool game;
-    bool has_session;
-    SchedulerSessionConfig session;
     std::vector<std::string> packages;
     std::vector<std::string> activities;
     std::vector<std::string> processes;
@@ -475,7 +457,7 @@ void set_stune_topapp(int prefer_idle, int boost, mode_t pre_perm, mode_t post_p
 void log_debug_message(const char* message);
 void load_scene_categories_config();
 static long long get_current_time_ms();
-bool is_bpf_thread_enabled_for_app(const char* package);
+static bool execute_command_trim(const char* cmd, char* out, size_t out_size);
 static bool execute_command_all(const char* cmd, std::string& out);
 static std::string trim_copy(const std::string& text);
 static std::string scheduler_to_lower_copy(const char* text);
@@ -483,7 +465,7 @@ namespace UnifiedScheduler {
     void initialize_cluster_policies();
     void reload_thread_config_now();
     void notify_foreground_app_changed(const char* package);
-    void refresh_bpf_targets_now();
+    void refresh_rules_only_targets_now();
     void start_threads();
     void stop_threads();
     void run_scheduler_step();
@@ -537,7 +519,7 @@ static int read_file_all(const char* path, char** out_buf, size_t* out_len) {
     return 1;
 }
 
-static const SceneCategoryRule* find_scene_category_rule_global(const char* package, const char* category) {
+[[maybe_unused]] static const SceneCategoryRule* find_scene_category_rule_global(const char* package, const char* category) {
     if (!g_mode_runtime_features.scheduler_master_enabled ||
         !g_mode_runtime_features.scene_category_enabled) {
         return NULL;
@@ -585,6 +567,11 @@ bool is_runtime_scheduler_master_enabled() {
     return g_mode_runtime_features.scheduler_master_enabled;
 }
 
+bool is_bpf_thread_runtime_enabled() {
+    return g_mode_runtime_features.scheduler_master_enabled &&
+           g_mode_runtime_features.bpf_thread_enabled;
+}
+
 bool is_scene_category_runtime_enabled() {
     return g_mode_runtime_features.scheduler_master_enabled &&
            g_mode_runtime_features.scene_category_enabled;
@@ -601,14 +588,9 @@ static RuntimeFeatureSwitches resolve_runtime_feature_switches_for_app(const cha
         return switches;
     }
     if (is_scheduler_control_panel_package(package)) {
-        switches.bpf_thread_enabled = false;
         return normalize_runtime_feature_switches(switches);
     }
     return normalize_runtime_feature_switches(switches);
-}
-
-bool is_bpf_thread_enabled_for_app(const char* package) {
-    return resolve_runtime_feature_switches_for_app(package).bpf_thread_enabled;
 }
 
 static int freq_table_load(int policy_num, FreqTable* table) {
@@ -712,6 +694,20 @@ static bool execute_command_all(const char* cmd, std::string& out) {
     }
     int status = pclose(pipe);
     return status == 0;
+}
+
+static bool execute_command_trim(const char* cmd, char* out, size_t out_size) {
+    if (!cmd || !out || out_size == 0) return false;
+    out[0] = '\0';
+    FILE* pipe = popen(cmd, "r");
+    if (!pipe) return false;
+    bool ok = false;
+    if (fgets(out, (int)out_size, pipe)) {
+        out[strcspn(out, "\r\n")] = '\0';
+        ok = out[0] != '\0';
+    }
+    pclose(pipe);
+    return ok;
 }
 
 static std::string trim_copy(const std::string& text) {
@@ -1257,17 +1253,57 @@ enum OfficialTunerMode {
     OFFICIAL_TUNER_OPPO = 3
 };
 
+static int detect_official_tuner_mode_from_device_props() {
+    static int cached_mode = -1;
+    if (cached_mode >= 0) {
+        return cached_mode;
+    }
+
+    const char* prop_cmds[] = {
+        "getprop ro.product.manufacturer",
+        "getprop ro.product.brand",
+        "getprop ro.product.system.brand",
+        "getprop ro.vendor.product.brand"
+    };
+
+    std::string merged;
+    char value[128];
+    for (size_t i = 0; i < sizeof(prop_cmds) / sizeof(prop_cmds[0]); i++) {
+        if (!execute_command_trim(prop_cmds[i], value, sizeof(value))) {
+            continue;
+        }
+        std::string lowered = scheduler_to_lower_copy(value);
+        lowered = trim_copy(lowered);
+        if (lowered.empty()) {
+            continue;
+        }
+        if (!merged.empty()) {
+            merged += ' ';
+        }
+        merged += lowered;
+    }
+
+    if (merged.find("xiaomi") != std::string::npos ||
+        merged.find("redmi") != std::string::npos ||
+        merged.find("poco") != std::string::npos) {
+        cached_mode = OFFICIAL_TUNER_XIAOMI;
+    } else if (merged.find("vivo") != std::string::npos ||
+               merged.find("iqoo") != std::string::npos) {
+        cached_mode = OFFICIAL_TUNER_VIVO;
+    } else if (merged.find("oppo") != std::string::npos ||
+               merged.find("oneplus") != std::string::npos ||
+               merged.find("realme") != std::string::npos ||
+               merged.find("oplus") != std::string::npos) {
+        cached_mode = OFFICIAL_TUNER_OPPO;
+    } else {
+        cached_mode = OFFICIAL_TUNER_NONE;
+    }
+
+    return cached_mode;
+}
+
 static int detect_official_tuner_mode() {
-    if (process_exists_by_name("gameopt_hal_service-1-0") || process_exists_by_package("com.oplus.cosa")) {
-        return OFFICIAL_TUNER_OPPO;
-    }
-    if (process_exists_by_package("com.xiaomi.joyose")) {
-        return OFFICIAL_TUNER_XIAOMI;
-    }
-    if (process_exists_by_package("com.vivo.gamewatch")) {
-        return OFFICIAL_TUNER_VIVO;
-    }
-    return OFFICIAL_TUNER_NONE;
+    return detect_official_tuner_mode_from_device_props();
 }
 
 static void disable_official_tuner_for_game(int mode) {
@@ -1328,10 +1364,11 @@ int process_foreground_app(const char* current_app, char* last_app) {
 
         update_official_game_interference_state(current_app);
         load_mode_settings_json(mode);
+        UnifiedScheduler::initialize_cluster_policies();
         apply_settings();
 
         UnifiedScheduler::notify_foreground_app_changed(current_app);
-        UnifiedScheduler::refresh_bpf_targets_now();
+        UnifiedScheduler::refresh_rules_only_targets_now();
         if (g_dyn_params.debug_log) {
             char log_msg[512];
             safe_snprintf(log_msg, sizeof(log_msg),
@@ -1340,7 +1377,7 @@ int process_foreground_app(const char* current_app, char* last_app) {
             log_debug_message(log_msg);
             RuntimeFeatureSwitches app_features = resolve_runtime_feature_switches_for_app(current_app);
             safe_snprintf(log_msg, sizeof(log_msg),
-                          "应用功能开关 | app:%s | master:%d | bpf_thread:%d | scene:%d | base:%d",
+                          "应用功能开关 | app:%s | master:%d | bpf:%d | scene:%d | base:%d",
                           current_app,
                           app_features.scheduler_master_enabled ? 1 : 0,
                           app_features.bpf_thread_enabled ? 1 : 0,

@@ -1,8 +1,18 @@
 #include "vmlinux.h"
-#include <asm/unistd.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
+
+// Keep syscall numbers in-source so BPF builds don't depend on host asm headers.
+#ifndef __NR_sched_setaffinity
+#if defined(__TARGET_ARCH_arm64) || defined(__aarch64__)
+#define __NR_sched_setaffinity 122
+#elif defined(__TARGET_ARCH_x86) || defined(__x86_64__)
+#define __NR_sched_setaffinity 203
+#else
+#error "Unsupported target architecture for __NR_sched_setaffinity"
+#endif
+#endif
 
 struct process_event_signal {
     __s32 pid;

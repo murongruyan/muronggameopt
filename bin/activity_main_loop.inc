@@ -63,6 +63,7 @@ int initialize_application() {
     }
     load_mode_settings_json(g_current_mode);
     UnifiedScheduler::initialize_cluster_policies();
+    prime_config_reload_watch_hashes();
 
     for (int i = 0; i < policy_count && i < MAX_POLICIES; i++) {
         freq_table_load(cpu_policies[i].policy_num, &g_freq_tables[i]);
@@ -95,9 +96,9 @@ void run_main_loop() {
 
     UnifiedScheduler::start_threads();
 
-    // 监控配置文件目录变化（更可靠）
-    int wd_general_config_dir = inotify_add_watch(inotify_fd, CONFIG_DIR, IN_MODIFY | IN_MOVED_TO | IN_CREATE | IN_DELETE | IN_CLOSE_WRITE);
-    int wd_cpu_config_dir = inotify_add_watch(inotify_fd, CPU_CONFIG_DIR, IN_MODIFY | IN_MOVED_TO | IN_CREATE | IN_DELETE | IN_CLOSE_WRITE);
+    // 监控配置文件目录变化，只在写入完成后再进入热重载处理。
+    int wd_general_config_dir = inotify_add_watch(inotify_fd, CONFIG_DIR, IN_MOVED_TO | IN_CLOSE_WRITE);
+    int wd_cpu_config_dir = inotify_add_watch(inotify_fd, CPU_CONFIG_DIR, IN_MOVED_TO | IN_CLOSE_WRITE);
 
     char last_app[MAX_APP_NAME_LEN] = "";
     long long last_app_check_ms = 0;
@@ -119,6 +120,7 @@ void run_main_loop() {
         if (ret > 0 && inotify_fd >= 0 && FD_ISSET(inotify_fd, &fds)) {
             handle_inotify_events(inotify_fd, wd_general_config_dir, wd_cpu_config_dir);
         }
+        process_pending_config_reloads();
 
         long long now_ms = get_current_time_ms();
         if (now_ms - last_app_check_ms >= APP_CHECK_INTERVAL_MS) {

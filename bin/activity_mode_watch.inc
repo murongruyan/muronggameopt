@@ -67,7 +67,7 @@ void load_mode_settings_json(const char* mode) {
         }
     }
 
-    // 公开版默认仅启用静态调度和线程调度开关。
+    // 免费版只保留规则线程与基础策略，不启用动态线程学习器。
     g_dyn_params.enabled = 0;
     g_dyn_params.target_load = 85;
     g_dyn_params.load_margin = 5;
@@ -78,8 +78,6 @@ void load_mode_settings_json(const char* mode) {
     g_mode_runtime_features.bpf_thread_enabled = true;
     g_mode_runtime_features.scene_category_enabled = true;
     g_mode_runtime_features.base_profile_enabled = true;
-    g_scheduler_session_config.learning_duration_ms = 120 * 1000;
-    g_scheduler_session_config.guard_interval_ms = 1000;
 
     cJSON* features = cJSON_GetObjectItem(mode_obj, "features");
     if (features && cJSON_IsObject(features)) {
@@ -88,15 +86,10 @@ void load_mode_settings_json(const char* mode) {
             (cJSON_IsBool(scheduler_master) || cJSON_IsNumber(scheduler_master))) {
             g_mode_runtime_features.scheduler_master_enabled = scheduler_master->valueint != 0;
         }
-        cJSON* bpf_thread_feature = cJSON_GetObjectItem(features, "bpf_thread");
-        if (!bpf_thread_feature) {
-            bpf_thread_feature = cJSON_GetObjectItem(features, "dynamic_thread_scheduler");
-        }
-        if (bpf_thread_feature &&
-            (cJSON_IsBool(bpf_thread_feature) ||
-             cJSON_IsNumber(bpf_thread_feature))) {
-            g_mode_runtime_features.bpf_thread_enabled =
-                bpf_thread_feature->valueint != 0;
+        cJSON* bpf_thread = cJSON_GetObjectItem(features, "bpf_thread");
+        if (bpf_thread &&
+            (cJSON_IsBool(bpf_thread) || cJSON_IsNumber(bpf_thread))) {
+            g_mode_runtime_features.bpf_thread_enabled = bpf_thread->valueint != 0;
         }
         cJSON* scene_category = cJSON_GetObjectItem(features, "scene_category");
         if (scene_category &&
@@ -109,8 +102,6 @@ void load_mode_settings_json(const char* mode) {
             g_mode_runtime_features.base_profile_enabled = base_profile->valueint != 0;
         }
     }
-
-    g_scheduler_session_config_base = g_scheduler_session_config;
 
     for (int i = 0; i < cluster_count; i++) {
         g_cluster_dyn_params[i] = g_dyn_params;
@@ -432,6 +423,158 @@ static bool event_name_matches_config_path(const char* event_name, const char* c
     return strcmp(event_name, base) == 0;
 }
 
+struct ConfigReloadWatchState {
+    bool dirty;
+    long long dirty_since_ms;
+    long long cooldown_until_ms;
+    uint64_t last_hash;
+    bool hash_ready;
+};
+
+static const long long kConfigReloadDebounceMs = 1500;
+static const long long kConfigReloadCooldownMs = 3000;
+
+static ConfigReloadWatchState g_mode_reload_watch = {};
+static ConfigReloadWatchState g_scene_categories_reload_watch = {};
+static ConfigReloadWatchState g_thread_signature_reload_watch = {};
+static ConfigReloadWatchState g_thread_persistent_reload_watch = {};
+static ConfigReloadWatchState g_cpu_reload_watch = {};
+
+static bool compute_file_content_hash64(const char* path, uint64_t* out_hash) {
+    if (!path || !path[0] || !out_hash || !file_exists(path)) {
+        return false;
+    }
+
+    char* data = NULL;
+    size_t len = 0;
+    if (!read_file_all(path, &data, &len) || !data) {
+        if (data) free(data);
+        return false;
+    }
+
+    uint64_t hash = 1469598103934665603ULL;
+    for (size_t i = 0; i < len; i++) {
+        hash ^= (unsigned char)data[i];
+        hash *= 1099511628211ULL;
+    }
+    free(data);
+    *out_hash = hash;
+    return true;
+}
+
+static void prime_config_reload_watch_state(ConfigReloadWatchState* state, const char* path) {
+    if (!state) return;
+    state->dirty = false;
+    state->dirty_since_ms = 0;
+    state->cooldown_until_ms = 0;
+
+    uint64_t hash = 0;
+    if (compute_file_content_hash64(path, &hash)) {
+        state->last_hash = hash;
+        state->hash_ready = true;
+    } else {
+        state->last_hash = 0;
+        state->hash_ready = false;
+    }
+}
+
+static void mark_config_reload_pending(ConfigReloadWatchState* state) {
+    if (!state) return;
+    long long now_ms = get_current_time_ms();
+    state->dirty = true;
+    state->dirty_since_ms = now_ms;
+}
+
+static bool should_reload_pending_config(ConfigReloadWatchState* state, const char* path) {
+    if (!state || !state->dirty || !path || !path[0]) {
+        return false;
+    }
+
+    long long now_ms = get_current_time_ms();
+    if (state->dirty_since_ms <= 0) {
+        state->dirty_since_ms = now_ms;
+        return false;
+    }
+    if (now_ms < state->cooldown_until_ms) {
+        return false;
+    }
+    if (now_ms - state->dirty_since_ms < kConfigReloadDebounceMs) {
+        return false;
+    }
+
+    uint64_t hash = 0;
+    if (!compute_file_content_hash64(path, &hash)) {
+        return false;
+    }
+
+    state->dirty = false;
+    state->dirty_since_ms = 0;
+    if (state->hash_ready && state->last_hash == hash) {
+        return false;
+    }
+
+    state->last_hash = hash;
+    state->hash_ready = true;
+    state->cooldown_until_ms = now_ms + kConfigReloadCooldownMs;
+    return true;
+}
+
+void prime_config_reload_watch_hashes() {
+    prime_config_reload_watch_state(&g_mode_reload_watch, MODE_FILE);
+    prime_config_reload_watch_state(&g_scene_categories_reload_watch, SCENE_CATEGORIES_FILE);
+    prime_config_reload_watch_state(&g_thread_signature_reload_watch, get_thread_signature_config_path());
+    char persistent_path[256];
+    build_persistent_thread_override_path(persistent_path, sizeof(persistent_path));
+    prime_config_reload_watch_state(&g_thread_persistent_reload_watch, persistent_path);
+    prime_config_reload_watch_state(&g_cpu_reload_watch, get_cpu_config_path());
+}
+
+void process_pending_config_reloads() {
+    if (should_reload_pending_config(&g_mode_reload_watch, MODE_FILE)) {
+        log_message("模式文件内容已变更，正在热重载");
+        char mode[64] = "balance";
+        FILE* mode_file = fopen(MODE_FILE, "r");
+        if (mode_file) {
+            char line[256];
+            if (fgets(line, sizeof(line), mode_file)) {
+                line[strcspn(line, "\n")] = 0;
+                safe_strncpy(mode, line, sizeof(mode));
+            }
+            fclose(mode_file);
+        }
+        safe_strncpy(g_current_mode, mode, sizeof(g_current_mode));
+        load_mode_settings_json(mode);
+        UnifiedScheduler::initialize_cluster_policies();
+    }
+
+    if (should_reload_pending_config(&g_scene_categories_reload_watch, SCENE_CATEGORIES_FILE)) {
+        log_message("场景分类配置内容已变更，正在热重载");
+        load_scene_categories_config();
+    }
+
+    const char* thread_config_path = get_thread_signature_config_path();
+    if (should_reload_pending_config(&g_thread_signature_reload_watch, thread_config_path)) {
+        log_message("线程专项配置内容已变更，正在热重载");
+        load_thread_signature_config();
+        UnifiedScheduler::reload_thread_config_now();
+    }
+
+    char persistent_path[256];
+    build_persistent_thread_override_path(persistent_path, sizeof(persistent_path));
+    if (should_reload_pending_config(&g_thread_persistent_reload_watch, persistent_path)) {
+        log_message("设备持久规则覆盖内容已变更，正在热重载");
+        load_thread_signature_config();
+        UnifiedScheduler::reload_thread_config_now();
+    }
+
+    const char* cpu_config_path = get_cpu_config_path();
+    if (should_reload_pending_config(&g_cpu_reload_watch, cpu_config_path)) {
+        log_message("CPU 配置内容已变更，正在热重载");
+        load_mode_settings_json(g_current_mode);
+        UnifiedScheduler::initialize_cluster_policies();
+    }
+}
+
 // Handle inotify events
 void handle_inotify_events(int inotify_fd, int wd_general_config_dir, int wd_cpu_config_dir) {
     char buffer[INOTIFY_BUF_LEN];
@@ -452,34 +595,22 @@ void handle_inotify_events(int inotify_fd, int wd_general_config_dir, int wd_cpu
         if (event->mask & (IN_MODIFY | IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE)) {
             if (event->wd == wd_general_config_dir && event->len > 0) {
                 if (strcmp(event->name, "mode.txt") == 0) {
-                    log_message("检测到模式文件更新");
-                    // Immediately reload mode settings
-                    char mode[64] = "balance";
-                    FILE* mode_file = fopen(MODE_FILE, "r");
-                    if (mode_file) {
-                        char line[256];
-                        if (fgets(line, sizeof(line), mode_file)) {
-                            line[strcspn(line, "\n")] = 0;
-                            safe_strncpy(mode, line, sizeof(mode));
-                        }
-                        fclose(mode_file);
-                    }
-                    safe_strncpy(g_current_mode, mode, sizeof(g_current_mode));
-                    load_mode_settings_json(mode);
+                    mark_config_reload_pending(&g_mode_reload_watch);
                 } else if (strcmp(event->name, "categories.json") == 0) {
-                    log_message("检测到场景分类配置更新");
-                    load_scene_categories_config();
+                    mark_config_reload_pending(&g_scene_categories_reload_watch);
                 }
-            }
-            else if (event->wd == wd_cpu_config_dir && event->len > 0) {
+            } else if (event->wd == wd_cpu_config_dir && event->len > 0) {
                 if (event_name_matches_config_path(event->name, get_thread_signature_config_path())) {
-                    log_message("检测到线程专项配置更新");
-                    load_thread_signature_config();
-                    UnifiedScheduler::reload_thread_config_now();
-                } else if (event_name_matches_config_path(event->name, get_cpu_config_path())) {
-                    log_message("检测到CPU配置文件更新");
-                    load_mode_settings_json(g_current_mode);
-                    UnifiedScheduler::initialize_cluster_policies();
+                    mark_config_reload_pending(&g_thread_signature_reload_watch);
+                } else {
+                    char persistent_path[256];
+                    build_persistent_thread_override_path(persistent_path, sizeof(persistent_path));
+                    if (event_name_matches_config_path(event->name, persistent_path)) {
+                        mark_config_reload_pending(&g_thread_persistent_reload_watch);
+                    }
+                }
+                if (event_name_matches_config_path(event->name, get_cpu_config_path())) {
+                    mark_config_reload_pending(&g_cpu_reload_watch);
                 }
             }
         }

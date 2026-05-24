@@ -18,6 +18,8 @@ static void get_affinity_log_context_for_tid(
     size_t out_comm_size,
     char* out_source,
     size_t out_source_size);
+static void clear_latched_primary_tid_locked(pid_t tid, const char* reason);
+static void reset_scheduler_session_locked(const char* reason);
 
 struct ThreadRuntimeState {
     pid_t pid;
@@ -57,11 +59,6 @@ struct ThreadRuntimeState {
     long long last_static_bind_ms;
     long long static_bind_cooldown_ms;
     int selection_epoch;
-};
-
-struct LearningSample {
-    float fps_error;
-    float power_estimate;
 };
 
 struct SelectionEpochState {
@@ -113,33 +110,25 @@ struct ThreadJsonResolvedRule {
     bool prefer_existing_binding;
 };
 
-struct LockedClassAssignment {
-    bool valid;
-    int cluster;
-    std::vector<int> cpus;
-};
-
 enum SchedulerSessionPhase {
     SESSION_IDLE = 0,
-    SESSION_LEARNING,
-    SESSION_LOCKED,
-    SESSION_BACKGROUND_HOLD
+    SESSION_TRACKING
 };
 
 struct SchedulerSessionState {
     SchedulerSessionPhase phase;
     pid_t pid;
     char package[MAX_APP_NAME_LEN];
-    long long learning_started_ms;
-    long long locked_at_ms;
-    long long background_since_ms;
-    long long last_guard_ms;
-    LockedClassAssignment class_assignments[4];
+    pid_t latched_main_tid;
+    pid_t latched_render_tid;
+    pid_t last_lost_main_tid;
+    pid_t last_lost_render_tid;
+    char latched_main_loss_reason[32];
+    char latched_render_loss_reason[32];
 };
 
 static std::mutex g_mutex;
 static std::unordered_map<int, ThreadRuntimeState> g_threads;
-static std::vector<LearningSample> g_learning_samples;
 static ClusterPolicy g_cluster_policies[MAX_CLUSTERS];
 static ClusterPolicy g_cluster_policy_base[MAX_CLUSTERS];
 static int g_cluster_min_overrides[MAX_CLUSTERS] = {0};
@@ -150,7 +139,6 @@ static long long g_last_pid_lookup_ms = 0;
 static long long g_last_thread_scan_ms = 0;
 static AllCpuStats g_prev_stats = {};
 static int g_prev_stats_valid = 0;
-static long long g_last_learning_adjust_ms = 0;
 static bool g_foreground_explicit_thread_rule_active = false;
 static std::map<uint64_t, SelectionEpochState> g_selection_epochs;
 static long long g_last_epoch_stale_cleanup_ms = 0;
@@ -472,6 +460,160 @@ static bool should_treat_as_priority_game_thread(const char* package, const char
     return cpu_usage_pct >= 3.0f;
 }
 
+static bool is_scheduler_session_foreground_locked() {
+    return g_scheduler_session.phase == SESSION_TRACKING &&
+           g_scheduler_session.pid > 0 &&
+           g_scheduler_session.package[0] &&
+           g_foreground_pid == g_scheduler_session.pid &&
+           strcmp(g_scheduler_session.package, g_foreground_package) == 0;
+}
+
+static char* get_latched_primary_loss_reason_buffer_locked(pid_t* lost_tid, ThreadClass role) {
+    if (role == THREAD_CLASS_MAIN) {
+        if (lost_tid) *lost_tid = g_scheduler_session.last_lost_main_tid;
+        return g_scheduler_session.latched_main_loss_reason;
+    }
+    if (role == THREAD_CLASS_RENDER) {
+        if (lost_tid) *lost_tid = g_scheduler_session.last_lost_render_tid;
+        return g_scheduler_session.latched_render_loss_reason;
+    }
+    if (lost_tid) *lost_tid = 0;
+    return NULL;
+}
+
+static void set_latched_primary_loss_reason_locked(ThreadClass role, pid_t lost_tid, const char* reason) {
+    pid_t ignored_tid = 0;
+    char* buffer = get_latched_primary_loss_reason_buffer_locked(&ignored_tid, role);
+    if (!buffer) return;
+    if (role == THREAD_CLASS_MAIN) {
+        g_scheduler_session.last_lost_main_tid = lost_tid;
+    } else if (role == THREAD_CLASS_RENDER) {
+        g_scheduler_session.last_lost_render_tid = lost_tid;
+    }
+    if (reason && reason[0]) {
+        safe_strncpy(buffer, reason, 32);
+    } else {
+        buffer[0] = '\0';
+    }
+}
+
+static const char* get_latched_primary_loss_reason_locked(ThreadClass role, pid_t* out_lost_tid) {
+    pid_t lost_tid = 0;
+    char* buffer = get_latched_primary_loss_reason_buffer_locked(&lost_tid, role);
+    if (out_lost_tid) *out_lost_tid = lost_tid;
+    if (!buffer || !buffer[0]) return NULL;
+    return buffer;
+}
+
+static void ensure_scheduler_session_tracking_locked() {
+    if (g_foreground_pid <= 0 || !g_foreground_package[0] || strcmp(g_foreground_package, "unknown") == 0) {
+        return;
+    }
+    if (g_scheduler_session.phase == SESSION_TRACKING &&
+        g_scheduler_session.pid == g_foreground_pid &&
+        strcmp(g_scheduler_session.package, g_foreground_package) == 0) {
+        return;
+    }
+    g_scheduler_session.phase = SESSION_TRACKING;
+    g_scheduler_session.pid = g_foreground_pid;
+    safe_strncpy(g_scheduler_session.package, g_foreground_package, sizeof(g_scheduler_session.package));
+}
+
+static bool is_latched_session_tid_alive_locked(pid_t tid) {
+    if (tid <= 0) return false;
+    auto it = g_threads.find((int)tid);
+    if (it == g_threads.end()) return false;
+    const ThreadRuntimeState& state = it->second;
+    return state.pid == g_scheduler_session.pid &&
+           !state.package.empty() &&
+           strcmp(state.package.c_str(), g_scheduler_session.package) == 0;
+}
+
+static void clear_invalid_latched_primary_tids_locked() {
+    if (g_scheduler_session.latched_main_tid > 0 &&
+        !is_latched_session_tid_alive_locked(g_scheduler_session.latched_main_tid)) {
+        clear_latched_primary_tid_locked(g_scheduler_session.latched_main_tid, "tid_not_alive");
+    }
+    if (g_scheduler_session.latched_render_tid > 0 &&
+        !is_latched_session_tid_alive_locked(g_scheduler_session.latched_render_tid)) {
+        clear_latched_primary_tid_locked(g_scheduler_session.latched_render_tid, "tid_not_alive");
+    }
+}
+
+static void clear_latched_primary_tid_locked(pid_t tid, const char* reason) {
+    if (tid <= 0) return;
+    const char* role = NULL;
+    ThreadClass role_class = THREAD_CLASS_BACKGROUND;
+    if (g_scheduler_session.latched_main_tid == tid) {
+        g_scheduler_session.latched_main_tid = 0;
+        role = "main";
+        role_class = THREAD_CLASS_MAIN;
+    } else if (g_scheduler_session.latched_render_tid == tid) {
+        g_scheduler_session.latched_render_tid = 0;
+        role = "render";
+        role_class = THREAD_CLASS_RENDER;
+    }
+    if (!role) return;
+    set_latched_primary_loss_reason_locked(role_class, tid, reason);
+    char msg[256];
+    safe_snprintf(msg, sizeof(msg),
+                  "锁定线程失效 | role:%s | app:%s | pid:%d | tid:%d | reason:%s",
+                  role,
+                  g_scheduler_session.package[0] ? g_scheduler_session.package : "unknown",
+                  (int)g_scheduler_session.pid,
+                  (int)tid,
+                  reason && reason[0] ? reason : "unknown");
+    log_affinity_message(msg);
+}
+
+static void maybe_latch_primary_thread_tid_locked(const ThreadRuntimeState& state) {
+    if (state.pid != g_foreground_pid) return;
+    if (state.package.empty() || strcmp(state.package.c_str(), g_foreground_package) != 0) return;
+    ensure_scheduler_session_tracking_locked();
+    clear_invalid_latched_primary_tids_locked();
+
+    bool is_main = is_main_thread_name_for_package(g_foreground_package, state.comm.c_str(), state.tid);
+    bool is_render = !is_main &&
+                     is_game_engine_priority_thread(g_foreground_package, state.comm.c_str(), state.tid);
+    pid_t* slot = NULL;
+    const char* role = NULL;
+    if (is_main) {
+        slot = &g_scheduler_session.latched_main_tid;
+        role = "main";
+    } else if (is_render) {
+        slot = &g_scheduler_session.latched_render_tid;
+        role = "render";
+    }
+    if (!slot || *slot > 0) return;
+
+    *slot = state.tid;
+    ThreadClass role_class = is_main ? THREAD_CLASS_MAIN : THREAD_CLASS_RENDER;
+    pid_t old_tid = 0;
+    const char* loss_reason = get_latched_primary_loss_reason_locked(role_class, &old_tid);
+    char msg[320];
+    if (loss_reason && old_tid > 0) {
+        safe_snprintf(msg, sizeof(msg),
+                      "锁定线程补选 | role:%s | app:%s | pid:%d | old_tid:%d | new_tid:%d | reason:%s | comm:%s",
+                      role,
+                      g_scheduler_session.package,
+                      (int)g_scheduler_session.pid,
+                      (int)old_tid,
+                      (int)state.tid,
+                      loss_reason,
+                      state.comm.c_str());
+    } else {
+        safe_snprintf(msg, sizeof(msg),
+                      "锁定线程绑定 | role:%s | app:%s | pid:%d | tid:%d | comm:%s",
+                      role,
+                      g_scheduler_session.package,
+                      (int)g_scheduler_session.pid,
+                      (int)state.tid,
+                      state.comm.c_str());
+    }
+    set_latched_primary_loss_reason_locked(role_class, 0, "");
+    log_affinity_message(msg);
+}
+
 static bool should_promote_generic_worker(const char* package, const char* comm, float cpu_usage_pct) {
     if (!comm) return false;
     std::string name = scheduler_to_lower_copy(comm);
@@ -671,7 +813,7 @@ static bool is_thread_affinity_mask_matching_locked(pid_t tid, const std::vector
     return true;
 }
 
-static bool is_thread_freeze_candidate_locked(pid_t tid, const char* comm, float cpu_usage_pct) {
+[[maybe_unused]] static bool is_thread_freeze_candidate_locked(pid_t tid, const char* comm, float cpu_usage_pct) {
     if (!comm || !comm[0]) return false;
     if (!is_game_like_package_name(g_foreground_package)) return false;
     if (is_main_thread_name_for_package(g_foreground_package, comm, tid)) {
@@ -688,7 +830,7 @@ static bool is_thread_freeze_candidate_locked(pid_t tid, const char* comm, float
     return dash_rank >= 0 && dash_rank < 5 && cpu_usage_pct >= 2.0f;
 }
 
-static void update_thread_target_stability_locked(
+[[maybe_unused]] static void update_thread_target_stability_locked(
     ThreadRuntimeState& state,
     int target_cluster,
     const std::vector<int>& explicit_cpus,
@@ -702,7 +844,7 @@ static void update_thread_target_stability_locked(
     }
 }
 
-static bool should_freeze_thread_locked(
+[[maybe_unused]] static bool should_freeze_thread_locked(
     const ThreadRuntimeState& state,
     int target_cluster,
     const std::vector<int>& explicit_cpus,
@@ -1091,48 +1233,13 @@ static bool thread_json_app_rule_has_explicit_affinity_locked(const ThreadJsonAp
     return false;
 }
 
-static bool active_thread_app_rule_uses_explicit_affinity_locked() {
+[[maybe_unused]] static bool active_thread_app_rule_uses_explicit_affinity_locked() {
     if (g_active_thread_app_rule_index < 0 ||
         g_active_thread_app_rule_index >= (int)g_thread_app_rules.size()) {
         return false;
     }
     return thread_json_app_rule_has_explicit_affinity_locked(
         g_thread_app_rules[(size_t)g_active_thread_app_rule_index]);
-}
-
-static bool should_suppress_dynamic_thread_scheduler_locked(const char* package) {
-    if (!package || !package[0] || strcmp(package, "unknown") == 0) return false;
-    if (!g_foreground_explicit_thread_rule_active) return false;
-    if (!g_foreground_package[0] || strcmp(package, g_foreground_package) != 0) return false;
-    return true;
-}
-
-static void apply_active_scheduler_session_override_locked() {
-    g_scheduler_session_config = g_scheduler_session_config_base;
-    const SceneCategoryRule* scene_rule = find_scene_category_rule_global(
-        g_foreground_package, g_scene_policy.foreground_category);
-    if (scene_rule && scene_rule->has_session) {
-        if (scene_rule->session.learning_duration_ms >= 10000) {
-            g_scheduler_session_config.learning_duration_ms = scene_rule->session.learning_duration_ms;
-        }
-        if (scene_rule->session.guard_interval_ms >= 100) {
-            g_scheduler_session_config.guard_interval_ms = scene_rule->session.guard_interval_ms;
-        }
-    }
-    if (g_active_thread_app_rule_index < 0 ||
-        g_active_thread_app_rule_index >= (int)g_thread_app_rules.size()) {
-        return;
-    }
-    const ThreadJsonAppRule& app_rule = g_thread_app_rules[(size_t)g_active_thread_app_rule_index];
-    if (!app_rule.has_session) {
-        return;
-    }
-    if (app_rule.session.learning_duration_ms >= 10000) {
-        g_scheduler_session_config.learning_duration_ms = app_rule.session.learning_duration_ms;
-    }
-    if (app_rule.session.guard_interval_ms >= 100) {
-        g_scheduler_session_config.guard_interval_ms = app_rule.session.guard_interval_ms;
-    }
 }
 
 static bool thread_json_selector_basic_match_locked(
@@ -1880,7 +1987,7 @@ static bool resolve_scene_affinity_template_locked(const char* package,
     return primary_cluster >= 0;
 }
 
-static bool resolve_affinity_template(const char* package, pid_t tid, const char* comm, ThreadClass cls, float cpu_usage_pct, const AllCpuStats& stats, std::vector<int>& cpus, int& primary_cluster) {
+[[maybe_unused]] static bool resolve_affinity_template(const char* package, pid_t tid, const char* comm, ThreadClass cls, float cpu_usage_pct, const AllCpuStats& stats, std::vector<int>& cpus, int& primary_cluster) {
     cpus.clear();
     primary_cluster = -1;
     bool is_main = is_main_thread_name_for_package(package, comm, tid);
@@ -2155,6 +2262,29 @@ static void sync_render_thread_targets_locked(bool force) {
     g_last_render_tid_sync_ms = now_ms;
 
     clear_target_tid_map_locked();
+    clear_invalid_latched_primary_tids_locked();
+    bool latched_added = false;
+    auto add_target_tid = [&](pid_t tid) -> bool {
+        if (tid <= 0) return true;
+        auto it = g_threads.find((int)tid);
+        if (it == g_threads.end()) return false;
+        const ThreadRuntimeState& state = it->second;
+        if (state.pid != g_foreground_pid) return false;
+        if (state.package.empty() || strcmp(state.package.c_str(), g_foreground_package) != 0) return false;
+        uint32_t key = (uint32_t)state.tid;
+        uint32_t enabled = 1;
+        if (bpf_map_update_elem(g_target_tid_map_fd, &key, &enabled, BPF_ANY) != 0) {
+            log_bpf_error_once("eBPF写入渲染线程TID失败", errno);
+            return false;
+        }
+        latched_added = true;
+        return true;
+    };
+    if (is_scheduler_session_foreground_locked()) {
+        add_target_tid(g_scheduler_session.latched_main_tid);
+        add_target_tid(g_scheduler_session.latched_render_tid);
+        if (latched_added) return;
+    }
     for (auto& kv : g_threads) {
         ThreadRuntimeState& state = kv.second;
         bool render_like = should_treat_as_priority_game_thread(
@@ -2734,11 +2864,17 @@ static void refresh_foreground_pid_locked(bool force_refresh) {
         }
     }
     if (new_pid != g_foreground_pid) {
+        if (g_scheduler_session.pid > 0 && g_scheduler_session.pid != new_pid) {
+            reset_scheduler_session_locked("foreground_pid_changed");
+        }
         char msg[256];
         safe_snprintf(msg, sizeof(msg), "前台PID更新 | app:%s | pid:%d", g_foreground_package, (int)new_pid);
         log_message(msg);
     }
     g_foreground_pid = new_pid;
+    if (g_foreground_pid > 0) {
+        ensure_scheduler_session_tracking_locked();
+    }
 }
 
 static void collect_process_threads_for_package_locked(
@@ -2790,16 +2926,6 @@ static void apply_explicit_persistent_actions_for_process_locked(
     long long now_ms) {
     if (pid <= 0 || !package || !package[0]) return;
     if (should_pause_our_game_scheduler()) return;
-    bool locked_foreground_session =
-        g_scheduler_session.phase == SESSION_LOCKED &&
-        g_scheduler_session.pid > 0 &&
-        pid == g_scheduler_session.pid &&
-        pid == g_foreground_pid &&
-        strcmp(g_scheduler_session.package, package) == 0 &&
-        strcmp(g_foreground_package, package) == 0;
-    if (locked_foreground_session) {
-        return;
-    }
 
     for (auto& kv : g_threads) {
         ThreadRuntimeState& state = kv.second;
@@ -2857,14 +2983,7 @@ static void apply_explicit_persistent_actions_for_process_locked(
 
 static void collect_foreground_threads_locked() {
     long long now_ms = get_current_time_ms();
-    int scan_interval_ms = 150;
-    if (g_scheduler_session.phase == SESSION_LOCKED) {
-        scan_interval_ms = 1000;
-    } else if (g_scheduler_session.phase == SESSION_BACKGROUND_HOLD) {
-        scan_interval_ms = 1500;
-    } else if (g_bpf_ready.load()) {
-        scan_interval_ms = 400;
-    }
+    int scan_interval_ms = g_bpf_ready.load() ? 400 : 150;
     if (g_last_thread_scan_ms > 0 && now_ms - g_last_thread_scan_ms < scan_interval_ms) {
         return;
     }
@@ -2898,6 +3017,9 @@ static void collect_foreground_threads_locked() {
 
     if (seen.empty()) {
         restore_all_thread_runtime_adjustments_locked("no_scan_targets");
+        if (g_scheduler_session.phase != SESSION_IDLE) {
+            reset_scheduler_session_locked("no_scan_targets");
+        }
         g_threads.clear();
         return;
     }
@@ -2951,6 +3073,7 @@ static void collect_foreground_threads_locked() {
             }
         }
         if (!found) {
+            clear_latched_primary_tid_locked(it->second.tid, "thread_gone");
             restore_thread_runtime_adjustments_locked(it->second, "thread_gone");
             it = g_threads.erase(it);
         } else {
@@ -2998,7 +3121,7 @@ ThreadClass classify_thread(pid_t tid, const char* comm, float cpu_usage_pct) {
     return THREAD_CLASS_BACKGROUND;
 }
 
-static const char* thread_class_to_string(ThreadClass cls) {
+[[maybe_unused]] static const char* thread_class_to_string(ThreadClass cls) {
     switch (cls) {
     case THREAD_CLASS_MAIN:
         return "main";
@@ -3012,302 +3135,35 @@ static const char* thread_class_to_string(ThreadClass cls) {
     }
 }
 
-static const char* session_phase_to_string(SchedulerSessionPhase phase) {
-    switch (phase) {
-    case SESSION_LEARNING:
-        return "LEARNING";
-    case SESSION_LOCKED:
-        return "LOCKED";
-    case SESSION_BACKGROUND_HOLD:
-        return "BACKGROUND_HOLD";
-    case SESSION_IDLE:
-    default:
-        return "IDLE";
-    }
-}
-
-static ThreadClass classify_thread_role_for_lock(pid_t tid, const char* comm, float cpu_usage_pct) {
-    if (is_main_thread_name_for_package(g_foreground_package, comm, tid)) {
-        return THREAD_CLASS_MAIN;
-    }
-    if (is_game_engine_priority_thread(g_foreground_package, comm, tid)) {
-        return THREAD_CLASS_RENDER;
-    }
-    if (is_worker_thread_name(comm) || is_taskgraph_thread_name(comm) ||
-        is_thread_dash_name(comm) || should_promote_generic_worker(g_foreground_package, comm, cpu_usage_pct)) {
-        return THREAD_CLASS_BURST;
-    }
-    return THREAD_CLASS_BACKGROUND;
-}
-
-static void clear_locked_class_assignments_locked() {
-    for (int i = 0; i < 4; i++) {
-        g_scheduler_session.class_assignments[i].valid = false;
-        g_scheduler_session.class_assignments[i].cluster = -1;
-        g_scheduler_session.class_assignments[i].cpus.clear();
-    }
-}
-
 static void reset_scheduler_session_locked(const char* reason) {
     char old_package[MAX_APP_NAME_LEN];
     safe_strncpy(old_package, g_scheduler_session.package, sizeof(old_package));
     pid_t old_pid = g_scheduler_session.pid;
-    SchedulerSessionPhase old_phase = g_scheduler_session.phase;
     g_scheduler_session.phase = SESSION_IDLE;
     g_scheduler_session.pid = -1;
     g_scheduler_session.package[0] = '\0';
-    g_scheduler_session.learning_started_ms = 0;
-    g_scheduler_session.locked_at_ms = 0;
-    g_scheduler_session.background_since_ms = 0;
-    g_scheduler_session.last_guard_ms = 0;
-    clear_locked_class_assignments_locked();
+    g_scheduler_session.latched_main_tid = 0;
+    g_scheduler_session.latched_render_tid = 0;
+    g_scheduler_session.last_lost_main_tid = 0;
+    g_scheduler_session.last_lost_render_tid = 0;
+    g_scheduler_session.latched_main_loss_reason[0] = '\0';
+    g_scheduler_session.latched_render_loss_reason[0] = '\0';
     if (reason && reason[0]) {
         char msg[320];
         safe_snprintf(msg, sizeof(msg),
-                      "调度会话重置 | from:%s | app:%s | pid:%d | reason:%s",
-                      session_phase_to_string(old_phase),
+                      "调度会话重置 | app:%s | pid:%d | reason:%s",
                       old_package[0] ? old_package : "none",
                       (int)old_pid,
                       reason);
         log_affinity_message(msg);
-        trace_instantf("murong_session", "reset phase=%s app=%s pid=%d reason=%s",
-                       session_phase_to_string(old_phase),
+        trace_instantf("murong_session", "reset app=%s pid=%d reason=%s",
                        old_package[0] ? old_package : "none",
                        (int)old_pid,
                        reason);
     }
 }
 
-static void begin_learning_session_locked(long long now_ms) {
-    reset_scheduler_session_locked("");
-    g_scheduler_session.phase = SESSION_LEARNING;
-    g_scheduler_session.pid = g_foreground_pid;
-    safe_strncpy(g_scheduler_session.package, g_foreground_package, sizeof(g_scheduler_session.package));
-    g_scheduler_session.learning_started_ms = now_ms;
-    char msg[320];
-    safe_snprintf(msg, sizeof(msg),
-                  "调度会话开始学习 | app:%s | pid:%d | phase:%s",
-                  g_scheduler_session.package,
-                  (int)g_scheduler_session.pid,
-                  session_phase_to_string(g_scheduler_session.phase));
-    log_affinity_message(msg);
-    trace_instantf("murong_session", "learning app=%s pid=%d",
-                   g_scheduler_session.package,
-                   (int)g_scheduler_session.pid);
-}
-
-static bool build_expected_mask_for_assignment(
-    const LockedClassAssignment& assignment,
-    cpu_set_t* out_mask) {
-    if (!out_mask || !assignment.valid) return false;
-    CPU_ZERO(out_mask);
-    if (!assignment.cpus.empty()) {
-        for (size_t i = 0; i < assignment.cpus.size(); i++) {
-            int cpu = assignment.cpus[i];
-            if (cpu >= 0 && cpu < CPU_SETSIZE) {
-                CPU_SET(cpu, out_mask);
-            }
-        }
-        return CPU_COUNT(out_mask) > 0;
-    }
-    if (assignment.cluster < 0 || assignment.cluster >= cluster_count) return false;
-    for (int i = 0; i < cpu_clusters[assignment.cluster].cpu_count; i++) {
-        CPU_SET(cpu_clusters[assignment.cluster].cpu_ids[i], out_mask);
-    }
-    return CPU_COUNT(out_mask) > 0;
-}
-
-static bool is_thread_assignment_matching_locked(
-    pid_t tid,
-    const LockedClassAssignment& assignment) {
-    cpu_set_t expected_mask;
-    if (!build_expected_mask_for_assignment(assignment, &expected_mask)) return false;
-    cpu_set_t actual_mask;
-    CPU_ZERO(&actual_mask);
-    if (sched_getaffinity(tid, sizeof(actual_mask), &actual_mask) != 0) {
-        return false;
-    }
-    return CPU_EQUAL(&expected_mask, &actual_mask);
-}
-
-static bool snapshot_locked_assignments_locked(long long now_ms) {
-    struct Candidate {
-        bool valid;
-        float score;
-        int cluster;
-        std::vector<int> cpus;
-    };
-    Candidate best[4] = {};
-    for (auto& kv : g_threads) {
-        const ThreadRuntimeState& state = kv.second;
-        if (state.pid != g_scheduler_session.pid) continue;
-        if (state.package != g_scheduler_session.package) continue;
-        if (state.assigned_cluster < 0) continue;
-        ThreadClass role = classify_thread_role_for_lock(state.tid, state.comm.c_str(), state.cpu_usage_pct);
-        Candidate& candidate = best[(int)role];
-        float score = state.cpu_usage_pct;
-        if (!candidate.valid || score >= candidate.score) {
-            candidate.valid = true;
-            candidate.score = score;
-            candidate.cluster = state.assigned_cluster;
-            candidate.cpus = state.assigned_cpus;
-        }
-    }
-    bool any_valid = false;
-    clear_locked_class_assignments_locked();
-    for (int i = 0; i < 4; i++) {
-        if (!best[i].valid) continue;
-        g_scheduler_session.class_assignments[i].valid = true;
-        g_scheduler_session.class_assignments[i].cluster = best[i].cluster;
-        g_scheduler_session.class_assignments[i].cpus = best[i].cpus;
-        any_valid = true;
-    }
-    if (!any_valid) return false;
-    g_scheduler_session.phase = SESSION_LOCKED;
-    g_scheduler_session.locked_at_ms = now_ms;
-    g_scheduler_session.last_guard_ms = 0;
-    char msg[512];
-    safe_snprintf(msg, sizeof(msg),
-                  "调度会话已锁定 | app:%s | pid:%d | main:%d | render:%d | worker:%d | other:%d",
-                  g_scheduler_session.package,
-                  (int)g_scheduler_session.pid,
-                  g_scheduler_session.class_assignments[(int)THREAD_CLASS_MAIN].valid ? 1 : 0,
-                  g_scheduler_session.class_assignments[(int)THREAD_CLASS_RENDER].valid ? 1 : 0,
-                  g_scheduler_session.class_assignments[(int)THREAD_CLASS_BURST].valid ? 1 : 0,
-                  g_scheduler_session.class_assignments[(int)THREAD_CLASS_BACKGROUND].valid ? 1 : 0);
-    log_affinity_message(msg);
-    trace_instantf("murong_session", "locked app=%s pid=%d", g_scheduler_session.package, (int)g_scheduler_session.pid);
-    return true;
-}
-
-static void update_scheduler_session_locked(long long now_ms) {
-    bool current_is_game = g_foreground_pid > 0 &&
-                           g_foreground_package[0] &&
-                           strcmp(g_foreground_package, "unknown") != 0 &&
-                           is_game_package_name(g_foreground_package);
-    if (!current_is_game) {
-        return;
-    }
-    if (active_thread_app_rule_uses_explicit_affinity_locked()) {
-        if (g_scheduler_session.phase != SESSION_IDLE) {
-            reset_scheduler_session_locked("explicit_thread_affinity");
-        }
-        return;
-    }
-    if (g_scheduler_session.phase == SESSION_IDLE) {
-        begin_learning_session_locked(now_ms);
-        return;
-    }
-    if (strcmp(g_scheduler_session.package, g_foreground_package) != 0) {
-        begin_learning_session_locked(now_ms);
-        return;
-    }
-    if (g_scheduler_session.phase == SESSION_BACKGROUND_HOLD) {
-        if (g_scheduler_session.pid == g_foreground_pid) {
-            g_scheduler_session.phase = g_scheduler_session.locked_at_ms > 0 ? SESSION_LOCKED : SESSION_LEARNING;
-            g_scheduler_session.background_since_ms = 0;
-            char msg[256];
-            safe_snprintf(msg, sizeof(msg),
-                          "调度会话恢复 | app:%s | pid:%d | phase:%s",
-                          g_scheduler_session.package,
-                          (int)g_scheduler_session.pid,
-                          session_phase_to_string(g_scheduler_session.phase));
-            log_affinity_message(msg);
-            trace_instantf("murong_session", "resume app=%s pid=%d phase=%s",
-                           g_scheduler_session.package,
-                           (int)g_scheduler_session.pid,
-                           session_phase_to_string(g_scheduler_session.phase));
-            return;
-        }
-        begin_learning_session_locked(now_ms);
-        return;
-    }
-    if (g_scheduler_session.pid != g_foreground_pid) {
-        begin_learning_session_locked(now_ms);
-        return;
-    }
-    if (g_scheduler_session.phase == SESSION_LEARNING &&
-        now_ms - g_scheduler_session.learning_started_ms >= g_scheduler_session_config.learning_duration_ms) {
-        /* 锁定前确保分配已稳定 */
-        bool all_stable = true;
-        if (now_ms - g_scheduler_session.learning_started_ms < g_scheduler_session_config.learning_duration_ms * 2) {
-            for (auto& kv : g_threads) {
-                if (kv.second.pid != g_scheduler_session.pid) continue;
-                if (kv.second.assigned_cluster < 0) continue;
-                if (kv.second.last_migrate_ms > 0 &&
-                    now_ms - kv.second.last_migrate_ms < kSelectionChangeThresholdMs) {
-                    all_stable = false;
-                    break;
-                }
-            }
-        }
-        if (all_stable) {
-            snapshot_locked_assignments_locked(now_ms);
-        }
-    }
-}
-
-static bool guard_locked_assignments_locked(long long now_ms) {
-    if (g_scheduler_session.phase != SESSION_LOCKED) return false;
-    if (g_scheduler_session.pid <= 0 || g_foreground_pid != g_scheduler_session.pid) return false;
-    if (strcmp(g_scheduler_session.package, g_foreground_package) != 0) return false;
-    if (g_scheduler_session.last_guard_ms > 0 &&
-        now_ms - g_scheduler_session.last_guard_ms < g_scheduler_session_config.guard_interval_ms) {
-        return true;
-    }
-    g_scheduler_session.last_guard_ms = now_ms;
-    for (auto& kv : g_threads) {
-        ThreadRuntimeState& state = kv.second;
-        if (state.pid != g_scheduler_session.pid) continue;
-        if (state.package != g_scheduler_session.package) continue;
-        /* 跳过显式规则线程 */
-        if (state.has_explicit_affinity_rule) continue;
-        /* 跳过从未分配过的线程 */
-        if (state.assigned_cluster < 0) continue;
-        /* 直接使用锁定时的分配，不重新分类 */
-        LockedClassAssignment assignment = {};
-        assignment.valid = true;
-        assignment.cluster = state.assigned_cluster;
-        assignment.cpus = state.assigned_cpus;
-        bool actual_match = is_thread_assignment_matching_locked(state.tid, assignment);
-        if (actual_match) continue;
-        /* 重绑冷却 */
-        if (state.last_migrate_ms > 0 && now_ms - state.last_migrate_ms < kRebindCooldownMs) {
-            continue;
-        }
-        if (!g_official_tuner_disabled) {
-            sync_official_tuner_for_game(g_foreground_package);
-        }
-        bool applied = !assignment.cpus.empty() ?
-            set_thread_affinity_mask(state.tid, assignment.cpus) :
-            set_thread_affinity(state.tid, assignment.cluster);
-        if (applied) {
-            g_runtime_stats.guard_reapply_count.fetch_add(1);
-            state.last_migrate_ms = now_ms;
-            state.last_migrate_ms = now_ms;
-            char msg[320];
-            safe_snprintf(msg, sizeof(msg),
-                          "锁定守护重打 | app:%s | pid:%d | tid:%d | role:%s | cluster:%d | mask_size:%d",
-                          g_scheduler_session.package,
-                          (int)g_scheduler_session.pid,
-                          (int)state.tid,
-                          thread_class_to_string(state.cls),
-                          assignment.cluster,
-                          (int)assignment.cpus.size());
-            log_scheduler_probe_once(msg);
-            trace_instantf("murong_guard", "reapply app=%s pid=%d tid=%d role=%s cluster=%d mask=%d",
-                           g_scheduler_session.package,
-                           (int)g_scheduler_session.pid,
-                           (int)state.tid,
-                           thread_class_to_string(state.cls),
-                           assignment.cluster,
-                           (int)assignment.cpus.size());
-        }
-    }
-    return true;
-}
-
-static float avg_idle_ratio(int cluster_id, const AllCpuStats& stats) {
+[[maybe_unused]] static float avg_idle_ratio(int cluster_id, const AllCpuStats& stats) {
     if (!g_prev_stats_valid) return 1.0f;
     uint64_t idle_delta = 0;
     uint64_t total_delta = 0;
@@ -3327,7 +3183,7 @@ static float avg_idle_ratio(int cluster_id, const AllCpuStats& stats) {
     return ratio;
 }
 
-static float get_freq_headroom(int cluster_id) {
+[[maybe_unused]] static float get_freq_headroom(int cluster_id) {
     if (cluster_id < 0 || cluster_id >= cluster_count) return 0.0f;
     int policy_num = cpu_clusters[cluster_id].policies[0];
     char path[256];
@@ -3347,7 +3203,7 @@ static float get_freq_headroom(int cluster_id) {
     return headroom;
 }
 
-static float estimate_thermal_pressure() {
+[[maybe_unused]] static float estimate_thermal_pressure() {
     char buf[64];
     if (!read_text_file("/sys/class/thermal/thermal_zone0/temp", buf, sizeof(buf))) {
         return 0.0f;
@@ -3359,40 +3215,6 @@ static float estimate_thermal_pressure() {
     if (pressure < 0.0f) pressure = 0.0f;
     if (pressure > 1.0f) pressure = 1.0f;
     return pressure;
-}
-
-float compute_cluster_score(int cluster_id, const ClusterPolicy& policy, const AllCpuStats& stats, float thermal) {
-    float idle_ratio = avg_idle_ratio(cluster_id, stats);
-    float freq_headroom = get_freq_headroom(cluster_id);
-    float rq_pressure = 1.0f - idle_ratio;
-    return idle_ratio * policy.w_idle +
-           freq_headroom * policy.w_freq -
-           rq_pressure * policy.w_rq -
-           thermal * policy.w_thermal;
-}
-
-int select_target_cluster(ThreadClass cls, const std::vector<float>& cluster_scores) {
-    if (cluster_scores.empty()) return 0;
-
-    int start = 0;
-    if (cls == THREAD_CLASS_RENDER || cls == THREAD_CLASS_MAIN) {
-        start = cluster_scores.size() > 1 ? (int)cluster_scores.size() / 2 : 0;
-    } else if (cls == THREAD_CLASS_BURST) {
-        start = cluster_scores.size() > 2 ? 1 : 0;
-    }
-
-    int best = start;
-    float best_score = cluster_scores[start];
-    for (int i = start; i < (int)cluster_scores.size(); i++) {
-        if (cluster_scores[i] > best_score) {
-            best = i;
-            best_score = cluster_scores[i];
-        }
-    }
-    if (cls == THREAD_CLASS_BACKGROUND) {
-        return 0;
-    }
-    return best;
 }
 
 static void read_tid_allowed_cpu_list(pid_t tid, char* out, size_t out_size) {
@@ -3673,12 +3495,4 @@ void adjust_policy_by_fps() {
     for (int i = 0; i < cluster_count; i++) {
         g_cluster_policies[i] = g_cluster_policy_base[i];
     }
-}
-
-static void record_learning_sample() {
-    // 公开版不使用 FPS 学习样本，保留空实现以维持调度调用链稳定。
-}
-
-static void tune_learning_engine_if_needed() {
-    // 公开版不启用自学习调参，保留空实现以维持调度调用链稳定。
 }

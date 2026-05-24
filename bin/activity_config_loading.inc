@@ -555,7 +555,91 @@ static void load_thread_json_app_rule_config(cJSON* app_obj, ThreadJsonAppRule* 
     load_thread_json_safety_config(safety, &out->safety);
 }
 
+static void build_persistent_thread_override_path(char* out, size_t out_size) {
+    if (!out || out_size == 0) return;
+    safe_snprintf(out, out_size, "%s%s.persistent.json", CPU_CONFIG_DIR, cpu_model);
+}
+
+static void load_persistent_thread_override_config_locked() {
+    char persistent_override_path[256];
+    build_persistent_thread_override_path(persistent_override_path, sizeof(persistent_override_path));
+    if (!file_exists(persistent_override_path)) {
+        return;
+    }
+
+    FILE* pf = fopen(persistent_override_path, "rb");
+    if (!pf) {
+        return;
+    }
+
+    fseek(pf, 0, SEEK_END);
+    long plen = ftell(pf);
+    fseek(pf, 0, SEEK_SET);
+    if (plen <= 0) {
+        fclose(pf);
+        return;
+    }
+
+    char* pdata = (char*)malloc(plen + 1);
+    if (!pdata) {
+        fclose(pf);
+        return;
+    }
+
+    size_t pbread = fread(pdata, 1, plen, pf);
+    pdata[pbread] = 0;
+    fclose(pf);
+
+    cJSON* proot = cJSON_Parse(pdata);
+    free(pdata);
+    if (!proot) {
+        return;
+    }
+
+    cJSON* persistent_root = cJSON_GetObjectItem(proot, "apps");
+    if (persistent_root && cJSON_IsArray(persistent_root)) {
+        cJSON* pitem = NULL;
+        cJSON_ArrayForEach(pitem, persistent_root) {
+            if (!cJSON_IsObject(pitem)) continue;
+            cJSON* scope = cJSON_GetObjectItem(pitem, "scope");
+            if (!scope || !cJSON_IsString(scope) || !scope->valuestring) continue;
+            std::string scope_value = scheduler_to_lower_copy(scope->valuestring);
+            if (scope_value != "persistent") continue;
+
+            cJSON* packages = cJSON_GetObjectItem(pitem, "packages");
+            if (!packages || !cJSON_IsArray(packages) || !cJSON_GetArraySize(packages)) continue;
+            cJSON* first_package_item = cJSON_GetArrayItem(packages, 0);
+            if (!first_package_item || !cJSON_IsString(first_package_item) || !first_package_item->valuestring) {
+                continue;
+            }
+            std::string first_pkg = scheduler_to_lower_copy(first_package_item->valuestring);
+            if (first_pkg.empty()) continue;
+
+            for (auto it = g_thread_app_rules.begin(); it != g_thread_app_rules.end(); ) {
+                if (!it->packages.empty() && scheduler_to_lower_copy(it->packages[0].c_str()) == first_pkg) {
+                    it = g_thread_app_rules.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+
+            ThreadJsonAppRule override_rule = {};
+            load_thread_json_app_rule_config(pitem, &override_rule);
+            if (!override_rule.packages.empty()) {
+                g_thread_app_rules.push_back(override_rule);
+            }
+        }
+    }
+
+    cJSON_Delete(proot);
+
+    char log_msg[256];
+    safe_snprintf(log_msg, sizeof(log_msg), "已加载设备持久规则覆盖: %s", persistent_override_path);
+    log_message(log_msg);
+}
+
 static void load_thread_signature_config() {
+    std::lock_guard<std::mutex> lock(g_thread_config_mutex);
     clear_thread_signature_config();
 
     const char* config_path = get_thread_signature_config_path();
@@ -617,6 +701,8 @@ static void load_thread_signature_config() {
             }
         }
     }
+
+    load_persistent_thread_override_config_locked();
 
     char log_msg[320];
     safe_snprintf(log_msg, sizeof(log_msg),
