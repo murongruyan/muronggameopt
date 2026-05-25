@@ -193,6 +193,67 @@ static void log_affinity_message(const char* message) {
     if (!is_aux_log_enabled()) {
         return;
     }
+    auto extract_affinity_log_prefix = [](const char* text) -> std::string {
+        if (!text || !text[0]) return "";
+        if (strstr(text, "setaffinity_failed:")) return "绑核失败";
+        if (strstr(text, "cpuset_recover:")) return "cpuset恢复";
+        if (strncmp(text, "tid:", 4) == 0 &&
+            (strstr(text, "explicit_mask:") || strstr(text, "mask:cluster-"))) {
+            return "线程绑核应用";
+        }
+        const char* sep = strstr(text, " | ");
+        if (!sep) return std::string(text);
+        return std::string(text, (size_t)(sep - text));
+    };
+    auto get_affinity_log_min_interval_ms = [](const std::string& prefix) -> long long {
+        if (prefix == "线程绑核应用") return 15000;
+        if (prefix == "绑核失败") return 5000;
+        if (prefix == "cpuset恢复") return 10000;
+        if (prefix == "锁定守护重打") return 15000;
+        if (prefix == "线程采样") return 30000;
+        if (prefix == "静态规则绑核") return 15000;
+        if (prefix == "线程冻结") return 30000;
+        if (prefix == "persistent规则应用") return 15000;
+        return 0;
+    };
+    struct AffinityLogThrottleState {
+        long long last_emit_ms;
+        long long suppressed_since_ms;
+        int suppressed_count;
+    };
+    static std::mutex throttle_mutex;
+    static std::unordered_map<std::string, AffinityLogThrottleState> throttle_states;
+    long long now_ms = get_current_time_ms();
+    std::lock_guard<std::mutex> lock(throttle_mutex);
+    std::string prefix = extract_affinity_log_prefix(message);
+    long long min_interval_ms = get_affinity_log_min_interval_ms(prefix);
+    if (min_interval_ms > 0 && !prefix.empty()) {
+        AffinityLogThrottleState& state = throttle_states[prefix];
+        if (state.last_emit_ms > 0 && now_ms - state.last_emit_ms < min_interval_ms) {
+            if (state.suppressed_count == 0) {
+                state.suppressed_since_ms = now_ms;
+            }
+            state.suppressed_count++;
+            return;
+        }
+        clear_log_if_needed_for(AFFINITY_LOG_FILE);
+        if (state.suppressed_count > 0) {
+            char summary[256];
+            long long suppressed_window_ms =
+                state.suppressed_since_ms > 0 ? (now_ms - state.suppressed_since_ms) : 0;
+            safe_snprintf(summary, sizeof(summary),
+                          "日志限流汇总 | type:%s | suppressed:%d | window_ms:%lld",
+                          prefix.c_str(),
+                          state.suppressed_count,
+                          suppressed_window_ms);
+            append_timestamped_log_line(AFFINITY_LOG_FILE, summary);
+            state.suppressed_count = 0;
+            state.suppressed_since_ms = 0;
+        }
+        state.last_emit_ms = now_ms;
+        append_timestamped_log_line(AFFINITY_LOG_FILE, message);
+        return;
+    }
     clear_log_if_needed_for(AFFINITY_LOG_FILE);
     append_timestamped_log_line(AFFINITY_LOG_FILE, message);
 }

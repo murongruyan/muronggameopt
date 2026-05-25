@@ -1318,7 +1318,8 @@ static void disable_official_tuner_for_game(int mode) {
         run_shell_quiet("pm disable com.vivo.gamewatch >/dev/null 2>&1");
         break;
     case OFFICIAL_TUNER_OPPO:
-        run_shell_quiet("stop gameopt_hal_service-1-0 >/dev/null 2>&1");
+        run_shell_quiet("setprop persist.sys.oiface.enable 0 >/dev/null 2>&1");
+        run_shell_quiet("stop oiface >/dev/null 2>&1");
         break;
     default:
         break;
@@ -1335,7 +1336,8 @@ static void restore_official_tuner_after_game(int mode) {
         run_shell_quiet("pm enable com.vivo.gamewatch >/dev/null 2>&1");
         break;
     case OFFICIAL_TUNER_OPPO:
-        run_shell_quiet("start gameopt_hal_service-1-0 >/dev/null 2>&1");
+        run_shell_quiet("setprop persist.sys.oiface.enable 2 >/dev/null 2>&1");
+        run_shell_quiet("start oiface >/dev/null 2>&1");
         break;
     default:
         break;
@@ -1362,12 +1364,12 @@ int process_foreground_app(const char* current_app, char* last_app) {
         get_mode_for_package(current_app, mode, sizeof(mode));
         safe_strncpy(g_current_mode, mode, sizeof(g_current_mode));
 
-        update_official_game_interference_state(current_app);
         load_mode_settings_json(mode);
         UnifiedScheduler::initialize_cluster_policies();
         apply_settings();
 
         UnifiedScheduler::notify_foreground_app_changed(current_app);
+        update_official_game_interference_state(current_app);
         UnifiedScheduler::refresh_rules_only_targets_now();
         if (g_dyn_params.debug_log) {
             char log_msg[512];

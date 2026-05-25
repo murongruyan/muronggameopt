@@ -21,7 +21,10 @@ on:
         description: "Release 标题，默认 慕容调度"
         required: false
       release_notes:
-        description: "Release 说明，会同步到 changelog.txt"
+        description: "GitHub Release 发布页说明，不同步到 changelog.txt"
+        required: false
+      changelog_notes:
+        description: "changelog.txt 说明，不同步到发布页"
         required: false
 
 jobs:
@@ -89,7 +92,7 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         shell: bash
         env:
-          INPUT_RELEASE_NOTES: ${{ github.event.inputs.release_notes }}
+          INPUT_CHANGELOG_NOTES: ${{ github.event.inputs.changelog_notes }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -104,7 +107,7 @@ jobs:
           zip_file_name = os.environ["ZIP_FILE_NAME"]
           raw_base_url = os.environ["RAW_BASE_URL"]
           repo = os.environ["GITHUB_REPOSITORY"]
-          release_notes = os.environ.get("INPUT_RELEASE_NOTES", "").strip() or f"Release {version}"
+          changelog_notes = os.environ.get("INPUT_CHANGELOG_NOTES", "").strip() or f"Release {version}"
 
           module_prop = Path("module.prop")
           lines = module_prop.read_text(encoding="utf-8").splitlines()
@@ -140,7 +143,7 @@ jobs:
           changelog_path = Path("changelog.txt")
           old = changelog_path.read_text(encoding="utf-8") if changelog_path.exists() else ""
           timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-          entry = f"{version} | {timestamp}\n{release_notes}\n\n"
+          entry = f"{version} | {timestamp}\n{changelog_notes}\n\n"
           changelog_path.write_text(entry + old, encoding="utf-8")
           PY
 

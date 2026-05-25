@@ -13,16 +13,20 @@ static bool is_detected_official_tuner_active(int mode) {
     case OFFICIAL_TUNER_VIVO:
         return process_exists_by_package("com.vivo.gamewatch");
     case OFFICIAL_TUNER_OPPO:
-        // Package existence alone is not enough here. Users may stop the
-        // service by script while the package still exists on the system.
-        return process_exists_by_name("gameopt_hal_service-1-0");
+        return process_exists_by_name("oiface");
     default:
         return false;
     }
 }
 
+static bool is_game_foreground_for_tuner(const char* current_app) {
+    return current_app && current_app[0] &&
+        strcmp(current_app, "unknown") != 0 &&
+        is_game_package_name(current_app);
+}
+
 static void sync_official_tuner_for_game(const char* current_app) {
-    bool is_game = current_app && current_app[0] && strcmp(current_app, "unknown") != 0 && is_game_package_name(current_app);
+    bool is_game = is_game_foreground_for_tuner(current_app);
     if (is_game) {
         if (is_official_scheduler_governor_active()) {
             return;
@@ -69,14 +73,21 @@ static bool is_official_scheduler_governor_active() {
 static void update_official_game_interference_state(const char* current_app) {
     static long long last_check_ms = 0;
     static int last_state = 0;
+    static char last_observed_app[MAX_APP_NAME_LEN] = {0};
     static char last_logged_game_app[MAX_APP_NAME_LEN] = {0};
     static char last_game_app[MAX_APP_NAME_LEN] = {0};
     static long long game_foreground_since_ms = 0;
     long long now_ms = get_current_time_ms();
-    if (now_ms - last_check_ms < 1000) return;
+    const char* observed_app =
+        (current_app && current_app[0]) ? current_app : "unknown";
+    bool foreground_changed = strcmp(last_observed_app, observed_app) != 0;
+    if (!foreground_changed && now_ms - last_check_ms < 500) return;
+    if (foreground_changed) {
+        safe_strncpy(last_observed_app, observed_app, sizeof(last_observed_app));
+    }
     last_check_ms = now_ms;
 
-    bool is_game = current_app && current_app[0] && strcmp(current_app, "unknown") != 0 && is_game_package_name(current_app);
+    bool is_game = is_game_foreground_for_tuner(current_app);
     if (is_game) {
         if (strcmp(last_game_app, current_app) != 0) {
             safe_strncpy(last_game_app, current_app, sizeof(last_game_app));
@@ -122,7 +133,7 @@ static void update_official_game_interference_state(const char* current_app) {
     g_pause_game_scheduler.store(paused);
     g_scene_policy.official_conflict_active = paused;
     bool game_changed = false;
-    if (current_app && current_app[0] && strcmp(current_app, "unknown") != 0 && is_game_package_name(current_app)) {
+    if (is_game) {
         game_changed = strcmp(last_logged_game_app, current_app) != 0;
         if (game_changed) {
             safe_strncpy(last_logged_game_app, current_app, sizeof(last_logged_game_app));
@@ -139,8 +150,8 @@ static void update_official_game_interference_state(const char* current_app) {
             "%s | app:%s | governors: %s",
             paused ?
                 (in_grace_period ?
-                    "游戏刚进入前台，先暂停本模块调频与线程调度 2 秒等待官方调速器切换完成" :
-                    "检测到SCX/HMBIRD类官方调速器仍在运行，暂停本模块调频与线程调度") :
+                    "游戏进入前台，已先应用当前模式静态设置，2 秒后再判断风驰/官调" :
+                    "检测到SCX/HMBIRD类官方调速器接管，模块进入自避让，仅保留已应用的模式静态设置") :
                 "未检测到SCX/HMBIRD类官方调速器，恢复本模块调频与线程调度",
             (current_app && current_app[0]) ? current_app : "unknown",
             gov_summary[0] ? gov_summary : "unknown");
