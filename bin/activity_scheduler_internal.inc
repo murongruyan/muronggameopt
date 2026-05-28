@@ -1087,6 +1087,10 @@ static bool maybe_expand_main_single_core_mask_for_spawn_locked(
     int& explicit_cluster) {
     static const long long kMainSpawnPrewarmMs = 3000;
     if (!matched_rule || matched_rule->role_kind != THREAD_JSON_ROLE_MAIN) return false;
+    if (matched_rule->source_kind != THREAD_JSON_RULE_SOURCE_DEFAULT &&
+        matched_rule->source_kind != THREAD_JSON_RULE_SOURCE_SCENE_DEFAULT) {
+        return false;
+    }
     if (explicit_cpus.size() != 1) return false;
     if (state.pid <= 0 || state.pid != g_foreground_pid) return false;
     if (state.package.empty() || strcmp(state.package.c_str(), g_foreground_package) != 0) return false;
