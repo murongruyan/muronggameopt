@@ -521,12 +521,23 @@ static void ensure_scheduler_session_tracking_locked() {
 
 static bool is_latched_session_tid_alive_locked(pid_t tid) {
     if (tid <= 0) return false;
+    auto is_tid_visible_in_session_proc = [tid]() -> bool {
+        if (g_scheduler_session.pid <= 0) return false;
+        char comm_path[128];
+        char comm_buf[32];
+        safe_snprintf(comm_path, sizeof(comm_path), "/proc/%d/task/%d/comm", (int)g_scheduler_session.pid, (int)tid);
+        return read_text_file(comm_path, comm_buf, sizeof(comm_buf));
+    };
     auto it = g_threads.find((int)tid);
-    if (it == g_threads.end()) return false;
-    const ThreadRuntimeState& state = it->second;
-    return state.pid == g_scheduler_session.pid &&
-           !state.package.empty() &&
-           strcmp(state.package.c_str(), g_scheduler_session.package) == 0;
+    if (it != g_threads.end()) {
+        const ThreadRuntimeState& state = it->second;
+        if (state.pid == g_scheduler_session.pid &&
+            !state.package.empty() &&
+            strcmp(state.package.c_str(), g_scheduler_session.package) == 0) {
+            return true;
+        }
+    }
+    return is_tid_visible_in_session_proc();
 }
 
 static void clear_invalid_latched_primary_tids_locked() {
@@ -3077,6 +3088,15 @@ static void collect_foreground_threads_locked() {
             }
         }
         if (!found) {
+            const bool keep_latched_primary =
+                (it->second.tid == g_scheduler_session.latched_main_tid ||
+                 it->second.tid == g_scheduler_session.latched_render_tid) &&
+                it->second.pid == g_scheduler_session.pid &&
+                is_latched_session_tid_alive_locked(it->second.tid);
+            if (keep_latched_primary) {
+                ++it;
+                continue;
+            }
             clear_latched_primary_tid_locked(it->second.tid, "thread_gone");
             restore_thread_runtime_adjustments_locked(it->second, "thread_gone");
             it = g_threads.erase(it);
