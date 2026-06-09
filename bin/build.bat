@@ -46,6 +46,16 @@ if not defined FOUND_NDK_ROOT (
     )
 )
 if not defined FOUND_NDK_ROOT (
+    if exist "C:\android-ndk-r27d-windows\huanjing\android-ndk-r30-beta1\toolchains\llvm\prebuilt\windows-x86_64\bin\clang++.exe" (
+        set "FOUND_NDK_ROOT=C:\android-ndk-r27d-windows\huanjing\android-ndk-r30-beta1"
+    )
+)
+if not defined FOUND_NDK_ROOT (
+    if exist "C:\android-ndk-r27d-windows\huanjing\android-ndk-r30\toolchains\llvm\prebuilt\windows-x86_64\bin\clang++.exe" (
+        set "FOUND_NDK_ROOT=C:\android-ndk-r27d-windows\huanjing\android-ndk-r30"
+    )
+)
+if not defined FOUND_NDK_ROOT (
     if exist "C:\android-ndk-r27d-windows\android-ndk-r27d\toolchains\llvm\prebuilt\windows-x86_64\bin\clang++.exe" (
         set "FOUND_NDK_ROOT=C:\android-ndk-r27d-windows\android-ndk-r27d"
     )

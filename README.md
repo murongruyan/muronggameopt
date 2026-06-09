@@ -173,7 +173,7 @@ build.bat
 ## 环境要求
 
 - Windows
-- Android NDK r27d 或兼容版本
+- Android NDK `30.0.14904198` 或兼容的 `r30` 系版本
 - WSL
 - WSL 中可用的 `clang`
 - WSL 中可用的 `bpftool`
@@ -182,8 +182,12 @@ build.bat
 
 - `%ANDROID_NDK_ROOT%`
 - `%NDK_ROOT%`
+- `C:\android-ndk-r27d-windows\huanjing\android-ndk-r30-beta1`
+- `C:\android-ndk-r27d-windows\huanjing\android-ndk-r30`
 - `C:\android-ndk-r27d-windows\android-ndk-r27d`
 - `C:\android-ndk-r27d-windows`
+
+当前 GitHub Actions 工作流也已经统一使用 `NDK 30.0.14904198` 重新编译二进制，本地和 CI 的说明口径保持一致。
 
 ## 配置主线
 
