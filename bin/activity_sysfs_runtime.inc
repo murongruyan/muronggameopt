@@ -431,7 +431,8 @@ int get_supported_governors(int policy_num, char governors[][32], int max_count)
     fclose(fp);
 
     int count = 0;
-    char* token = strtok(line, " ");
+    char* saveptr = NULL;
+    char* token = strtok_r(line, " ", &saveptr);
     while (token && count < max_count) {
         size_t len = strlen(token);
         while (len > 0 &&
@@ -443,7 +444,7 @@ int get_supported_governors(int policy_num, char governors[][32], int max_count)
             safe_strncpy(governors[count], token, 32);
             count++;
         }
-        token = strtok(NULL, " ");
+        token = strtok_r(NULL, " ", &saveptr);
     }
 
     return count;

@@ -78,6 +78,14 @@ void load_mode_settings_json(const char* mode) {
     g_mode_runtime_features.bpf_thread_enabled = true;
     g_mode_runtime_features.scene_category_enabled = true;
     g_mode_runtime_features.base_profile_enabled = true;
+    gpu.min_freq = 0;
+    gpu.max_freq = 0;
+    gpu.high_level = -1;
+    gpu.low_level = -1;
+    ddr.min_freq = 0;
+    ddr.max_freq = 0;
+    ddr.min_expr[0] = '\0';
+    ddr.max_expr[0] = '\0';
 
     cJSON* features = cJSON_GetObjectItem(mode_obj, "features");
     if (features && cJSON_IsObject(features)) {
@@ -307,8 +315,37 @@ void load_mode_settings_json(const char* mode) {
         }
     }
 
-    ddr.min_freq = 0;
-    ddr.max_freq = 0;
+    cJSON* gpu_obj = cJSON_GetObjectItem(mode_obj, "gpu");
+    if (gpu_obj && cJSON_IsObject(gpu_obj)) {
+        gpu.min_freq = parse_json_freq_value(cJSON_GetObjectItem(gpu_obj, "min_freq"), true, 0);
+        gpu.max_freq = parse_json_freq_value(cJSON_GetObjectItem(gpu_obj, "max_freq"), true, 0);
+        cJSON* high_level = cJSON_GetObjectItem(gpu_obj, "high_level");
+        if (!high_level) high_level = cJSON_GetObjectItem(gpu_obj, "max_pwrlevel");
+        if (high_level && cJSON_IsNumber(high_level)) {
+            gpu.high_level = high_level->valueint;
+        }
+        cJSON* low_level = cJSON_GetObjectItem(gpu_obj, "low_level");
+        if (!low_level) low_level = cJSON_GetObjectItem(gpu_obj, "min_pwrlevel");
+        if (low_level && cJSON_IsNumber(low_level)) {
+            gpu.low_level = low_level->valueint;
+        }
+    }
+
+    cJSON* ddr_obj = cJSON_GetObjectItem(mode_obj, "ddr");
+    if (ddr_obj && cJSON_IsObject(ddr_obj)) {
+        cJSON* ddr_min_item = cJSON_GetObjectItem(ddr_obj, "min_freq");
+        if (ddr_min_item && cJSON_IsString(ddr_min_item) && ddr_min_item->valuestring) {
+            safe_strncpy(ddr.min_expr, ddr_min_item->valuestring, sizeof(ddr.min_expr));
+        } else {
+            ddr.min_freq = parse_json_freq_value(ddr_min_item, false, 0);
+        }
+        cJSON* ddr_max_item = cJSON_GetObjectItem(ddr_obj, "max_freq");
+        if (ddr_max_item && cJSON_IsString(ddr_max_item) && ddr_max_item->valuestring) {
+            safe_strncpy(ddr.max_expr, ddr_max_item->valuestring, sizeof(ddr.max_expr));
+        } else {
+            ddr.max_freq = parse_json_freq_value(ddr_max_item, false, 0);
+        }
+    }
 
     // Parse cpuctl settings
     cJSON* cpuctl_obj = cJSON_GetObjectItem(mode_obj, "cpuctl");

@@ -123,5 +123,9 @@ void apply_settings() {
                 lock_val(g_extra_writes[i].path, g_extra_writes[i].value);
             }
         }
+
+        apply_gpu_settings();
+        apply_ddr_settings();
+        enforce_gpu_ddr_limits(true);
     }
 }

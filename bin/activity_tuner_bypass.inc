@@ -4,21 +4,6 @@
 #include <algorithm>
 #include <string>
 
-
-
-static bool is_detected_official_tuner_active(int mode) {
-    switch (mode) {
-    case OFFICIAL_TUNER_XIAOMI:
-        return process_exists_by_package("com.xiaomi.joyose");
-    case OFFICIAL_TUNER_VIVO:
-        return process_exists_by_package("com.vivo.gamewatch");
-    case OFFICIAL_TUNER_OPPO:
-        return process_exists_by_name("oiface");
-    default:
-        return false;
-    }
-}
-
 static bool is_game_foreground_for_tuner(const char* current_app) {
     return current_app && current_app[0] &&
         strcmp(current_app, "unknown") != 0 &&
@@ -28,29 +13,15 @@ static bool is_game_foreground_for_tuner(const char* current_app) {
 static void sync_official_tuner_for_game(const char* current_app) {
     bool is_game = is_game_foreground_for_tuner(current_app);
     if (is_game) {
-        if (is_official_scheduler_governor_active()) {
-            return;
-        }
-        if (!g_official_tuner_disabled) {
-            int mode = detect_official_tuner_mode();
-            if (mode != OFFICIAL_TUNER_NONE && is_detected_official_tuner_active(mode)) {
-                disable_official_tuner_for_game(mode);
-                g_official_tuner_mode = mode;
-                g_official_tuner_disabled = 1;
-                g_official_tuner_managed_by_module = 1;
-                log_message("检测到官方游戏调度，已在游戏前台临时禁用");
-            }
-        }
-    } else if (g_official_tuner_disabled && g_official_tuner_managed_by_module) {
-        restore_official_tuner_after_game(g_official_tuner_mode);
-        g_official_tuner_mode = OFFICIAL_TUNER_NONE;
+        g_official_tuner_mode = detect_official_tuner_mode();
         g_official_tuner_disabled = 0;
         g_official_tuner_managed_by_module = 0;
-        log_message("已退出游戏前台，恢复官方游戏调度");
-    } else if (!is_game && !g_official_tuner_disabled) {
-        g_official_tuner_mode = OFFICIAL_TUNER_NONE;
-        g_official_tuner_managed_by_module = 0;
+        return;
     }
+
+    g_official_tuner_mode = OFFICIAL_TUNER_NONE;
+    g_official_tuner_disabled = 0;
+    g_official_tuner_managed_by_module = 0;
 }
 
 static bool is_official_scheduler_governor_active() {
@@ -101,7 +72,7 @@ static void update_official_game_interference_state(const char* current_app) {
     sync_official_tuner_for_game(current_app);
 
     int paused = 0;
-    bool in_grace_period = is_game && game_foreground_since_ms > 0 && (now_ms - game_foreground_since_ms < 2000);
+    bool in_grace_period = is_game && game_foreground_since_ms > 0 && (now_ms - game_foreground_since_ms < 5000);
     if (is_game) {
         if (in_grace_period) {
             paused = 1;
@@ -150,7 +121,7 @@ static void update_official_game_interference_state(const char* current_app) {
             "%s | app:%s | governors: %s",
             paused ?
                 (in_grace_period ?
-                    "游戏进入前台，已先应用当前模式静态设置，2 秒后再判断风驰/官调" :
+                    "游戏进入前台，已先应用当前模式静态设置，5 秒后再判断风驰/官调" :
                     "检测到SCX/HMBIRD类官方调速器接管，模块进入自避让，仅保留已应用的模式静态设置") :
                 "未检测到SCX/HMBIRD类官方调速器，恢复本模块调频与线程调度",
             (current_app && current_app[0]) ? current_app : "unknown",
@@ -163,4 +134,3 @@ static void update_official_game_interference_state(const char* current_app) {
 static bool should_pause_our_game_scheduler() {
     return g_pause_game_scheduler.load() != 0;
 }
-

@@ -4,40 +4,54 @@
     "cpu_policies": [
       {
         "cluster": 0,
-        "governor": "walt",
-        "max_freq": 2496000,
+        "governor": "schedutil",
+        "max_freq": 2361600,
         "min_freq": 384000,
-        "params": {
-          "hispeed_cond_freq": "883200",
-          "hispeed_freq": "1785600",
-          "hispeed_load": "90",
-          "rtg_boost_freq": "883200",
-          "zone_max_util_pct": "2611200 90"
-        }
+        "params": {}
       },
       {
         "cluster": 1,
-        "governor": "walt",
+        "governor": "schedutil",
         "max_freq": 2880000,
         "min_freq": 768000,
-        "params": {
-          "hispeed_cond_freq": "0",
-          "hispeed_freq": "1747200",
-          "hispeed_load": "90",
-          "rtg_boost_freq": "768000",
-          "zone_max_util_pct": "2880000 80"
-        }
+        "params": {}
       }
     ],
     "cpuset": {
-      "background": "0-2",
-      "systembackground": "1-2",
+      "background": "0-5",
+      "systembackground": "0-5",
       "foreground": "0-6",
       "topapp": "0-7"
     },
+    "extra_writes": [
+      {
+        "path": "/proc/sys/walt/sched_high_perf_cluster_freq_cap",
+        "value": "2147483647 2147483647"
+      },
+      {
+        "path": "/proc/sys/walt/sched_max_freq_partial_halt",
+        "value": "2147483647"
+      },
+      {
+        "path": "/proc/sys/walt/cluster0/smart_freq/ipc_freq_levels",
+        "value": "2361600 2361600 2361600 2361600 2361600"
+      },
+      {
+        "path": "/proc/sys/walt/cluster1/smart_freq/ipc_freq_levels",
+        "value": "2880000 2880000 2880000 2880000 2880000"
+      },
+      {
+        "path": "/sys/kernel/msm_performance/parameters/cpu_max_freq",
+        "value": "0:2745600 1:2745600 2:2745600 3:2745600 4:2745600 5:2745600 6:2880000 7:2880000"
+      }
+    ],
+    "gpu": {
+      "high_level": 9,
+      "low_level": 17
+    },
     "ddr": {
       "min_freq": "ddr_min",
-      "max_freq": "ddr_max"
+      "max_freq": "ddr_max*0.5"
     },
     "features": {
       "scheduler_master": true,
@@ -107,9 +121,13 @@
       "foreground": "0-6",
       "topapp": "0-7"
     },
+    "gpu": {
+      "high_level": 5,
+      "low_level": 15
+    },
     "ddr": {
-      "min_freq": "ddr_min",
-      "max_freq": "ddr_max"
+      "min_freq": "ddr_min*2.5",
+      "max_freq": "ddr_max*0.7"
     },
     "features": {
       "scheduler_master": true,
@@ -148,40 +166,50 @@
     "cpu_policies": [
       {
         "cluster": 0,
-        "governor": "",
-        "max_freq": 3302400,
-        "min_freq": 1228800,
-        "params": {
-          "hispeed_cond_freq": "0",
-          "hispeed_freq": "2496000",
-          "hispeed_load": "75",
-          "rtg_boost_freq": "1440000",
-          "zone_max_util_pct": "3302400 90"
-        }
+        "governor": "performance",
+        "max_freq": 2745600,
+        "min_freq": 384000,
+        "params": {}
       },
       {
         "cluster": 1,
-        "governor": "",
-        "max_freq": 4070400,
-        "min_freq": 1267200,
-        "params": {
-          "hispeed_cond_freq": "0",
-          "hispeed_freq": "2227200",
-          "hispeed_load": "75",
-          "rtg_boost_freq": "1497600",
-          "zone_max_util_pct": "4070400 80"
-        }
+        "governor": "performance",
+        "max_freq": 2880000,
+        "min_freq": 768000,
+        "params": {}
       }
     ],
     "cpuset": {
-      "background": "0-2",
-      "systembackground": "1-2",
+      "background": "0-6",
+      "systembackground": "0-6",
       "foreground": "0-6",
       "topapp": "0-7"
     },
+    "extra_writes": [
+      {
+        "path": "/proc/sys/walt/sched_high_perf_cluster_freq_cap",
+        "value": "1497600 1497600"
+      },
+      {
+        "path": "/proc/sys/walt/sched_max_freq_partial_halt",
+        "value": "1555200"
+      },
+      {
+        "path": "/proc/sys/walt/cluster0/smart_freq/ipc_freq_levels",
+        "value": "1497600 1497600 1497600 1497600 1497600"
+      },
+      {
+        "path": "/proc/sys/walt/cluster1/smart_freq/ipc_freq_levels",
+        "value": "1555200 1555200 1555200 1555200 1555200"
+      }
+    ],
+    "gpu": {
+      "high_level": 3,
+      "low_level": 13
+    },
     "ddr": {
-      "min_freq": "ddr_min",
-      "max_freq": "ddr_max"
+      "min_freq": "ddr_min*3.0",
+      "max_freq": "ddr_max*0.9"
     },
     "features": {
       "scheduler_master": true,
@@ -251,8 +279,12 @@
       "foreground": "0-6",
       "topapp": "0-7"
     },
+    "gpu": {
+      "high_level": 0,
+      "low_level": 10
+    },
     "ddr": {
-      "min_freq": "ddr_max",
+      "min_freq": "ddr_max*0.5",
       "max_freq": "ddr_max"
     },
     "features": {

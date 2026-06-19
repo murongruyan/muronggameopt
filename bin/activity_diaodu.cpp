@@ -116,7 +116,16 @@ typedef struct {
 typedef struct {
     int min_freq;
     int max_freq;
+    char min_expr[64];
+    char max_expr[64];
 } DdrSettings;
+
+typedef struct {
+    int min_freq;
+    int max_freq;
+    int high_level;
+    int low_level;
+} GpuSettings;
 
 DynamicTuningParams g_dyn_params = {true, 85, 5, false, 0, {}};
 
@@ -345,6 +354,7 @@ CpuPolicy cpu_policies[MAX_POLICIES];
 CpuCluster cpu_clusters[MAX_CLUSTERS];
 CpusetSettings cpuset;
 DdrSettings ddr;
+GpuSettings gpu;
 SchedBoostSettings sched_boost_settings;
 SchedConfigSettings sched_config_settings;
 StuneSettings stune_settings;
@@ -1064,25 +1074,13 @@ void detect_cpu_clusters() {
     log_message(log_buf);
 }
 
+#include "activity_gpu_ddr.inc"
+
 
 // 获取前台应用
 #include "activity_scene_foreground.inc"
 
 #include "activity_cpu_settings.inc"
-
-// 应用DDR设置
-void apply_ddr_settings() {
-}
-
-// 保留空实现，避免旧调用链继续写DDR节点
-void apply_ddr_settings_qualcomm() {
-}
-
-void apply_ddr_settings_mediatek() {
-}
-
-void try_mediatek_alternative_ddr_paths() {
-}
 
 static void clear_thread_signature_config() {
     g_thread_signature_config.main_thread_patterns.clear();
@@ -1155,8 +1153,9 @@ char* handle_app_mode(const char* current_app) {
     // 检查是否有应用特定的模式
     while (fgets(line, sizeof(line), mode_file)) {
         line[strcspn(line, "\n")] = 0;
-        char* package = strtok(line, " ");
-        char* custom_mode = strtok(NULL, " ");
+        char* saveptr = NULL;
+        char* package = strtok_r(line, " ", &saveptr);
+        char* custom_mode = strtok_r(NULL, " ", &saveptr);
 
         if (package && custom_mode && strcmp(package, current_app) == 0) {
             safe_strncpy(mode, custom_mode, 64);
@@ -1204,8 +1203,9 @@ static void get_mode_for_package(const char* package, char* out_mode, size_t out
     if (package && package[0]) {
         while (fgets(line, sizeof(line), mode_file)) {
             line[strcspn(line, "\n")] = 0;
-            char* pkg = strtok(line, " ");
-            char* custom_mode = strtok(NULL, " ");
+            char* saveptr = NULL;
+            char* pkg = strtok_r(line, " ", &saveptr);
+            char* custom_mode = strtok_r(NULL, " ", &saveptr);
             if (pkg && custom_mode && strcmp(pkg, package) == 0 && is_known_mode(custom_mode)) {
                 safe_strncpy(out_mode, custom_mode, out_size);
                 break;
@@ -1224,27 +1224,6 @@ static bool is_launcher_package_name(const char* package) {
 }
 
  #include "activity_scene_policy.inc"
-
-static bool process_exists_by_package(const char* package) {
-    if (!package || !package[0]) return false;
-    char cmd[256];
-    safe_snprintf(cmd, sizeof(cmd), "pidof %s 2>/dev/null", package);
-    FILE* fp = popen(cmd, "r");
-    if (!fp) return false;
-    char buf[64];
-    bool exists = fgets(buf, sizeof(buf), fp) != NULL;
-    pclose(fp);
-    return exists;
-}
-
-static bool process_exists_by_name(const char* name) {
-    return process_exists_by_package(name);
-}
-
-static void run_shell_quiet(const char* cmd) {
-    if (!cmd || !cmd[0]) return;
-    system(cmd);
-}
 
 enum OfficialTunerMode {
     OFFICIAL_TUNER_NONE = 0,
@@ -1304,44 +1283,6 @@ static int detect_official_tuner_mode_from_device_props() {
 
 static int detect_official_tuner_mode() {
     return detect_official_tuner_mode_from_device_props();
-}
-
-static void disable_official_tuner_for_game(int mode) {
-    switch (mode) {
-    case OFFICIAL_TUNER_XIAOMI:
-        run_shell_quiet("am force-stop com.xiaomi.joyose >/dev/null 2>&1");
-        run_shell_quiet("pm disable com.xiaomi.joyose/com.xiaomi.joyose.smartop.SmartOpService >/dev/null 2>&1");
-        run_shell_quiet("pm disable com.xiaomi.joyose/com.xiaomi.joyose.JoyoseJobScheduleService >/dev/null 2>&1");
-        break;
-    case OFFICIAL_TUNER_VIVO:
-        run_shell_quiet("am force-stop com.vivo.gamewatch >/dev/null 2>&1");
-        run_shell_quiet("pm disable com.vivo.gamewatch >/dev/null 2>&1");
-        break;
-    case OFFICIAL_TUNER_OPPO:
-        run_shell_quiet("setprop persist.sys.oiface.enable 0 >/dev/null 2>&1");
-        run_shell_quiet("stop oiface >/dev/null 2>&1");
-        break;
-    default:
-        break;
-    }
-}
-
-static void restore_official_tuner_after_game(int mode) {
-    switch (mode) {
-    case OFFICIAL_TUNER_XIAOMI:
-        run_shell_quiet("pm enable com.xiaomi.joyose/com.xiaomi.joyose.smartop.SmartOpService >/dev/null 2>&1");
-        run_shell_quiet("pm enable com.xiaomi.joyose/com.xiaomi.joyose.JoyoseJobScheduleService >/dev/null 2>&1");
-        break;
-    case OFFICIAL_TUNER_VIVO:
-        run_shell_quiet("pm enable com.vivo.gamewatch >/dev/null 2>&1");
-        break;
-    case OFFICIAL_TUNER_OPPO:
-        run_shell_quiet("setprop persist.sys.oiface.enable 2 >/dev/null 2>&1");
-        run_shell_quiet("start oiface >/dev/null 2>&1");
-        break;
-    default:
-        break;
-    }
 }
 
 #include "activity_tuner_bypass.inc"

@@ -45,6 +45,8 @@ int initialize_application() {
     // 设置策略文件权限
     set_policy_file_permissions();
 
+    initialize_gpu_ddr_control_state();
+
     // 加载线程签名扩展配置
     load_thread_signature_config();
 
@@ -154,6 +156,7 @@ void run_main_loop() {
         safe_strncpy(current_app_buf, g_current_foreground_app, sizeof(current_app_buf));
         pthread_mutex_unlock(&g_app_mutex);
 
+        enforce_gpu_ddr_limits(false);
         UnifiedScheduler::run_scheduler_step();
         emit_runtime_stats_snapshot(current_app_buf, get_current_time_ms());
     }
