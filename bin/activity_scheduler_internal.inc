@@ -1604,7 +1604,7 @@ static void restore_thread_runtime_adjustments_locked(ThreadRuntimeState& state,
                           state.comm.c_str(),
                           reason ? reason : "unknown",
                           strerror(errno));
-            log_message(msg);
+            log_affinity_message(msg);
         }
     }
     if (state.applied_nice != state.baseline_nice) {
@@ -1616,7 +1616,7 @@ static void restore_thread_runtime_adjustments_locked(ThreadRuntimeState& state,
                           state.comm.c_str(),
                           reason ? reason : "unknown",
                           strerror(errno));
-            log_message(msg);
+            log_affinity_message(msg);
         }
     }
     state.applied_nice = state.baseline_nice;
