@@ -83,9 +83,6 @@ static bool apply_runtime_feature_overrides_from_shared_config(const char* mode)
 void load_mode_settings_json(const char* mode) {
     const char* config_path = get_cpu_config_path();
     if (!file_exists(config_path)) {
-        char error_msg[256];
-        safe_snprintf(error_msg, sizeof(error_msg), "未找到CPU配置文件: %s", config_path);
-        log_message(error_msg);
         return;
     }
 
