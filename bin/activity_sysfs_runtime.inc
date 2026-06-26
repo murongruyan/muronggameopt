@@ -527,6 +527,10 @@ const char* get_cpu_config_path() {
     return path;
 }
 
+const char* get_runtime_feature_config_path() {
+    return CONFIG_DIR "sched.txt";
+}
+
 static void build_cluster_layout_name(char* out, size_t out_size) {
     if (!out || out_size == 0) return;
     out[0] = '\0';

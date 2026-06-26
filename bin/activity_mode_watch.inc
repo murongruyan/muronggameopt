@@ -1,3 +1,85 @@
+static bool parse_runtime_feature_flag_from_text(const char* text, const char* key, bool* out_value) {
+    if (!text || !key || !key[0] || !out_value) return false;
+    size_t key_len = strlen(key);
+    const char* cursor = text;
+    while (*cursor) {
+        while (*cursor == '\r' || *cursor == '\n') {
+            cursor++;
+        }
+        if (!*cursor) break;
+        const char* line_end = cursor;
+        while (*line_end && *line_end != '\r' && *line_end != '\n') {
+            line_end++;
+        }
+        while (cursor < line_end && (*cursor == ' ' || *cursor == '\t')) {
+            cursor++;
+        }
+        if ((size_t)(line_end - cursor) > key_len + 1 &&
+            strncmp(cursor, key, key_len) == 0 &&
+            (cursor[key_len] == '=' || cursor[key_len] == ':')) {
+            const char* value = cursor + key_len + 1;
+            while (value < line_end && (*value == ' ' || *value == '\t')) {
+                value++;
+            }
+            if (value < line_end) {
+                if (*value == '1' || *value == 'y' || *value == 'Y' || *value == 't' || *value == 'T' ||
+                    *value == 'o' || *value == 'O') {
+                    *out_value = true;
+                    return true;
+                }
+                if (*value == '0' || *value == 'n' || *value == 'N' || *value == 'f' || *value == 'F') {
+                    *out_value = false;
+                    return true;
+                }
+            }
+        }
+        cursor = line_end;
+    }
+    return false;
+}
+
+static bool parse_runtime_feature_flag_alias_from_text(
+    const char* text,
+    const char* short_key,
+    const char* long_key,
+    bool* out_value
+) {
+    return parse_runtime_feature_flag_from_text(text, short_key, out_value) ||
+           parse_runtime_feature_flag_from_text(text, long_key, out_value);
+}
+
+static bool apply_runtime_feature_overrides_from_shared_config(const char* mode) {
+    (void)mode;
+    const char* config_path = get_runtime_feature_config_path();
+    if (!file_exists(config_path)) {
+        return false;
+    }
+
+    char* data = NULL;
+    size_t len = 0;
+    if (!read_file_all(config_path, &data, &len) || !data || len == 0) {
+        if (data) free(data);
+        return false;
+    }
+    bool value = false;
+    if (parse_runtime_feature_flag_alias_from_text(data, "main", "scheduler_master", &value)) {
+        g_mode_runtime_features.scheduler_master_enabled = value;
+    }
+    if (parse_runtime_feature_flag_alias_from_text(data, "bpf", "dynamic_thread_scheduler", &value)) {
+        g_mode_runtime_features.bpf_thread_enabled = value;
+    } else if (parse_runtime_feature_flag_from_text(data, "bpf_thread", &value)) {
+        g_mode_runtime_features.bpf_thread_enabled = value;
+    }
+    if (parse_runtime_feature_flag_alias_from_text(data, "cat", "scene_category", &value)) {
+        g_mode_runtime_features.scene_category_enabled = value;
+    }
+    if (parse_runtime_feature_flag_alias_from_text(data, "base", "base_profile", &value)) {
+        g_mode_runtime_features.base_profile_enabled = value;
+    }
+    free(data);
+    return true;
+}
+
 void load_mode_settings_json(const char* mode) {
     const char* config_path = get_cpu_config_path();
     if (!file_exists(config_path)) {
@@ -95,6 +177,9 @@ void load_mode_settings_json(const char* mode) {
             g_mode_runtime_features.scheduler_master_enabled = scheduler_master->valueint != 0;
         }
         cJSON* bpf_thread = cJSON_GetObjectItem(features, "bpf_thread");
+        if (!bpf_thread) {
+            bpf_thread = cJSON_GetObjectItem(features, "dynamic_thread_scheduler");
+        }
         if (bpf_thread &&
             (cJSON_IsBool(bpf_thread) || cJSON_IsNumber(bpf_thread))) {
             g_mode_runtime_features.bpf_thread_enabled = bpf_thread->valueint != 0;
@@ -110,6 +195,8 @@ void load_mode_settings_json(const char* mode) {
             g_mode_runtime_features.base_profile_enabled = base_profile->valueint != 0;
         }
     }
+
+    apply_runtime_feature_overrides_from_shared_config(mode);
 
     for (int i = 0; i < cluster_count; i++) {
         g_cluster_dyn_params[i] = g_dyn_params;
@@ -475,6 +562,7 @@ static ConfigReloadWatchState g_mode_reload_watch = {};
 static ConfigReloadWatchState g_scene_categories_reload_watch = {};
 static ConfigReloadWatchState g_thread_signature_reload_watch = {};
 static ConfigReloadWatchState g_thread_persistent_reload_watch = {};
+static ConfigReloadWatchState g_runtime_features_reload_watch = {};
 static ConfigReloadWatchState g_cpu_reload_watch = {};
 
 static bool compute_file_content_hash64(const char* path, uint64_t* out_hash) {
@@ -563,6 +651,7 @@ void prime_config_reload_watch_hashes() {
     char persistent_path[256];
     build_persistent_thread_override_path(persistent_path, sizeof(persistent_path));
     prime_config_reload_watch_state(&g_thread_persistent_reload_watch, persistent_path);
+    prime_config_reload_watch_state(&g_runtime_features_reload_watch, get_runtime_feature_config_path());
     prime_config_reload_watch_state(&g_cpu_reload_watch, get_cpu_config_path());
 }
 
@@ -587,6 +676,13 @@ void process_pending_config_reloads() {
     if (should_reload_pending_config(&g_scene_categories_reload_watch, SCENE_CATEGORIES_FILE)) {
         log_message("场景分类配置内容已变更，正在热重载");
         load_scene_categories_config();
+    }
+
+    const char* runtime_feature_config_path = get_runtime_feature_config_path();
+    if (should_reload_pending_config(&g_runtime_features_reload_watch, runtime_feature_config_path)) {
+        log_message("调度开关配置内容已变更，正在热重载");
+        load_mode_settings_json(g_current_mode);
+        UnifiedScheduler::initialize_cluster_policies();
     }
 
     const char* thread_config_path = get_thread_signature_config_path();
@@ -635,6 +731,8 @@ void handle_inotify_events(int inotify_fd, int wd_general_config_dir, int wd_cpu
                     mark_config_reload_pending(&g_mode_reload_watch);
                 } else if (strcmp(event->name, "categories.json") == 0) {
                     mark_config_reload_pending(&g_scene_categories_reload_watch);
+                } else if (event_name_matches_config_path(event->name, get_runtime_feature_config_path())) {
+                    mark_config_reload_pending(&g_runtime_features_reload_watch);
                 }
             } else if (event->wd == wd_cpu_config_dir && event->len > 0) {
                 if (event_name_matches_config_path(event->name, get_thread_signature_config_path())) {

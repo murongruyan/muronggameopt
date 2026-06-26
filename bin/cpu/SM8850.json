@@ -53,12 +53,6 @@
       "min_freq": "ddr_min",
       "max_freq": "ddr_max*0.5"
     },
-    "features": {
-      "scheduler_master": true,
-      "bpf_thread": true,
-      "scene_category": true,
-      "base_profile": true
-    },
     "cpuctl": {
       "background": {
         "uclamp_min": 0,
@@ -128,12 +122,6 @@
     "ddr": {
       "min_freq": "ddr_min*2.5",
       "max_freq": "ddr_max*0.7"
-    },
-    "features": {
-      "scheduler_master": true,
-      "bpf_thread": true,
-      "scene_category": true,
-      "base_profile": true
     },
     "cpuctl": {
       "background": {
@@ -211,12 +199,6 @@
       "min_freq": "ddr_min*3.0",
       "max_freq": "ddr_max*0.9"
     },
-    "features": {
-      "scheduler_master": true,
-      "bpf_thread": true,
-      "scene_category": true,
-      "base_profile": true
-    },
     "cpuctl": {
       "background": {
         "uclamp_min": 0,
@@ -286,12 +268,6 @@
     "ddr": {
       "min_freq": "ddr_max*0.5",
       "max_freq": "ddr_max"
-    },
-    "features": {
-      "scheduler_master": true,
-      "bpf_thread": true,
-      "scene_category": true,
-      "base_profile": true
     },
     "cpuctl": {
       "background": {

@@ -441,6 +441,7 @@ int lock_val(const char* path, const char* value);
 int detect_cpu_model();
 void detect_cpu_clusters();
 const char* get_cpu_config_path();
+const char* get_runtime_feature_config_path();
 const char* get_thread_signature_config_path();
 void set_governor_params(int policy_num, const char* governor);
 int get_supported_governors(int policy_num, char governors[][32], int max_count);
