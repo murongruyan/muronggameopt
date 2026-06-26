@@ -1,0 +1,130 @@
+name: Cleanup Actions History
+
+permissions:
+  actions: write
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      artifact_keep_days:
+        description: "保留最近多少天的 Artifacts，默认 1 天"
+        required: false
+        default: "1"
+      workflow_run_keep_days:
+        description: "保留最近多少天的 Workflow Runs，默认 7 天"
+        required: false
+        default: "7"
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete Old Artifacts And Workflow Runs
+        uses: actions/github-script@v8
+        env:
+          ARTIFACT_KEEP_DAYS: ${{ github.event.inputs.artifact_keep_days || '1' }}
+          WORKFLOW_RUN_KEEP_DAYS: ${{ github.event.inputs.workflow_run_keep_days || '7' }}
+        with:
+          script: |
+            const artifactKeepDays = Number(process.env.ARTIFACT_KEEP_DAYS || "1");
+            const workflowRunKeepDays = Number(process.env.WORKFLOW_RUN_KEEP_DAYS || "7");
+            const currentRunId = Number(process.env.GITHUB_RUN_ID || "0");
+
+            if (!Number.isFinite(artifactKeepDays) || artifactKeepDays < 0) {
+              core.setFailed(`Invalid ARTIFACT_KEEP_DAYS: ${process.env.ARTIFACT_KEEP_DAYS}`);
+              return;
+            }
+
+            if (!Number.isFinite(workflowRunKeepDays) || workflowRunKeepDays < 0) {
+              core.setFailed(`Invalid WORKFLOW_RUN_KEEP_DAYS: ${process.env.WORKFLOW_RUN_KEEP_DAYS}`);
+              return;
+            }
+
+            async function collectAll(fetchPage) {
+              const results = [];
+              let page = 1;
+
+              while (true) {
+                const batch = await fetchPage(page);
+                if (!batch.length) break;
+                results.push(...batch);
+                if (batch.length < 100) break;
+                page += 1;
+              }
+
+              return results;
+            }
+
+            const artifactCutoffMs = Date.now() - artifactKeepDays * 24 * 60 * 60 * 1000;
+            const runCutoffMs = Date.now() - workflowRunKeepDays * 24 * 60 * 60 * 1000;
+
+            const artifacts = await collectAll(async (page) => {
+              const { data } = await github.rest.actions.listArtifactsForRepo({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                per_page: 100,
+                page,
+              });
+              return data.artifacts || [];
+            });
+
+            let deletedArtifactCount = 0;
+            let keptArtifactCount = 0;
+
+            for (const artifact of artifacts) {
+              const createdAt = new Date(artifact.created_at).getTime();
+              if (artifact.expired || createdAt >= artifactCutoffMs) {
+                keptArtifactCount += 1;
+                continue;
+              }
+
+              core.info(`Deleting artifact ${artifact.name} (#${artifact.id}) created at ${artifact.created_at}`);
+              await github.rest.actions.deleteArtifact({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                artifact_id: artifact.id,
+              });
+              deletedArtifactCount += 1;
+            }
+
+            const workflowRuns = await collectAll(async (page) => {
+              const { data } = await github.rest.actions.listWorkflowRunsForRepo({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                per_page: 100,
+                page,
+              });
+              return data.workflow_runs || [];
+            });
+
+            let deletedRunCount = 0;
+            let keptRunCount = 0;
+
+            for (const run of workflowRuns) {
+              const createdAt = new Date(run.created_at).getTime();
+              const isCompleted = run.status === "completed";
+              if (!isCompleted || createdAt >= runCutoffMs || run.id === currentRunId) {
+                keptRunCount += 1;
+                continue;
+              }
+
+              core.info(`Deleting workflow run ${run.name || run.display_title || "unknown"} (#${run.id}) created at ${run.created_at}`);
+              await github.rest.actions.deleteWorkflowRun({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: run.id,
+              });
+              deletedRunCount += 1;
+            }
+
+            core.summary
+              .addHeading("Actions Cleanup Result")
+              .addRaw(`Artifacts deleted: ${deletedArtifactCount}\n`, true)
+              .addRaw(`Artifacts kept: ${keptArtifactCount}\n`, true)
+              .addRaw(`Artifact keep days: ${artifactKeepDays}\n`, true)
+              .addRaw(`Workflow runs deleted: ${deletedRunCount}\n`, true)
+              .addRaw(`Workflow runs kept: ${keptRunCount}\n`, true)
+              .addRaw(`Workflow run keep days: ${workflowRunKeepDays}\n`, true)
+              .write();
