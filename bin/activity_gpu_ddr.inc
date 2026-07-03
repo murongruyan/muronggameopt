@@ -602,6 +602,9 @@ void apply_ddr_settings() {
 }
 
 static void enforce_gpu_ddr_limits(bool force) {
+    if (g_pause_game_scheduler.load() != 0) {
+        return;
+    }
     static long long last_check_ms = 0;
     long long now_ms = get_current_time_ms();
     if (!force && now_ms - last_check_ms < 250) {
