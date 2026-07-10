@@ -447,7 +447,6 @@ void set_governor_params(int policy_num, const char* governor);
 int get_supported_governors(int policy_num, char governors[][32], int max_count);
 int is_governor_supported(int policy_num, const char* governor);
 void clear_log_if_needed_for(const char* path);
-void set_policy_file_permissions();
 int remount_sysfs_rw();
 void safe_strncpy(char* dest, const char* src, size_t dest_size);
 int safe_snprintf(char* dest, size_t dest_size, const char* format, ...);
@@ -673,21 +672,9 @@ char sched_path[128] = "/proc/sys/kernel";
 // 锁值函数（支持权限设置）
 int lock_val_perm(const char* path, const char* value, mode_t pre_perm, mode_t post_perm) {
     if (!file_exists(path)) return 0;
-
-    // 修改前权限
-    if (pre_perm != 0) {
-        chmod(path, pre_perm);
-    }
-
-    // 写入值
-    int ret = lock_val(path, value);
-
-    // 修改后权限
-    if (post_perm != 0) {
-        chmod(path, post_perm);
-    }
-
-    return ret;
+    (void)pre_perm;
+    (void)post_perm;
+    return lock_val(path, value);
 }
 
 static bool execute_command_all(const char* cmd, std::string& out) {
@@ -737,11 +724,7 @@ static int get_policy_lowest_available_freq(int policy_idx) {
     if (policy_idx < 0 || policy_idx >= policy_count) {
         return 0;
     }
-    int policy_num = cpu_policies[policy_idx].policy_num;
-    if (policy_num < 0 || policy_num >= MAX_POLICIES) {
-        return std::max(0, cpu_policies[policy_idx].min_freq);
-    }
-    FreqTable* table = &g_freq_tables[policy_num];
+    FreqTable* table = &g_freq_tables[policy_idx];
     if (table->count <= 0) {
         return std::max(0, cpu_policies[policy_idx].min_freq);
     }
@@ -758,11 +741,10 @@ static int get_policy_safe_floor_freq(int policy_idx, int khz_floor) {
     if (policy_idx < 0 || policy_idx >= policy_count) {
         return std::max(0, khz_floor);
     }
-    int policy_num = cpu_policies[policy_idx].policy_num;
-    if (policy_num < 0 || policy_num >= MAX_POLICIES || g_freq_tables[policy_num].count <= 0) {
+    if (g_freq_tables[policy_idx].count <= 0) {
         return std::max(get_policy_lowest_available_freq(policy_idx), khz_floor);
     }
-    FreqTable* table = &g_freq_tables[policy_num];
+    FreqTable* table = &g_freq_tables[policy_idx];
     int candidate = 0;
     for (int i = 0; i < table->count; i++) {
         int freq = table->freqs[i];
@@ -837,7 +819,7 @@ void init_scheduler_info() {
 }
 
 // 调度器加速设置
-void set_sched_boost(int top_boost, int sched_boost, mode_t pre_perm = 0755, mode_t post_perm = 0444) {
+void set_sched_boost(int top_boost, int sched_boost, mode_t pre_perm = 0, mode_t post_perm = 0) {
     char path[256];
     char val_str[32];
 
@@ -851,7 +833,7 @@ void set_sched_boost(int top_boost, int sched_boost, mode_t pre_perm = 0755, mod
 }
 
 // 调度器配置
-void set_sched_config(int downmigrate, int upmigrate, int group_downmigrate, int group_upmigrate, mode_t pre_perm = 0755, mode_t post_perm = 0444) {
+void set_sched_config(int downmigrate, int upmigrate, int group_downmigrate, int group_upmigrate, mode_t pre_perm = 0, mode_t post_perm = 0) {
     char path[256];
     char val_str[32];
 
@@ -873,7 +855,7 @@ void set_sched_config(int downmigrate, int upmigrate, int group_downmigrate, int
 }
 
 // Stune配置
-void set_stune_topapp(int prefer_idle, int boost, mode_t pre_perm = 0755, mode_t post_perm = 0444) {
+void set_stune_topapp(int prefer_idle, int boost, mode_t pre_perm = 0, mode_t post_perm = 0) {
     char val_str[32];
     const char* base_path = NULL;
 

@@ -10,38 +10,6 @@ int remount_sysfs_rw() {
     }
 }
 
-void set_policy_file_permissions() {
-    for (int i = 0; i < policy_count; i++) {
-        char path[256];
-        safe_snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpufreq/policy%d", cpu_policies[i].policy_num);
-
-        if (chmod(path, 0777) != 0) {
-            char log_msg[256];
-            safe_snprintf(log_msg, sizeof(log_msg), "修改目录权限失败: %s (错误: %s)", path, strerror(errno));
-            log_message(log_msg);
-        }
-
-        const char* files[] = {
-            "scaling_governor",
-            "scaling_max_freq",
-            "scaling_min_freq",
-            "scaling_available_governors",
-            NULL
-        };
-
-        for (int j = 0; files[j]; j++) {
-            char file_path[256];
-            safe_snprintf(file_path, sizeof(file_path), "%s/%s", path, files[j]);
-
-            if (chmod(file_path, 0666) != 0) {
-                char log_msg[256];
-                safe_snprintf(log_msg, sizeof(log_msg), "修改文件权限失败: %s (错误: %s)", file_path, strerror(errno));
-                log_message(log_msg);
-            }
-        }
-    }
-}
-
 int detect_cpu_model() {
     FILE* getprop = popen("getprop ro.soc.model", "r");
     if (getprop) {
@@ -606,62 +574,58 @@ int lock_val(const char* path, const char* value) {
     }
 
     struct stat st;
-    bool chmod_needed = false;
-    mode_t old_mode = 0;
-
-    if (stat(path, &st) == 0) {
-        if ((st.st_mode & S_IWUSR) == 0) {
-            old_mode = st.st_mode;
-            if (chmod(path, st.st_mode | S_IWUSR) == 0) {
-                chmod_needed = true;
-            } else if (chmod(path, 0644) == 0) {
-                chmod_needed = true;
-                old_mode = st.st_mode;
-            }
-        }
-    } else {
-        if (chmod(path, 0644) == 0) {
-            chmod_needed = true;
-            old_mode = 0444;
-        }
+    if (stat(path, &st) != 0) {
+        char log_msg[256];
+        safe_snprintf(log_msg, sizeof(log_msg), "读取文件权限失败: %s (错误: %s)",
+            path, strerror(errno));
+        log_message(log_msg);
+        return 0;
     }
 
-    if (chmod_needed) {
-        fp = fopen(path, "w");
-        if (fp) {
-            int write_res = fprintf(fp, "%s", value);
-            int close_res = fclose(fp);
-            if (write_res < 0 || close_res != 0) {
-                int err = errno;
-                char log_msg[256];
-                safe_snprintf(log_msg, sizeof(log_msg), "再次写入或关闭失败: %s -> %s (错误: %s)",
-                    path, value, strerror(err));
-                log_message(log_msg);
-                if (err == EACCES || err == EPERM || err == EROFS || err == ENOENT) {
-                    if (g_blacklist_count < MAX_BLACKLIST) {
-                        safe_strncpy(g_write_blacklist[g_blacklist_count], path, 256);
-                        g_blacklist_count++;
-                        safe_snprintf(log_msg, sizeof(log_msg), "文件写入失败(权限/不存在)，已加入黑名单: %s", path);
-                        log_message(log_msg);
-                    }
-                }
-            } else {
-                chmod(path, old_mode);
-                return 1;
-            }
-        } else {
+    mode_t old_mode = st.st_mode & 07777;
+    bool permission_changed = false;
+    if ((old_mode & S_IWUSR) == 0) {
+        if (chmod(path, old_mode | S_IWUSR) != 0) {
             char log_msg[256];
-            safe_snprintf(log_msg, sizeof(log_msg), "再次打开失败: %s (错误: %s)",
+            safe_snprintf(log_msg, sizeof(log_msg), "临时增加所有者写权限失败: %s (错误: %s)",
                 path, strerror(errno));
             log_message(log_msg);
+            return 0;
         }
-        chmod(path, old_mode);
+        permission_changed = true;
+    }
+
+    int result = 0;
+    int write_error = 0;
+    fp = fopen(path, "w");
+    if (fp) {
+        if (fprintf(fp, "%s", value) < 0) {
+            write_error = errno;
+        }
+        if (fclose(fp) != 0 && write_error == 0) {
+            write_error = errno;
+        }
+        if (write_error == 0) {
+            result = 1;
+        }
     } else {
+        write_error = errno;
+    }
+
+    if (write_error != 0) {
         char log_msg[256];
-        safe_snprintf(log_msg, sizeof(log_msg), "修改权限失败或文件不可访问: %s (错误: %s)",
-            path, strerror(errno));
+        safe_snprintf(log_msg, sizeof(log_msg), "临时授权后写入失败: %s -> %s (错误: %s)",
+            path, value, strerror(write_error));
         log_message(log_msg);
     }
 
-    return 0;
+    if (permission_changed && chmod(path, old_mode) != 0) {
+        char log_msg[256];
+        safe_snprintf(log_msg, sizeof(log_msg), "恢复文件权限失败: %s (错误: %s)",
+            path, strerror(errno));
+        log_message(log_msg);
+        return 0;
+    }
+
+    return result;
 }

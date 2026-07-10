@@ -1,6 +1,5 @@
 #!/system/bin/sh
 TeamS=${0%/*}
-chmod -R 755 "$TeamS"
 
 wait_sys_boot_completed() {
 	local i=9

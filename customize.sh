@@ -80,6 +80,10 @@ main
 # 修复权限设置
 set_perm_recursive "$MODPATH" 0 0 0755 0644
 set_perm "$MODPATH/bin/activity_diaodu" 0 2000 0755
+set_perm "$MODPATH/service.sh" 0 0 0755
+set_perm "$MODPATH/activity_diaodu.rc" 0 0 0755
+set_perm "$MODPATH/vtools/init_vtools.sh" 0 0 0755
+set_perm "$MODPATH/vtools/powercfg.sh" 0 0 0755
 
 ui_print "生成scene控制文件"
 sh "$MODPATH/vtools/init_vtools.sh" "$(realpath $MODPATH/module.prop)"

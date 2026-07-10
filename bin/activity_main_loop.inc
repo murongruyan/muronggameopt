@@ -42,9 +42,6 @@ int initialize_application() {
     // 初始化调度器信息
     init_scheduler_info();
 
-    // 设置策略文件权限
-    set_policy_file_permissions();
-
     initialize_gpu_ddr_control_state();
 
     // 加载线程签名扩展配置
