@@ -76,6 +76,8 @@ com.tencent.tmgp.cf balance" > "$CONFIG_DIR/mode.txt"
     #   3. 才用 bin/cpu/fas.default.json 模板 + 本机真实档位表生成
     #      频率一律吸附到 scaling_available/boost_frequencies 的并集，
     #      读不到档位表时留空，绝不写入其它 SoC 的硬编码频率
+    #    纯线程版包里没有 gen_fas.sh（源码层面已关闭 FAS 与动态调频，不需要频率配置），
+    #    这个 -f 判定会自然跳过，两版共用同一个 customize.sh
     if [ -f "$MODPATH/bin/cpu/gen_fas.sh" ]; then
         ui_print "- 按本机 CPU 档位生成 FAS 频率配置"
         sh "$MODPATH/bin/cpu/gen_fas.sh" "$MODPATH"

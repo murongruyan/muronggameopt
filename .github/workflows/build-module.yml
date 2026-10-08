@@ -331,8 +331,6 @@ jobs:
           cp bin/monitor.bpf.o dist/module/bin/
           cp bin/sqlite3 dist/module/bin/
           cp bin/cpu/*.json dist/module/bin/cpu/
-          # 纯线程版专用模板不进完整版包
-          rm -f dist/module/bin/cpu/fas.threads.json dist/module/bin/cpu/dyn.threads.json
           # 带上按本机档位生成 fas.json 的脚本，否则 customize.sh 的 -f 判定会跳过生成
           cp bin/cpu/gen_fas.sh dist/module/bin/cpu/
 
@@ -357,14 +355,16 @@ jobs:
           cp bin/monitor.bpf.o dist/module-thread/bin/
           cp bin/sqlite3 dist/module-thread/bin/
           cp bin/cpu/*.json dist/module-thread/bin/cpu/
-          cp bin/cpu/gen_fas.sh dist/module-thread/bin/cpu/
 
-          # dyn.json -> enabled:0（缺文件时 daemon 默认 enabled=true，必须显式关）
-          cp dist/module-thread/bin/cpu/dyn.threads.json dist/module-thread/bin/cpu/dyn.json
-          rm -f dist/module-thread/bin/cpu/dyn.threads.json
-          # FAS 显式关闭：apps 为空、defaults.enabled=0，不带完整 FAS 应用规则
-          rm -f dist/module-thread/bin/cpu/fas.default.json
-          mv dist/module-thread/bin/cpu/fas.threads.json dist/module-thread/bin/cpu/fas.default.json
+          # 纯线程版【不带任何 FAS / 动态调频配置文件】：
+          #   -DMURONG_THREAD_ONLY 下 load_fas_config() / load_dyn_config_json() 是空桩，
+          #   直接把 g_fas_enabled_config / g_dyn_params.enabled 写死 false，根本不读 json；
+          #   fas/fas_config.cpp 等 4 个读取单元完全不参与编译。
+          #   所以 fas.json / fas.default.json / dyn.json / gen_fas.sh 都不需要，也不应打包。
+          rm -f dist/module-thread/bin/cpu/fas.json \
+                dist/module-thread/bin/cpu/fas.default.json \
+                dist/module-thread/bin/cpu/dyn.json \
+                dist/module-thread/bin/cpu/gen_fas.sh
 
           sed -i 's/^name=.*/name=慕容线程/' dist/module-thread/module.prop
           sed -i "s|^updateJson=.*|updateJson=${RAW_BASE_URL}/update4.json|" dist/module-thread/module.prop
@@ -400,21 +400,23 @@ jobs:
           grep -qx 'bin/activity_diaodu' dist/free-thread-files.txt
           grep -qx 'bin/sqlite3' dist/free-thread-files.txt
           grep -qx 'bin/cpu/6+2.json' dist/free-thread-files.txt
-          grep -qx 'bin/cpu/gen_fas.sh' dist/free-thread-files.txt
-          grep -qx 'bin/cpu/dyn.json' dist/free-thread-files.txt
-          grep -qx 'bin/cpu/fas.default.json' dist/free-thread-files.txt
           grep -qx 'fengchi_cleanup.sh' dist/free-thread-files.txt
-          if grep -Eq '^(bin/cpu/fas\.json|bin/cpu/(fas|dyn)\.threads\.json|bin/activity_diaodu\.thread$)' dist/free-thread-files.txt; then
-            echo "Thread-only package contains unexpected files."
+          # 纯线程版不带任何 FAS / 动态调频配置：源码层面已关闭（空桩写死 false），
+          # 这些 json 就算放着也不会被读，所以直接不打包，保持包干净。
+          if grep -Eq '^(bin/cpu/(fas\.json|fas\.default\.json|dyn\.json|gen_fas\.sh|fas\.threads\.json|dyn\.threads\.json)|bin/activity_diaodu\.thread$)' dist/free-thread-files.txt; then
+            echo "Thread-only package contains unexpected FAS/dyn files."
+            grep -E '^(bin/cpu/(fas\.json|fas\.default\.json|dyn\.json|gen_fas\.sh))' dist/free-thread-files.txt
             exit 1
           fi
           unzip -p "dist/${THREAD_ZIP_FILE}" module.prop | grep -qx 'id=muronggameopt'
           unzip -p "dist/${THREAD_ZIP_FILE}" module.prop | grep -qx 'name=慕容线程'
           unzip -p "dist/${THREAD_ZIP_FILE}" module.prop | grep -qx 'variant=third_party'
           unzip -p "dist/${THREAD_ZIP_FILE}" module.prop | grep -qx "updateJson=${RAW_BASE_URL}/update4.json"
-          unzip -p "dist/${THREAD_ZIP_FILE}" bin/cpu/dyn.json | grep -q '"enabled": 0'
-          unzip -p "dist/${THREAD_ZIP_FILE}" bin/cpu/fas.default.json | grep -q '"enabled": 0'
-          unzip -p "dist/${THREAD_ZIP_FILE}" bin/cpu/fas.default.json | grep -q '"apps": \[\]'
+          # 确认线程包里确实没有 FAS / 动态调频配置（含完整 FAS 应用规则）
+          if unzip -Z1 "dist/${THREAD_ZIP_FILE}" | grep -Eq 'bin/cpu/(fas\.json|fas\.default\.json|dyn\.json|gen_fas\.sh)'; then
+            echo "Thread-only package still carries FAS/dyn config."
+            exit 1
+          fi
 
           # ---------- 两个包里的二进制必须是各自编出来的那一个 ----------
           full_zip_bin="$(unzip -p "dist/${ZIP_FILE_NAME}" bin/activity_diaodu | sha256sum | cut -d' ' -f1)"
