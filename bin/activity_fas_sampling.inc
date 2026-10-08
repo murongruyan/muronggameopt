@@ -218,14 +218,14 @@ void load_fas_config() {
     char* data = NULL;
     size_t data_len = 0;
     if (!read_file_all(FAS_CONFIG_FILE, &data, &data_len) || !data || data_len == 0) {
-        log_message("未找到 fas.json，使用默认 FAS 配置");
+        log_config_message("未找到 fas.json，使用默认 FAS 配置");
         if (data) free(data);
         return;
     }
 
     cJSON* root = cJSON_Parse(data);
     if (!root) {
-        log_message("fas.json 解析失败，使用默认 FAS 配置");
+        log_config_message("fas.json 解析失败，使用默认 FAS 配置");
         free(data);
         return;
     }
@@ -335,9 +335,9 @@ void load_fas_config() {
 
     char log_msg[128];
     safe_snprintf(log_msg, sizeof(log_msg), "加载了 %d 个 FAS 应用配置", g_fas_config.app_count);
-    log_message(log_msg);
+    log_config_message(log_msg);
     if (truncated) {
-        log_message("fas.json 应用配置超过容量上限，后续包名已被截断");
+        log_config_message("fas.json 应用配置超过容量上限，后续包名已被截断");
     }
 }
 

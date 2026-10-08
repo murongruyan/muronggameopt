@@ -119,7 +119,7 @@ static void enforce_band_with_yield(int ci, int pi, int want_min, int want_max, 
                 safe_snprintf(msg, sizeof(msg),
                               "band_override | c%d 平台改动 %d-%d → 游戏内不让位，直接写回 %d-%d",
                               ci, seen_min, seen_max, want_min, want_max);
-                log_message(msg);
+                log_stats_message(msg);
             }
         } else {
             g_band_yield_until_ms[ci] = now + kPlatformYieldMs;
@@ -129,7 +129,7 @@ static void enforce_band_with_yield(int ci, int pi, int want_min, int want_max, 
                 safe_snprintf(msg, sizeof(msg),
                               "band_yield | c%d 平台改动 %d-%d → 让位 %lldms",
                               ci, seen_min, seen_max, kPlatformYieldMs);
-                log_message(msg);
+                log_stats_message(msg);
             }
             return;
         }
@@ -162,7 +162,7 @@ static void enforce_band_with_yield(int ci, int pi, int want_min, int want_max, 
             safe_snprintf(dbg, sizeof(dbg),
                           "写入被钳制 | c%d 期望 %d-%d | 实际 %d-%d",
                           ci, want_min, want_max, actual_min, actual_max);
-            log_message(dbg);
+            log_stats_message(dbg);
         }
     }
 }
@@ -548,7 +548,7 @@ static void control_trace_maybe_emit(long long now_ms, const char* app) {
         control_trace_read_ddr_khz(),
         w.rd_max_ns / 1000, w.rd_tid,
         (unsigned long long)w.surface_key, w.surface_flips);
-    log_message(log_msg);
+    log_fas_message(log_msg);
 
     /*
      * 真掉帧（超预算 1 倍以上）单独记一行，方便和用户导出的 CSV 按时间对齐。
@@ -567,7 +567,7 @@ static void control_trace_maybe_emit(long long now_ms, const char* app) {
                       control_trace_read_ddr_khz(),
                       w.rd_max_ns / 1000, w.rd_tid,
                       avg_debt, w.debt_max_us, pct(w.tier_high, w.samples));
-        log_message(hitch_msg);
+        log_fas_message(hitch_msg);
     }
 
     int kept_budget = w.budget_us;
@@ -942,7 +942,7 @@ void handle_dynamic_tuning(const char* current_app) {
                                   "daily_write | c%d 负载 %d%% 段%d | 区间 %d-%d | 实际 %s-%s",
                                   i, daily_busy, daily_stage, daily_floor, daily_target,
                                   buf_min, buf_max);
-                    log_message(msg);
+                    log_stats_message(msg);
                 }
             }
         }

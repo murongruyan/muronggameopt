@@ -73,9 +73,23 @@ static const char* get_backup_prefix_for_log(const char* path) {
     return "misc_log";
 }
 
+/*
+ * 轮转一个日志文件。
+ *
+ * 【重要】文件不存在、或大小为 0 时【直接跳过】，不产生备份。
+ * 早期版本无条件轮转全部 5 个日志，于是每次 daemon 重启都会为那些从未写过的
+ * 辅助日志生成一堆 0 字节 .bak，把 log_backups 的配额全占满（实测 12 个里 12 个是空 backup），
+ * 真正有用的主日志备份反而被挤掉。
+ */
 static void backup_log_file(const char* path, bool announce) {
     if (!path) return;
     std::lock_guard<std::recursive_mutex> lock(g_log_file_mutex);
+
+    struct stat st;
+    if (stat(path, &st) != 0 || st.st_size <= 0) {
+        return;   /* 不存在或空文件：没有可备份的内容 */
+    }
+
     mkdir(LOG_BACKUP_DIR, 0755);
     time_t now = time(NULL);
     struct tm tm_info = {};
@@ -105,6 +119,15 @@ static void backup_log_file(const char* path, bool announce) {
 }
 
 
+/*
+ * 启动时的日志轮转。
+ *
+ * 只处理【已经有内容】的日志：backup_log_file() 内部会跳过不存在/空文件，
+ * 这里也不再无条件把 5 个文件重建出来——那会在 config/ 里留一堆 0 字节空壳，
+ * 软件日志页会显示成 "0/5"，用户以为坏了。
+ *
+ * 主日志在启动后马上会写「启动调度服务」，所以只有它是必须存在的。
+ */
 void backup_and_clear_log() {
     mkdir(LOG_BACKUP_DIR, 0755);
     backup_log_file(LOG_FILE, false);
@@ -113,12 +136,23 @@ void backup_and_clear_log() {
     backup_log_file(AFFINITY_LOG_FILE, false);
     backup_log_file(STATS_LOG_FILE, false);
     ensure_log_file_exists(LOG_FILE);
-    ensure_log_file_exists(DEBUG_LOG_FILE);
-    ensure_log_file_exists(FAS_LOG_FILE);
-    ensure_log_file_exists(AFFINITY_LOG_FILE);
-    ensure_log_file_exists(STATS_LOG_FILE);
 }
 
+
+/*
+ * 备份配额：按【日志类型】分别计数，而不是所有备份共用一个数字。
+ *
+ * 旧实现是「log_backups 里总共只留 12 个」，于是辅助日志的备份会把主日志备份挤掉。
+ * 现在主日志留 8 份（它是用户最关心的），每类辅助日志各留 2 份。
+ *
+ * 注意：删除旧备份【不再】往主日志写「删除旧日志备份: xxx」——
+ * 一次启动能刷 20 多行纯噪音，主日志要留给状态变化。
+ */
+static int backup_quota_for_prefix(const char* prefix) {
+    if (!prefix) return 2;
+    if (strcmp(prefix, "log") == 0) return 8;
+    return 2;
+}
 
 void cleanup_old_logs() {
     std::lock_guard<std::recursive_mutex> lock(g_log_file_mutex);
@@ -127,38 +161,39 @@ void cleanup_old_logs() {
 
     struct dirent** namelist;
     int n = scandir(LOG_BACKUP_DIR, &namelist, NULL, alphasort);
-
     if (n < 0) {
         closedir(dir);
         return;
     }
 
-    if (n > 12) {
-        for (int i = 0; i < n - 12; i++) {
-            char filepath[256];
-            safe_snprintf(filepath, sizeof(filepath), "%s/%s", LOG_BACKUP_DIR, namelist[i]->d_name);
-            if (unlink(filepath) == 0) {
-                char log_msg[256];
-                safe_snprintf(log_msg, sizeof(log_msg), "删除旧日志备份: %s", namelist[i]->d_name);
-                append_timestamped_log_line(LOG_FILE, log_msg);
-            }
-
-            free(namelist[i]);
-        }
-
-        for (int i = n - 12; i < n; i++) {
-            free(namelist[i]);
-        }
+    /* 文件名形如 <prefix>_YYYYMMDD_HHMMSS.bak，只取最后一个 '_' 之前的部分作前缀 */
+    std::unordered_map<std::string, std::vector<std::string>> by_prefix;
+    for (int i = 0; i < n; i++) {
+        const char* name = namelist[i]->d_name;
+        if (name[0] == '.') { free(namelist[i]); continue; }
+        std::string s(name);
+        size_t dot = s.rfind('.');
+        std::string stem = (dot == std::string::npos) ? s : s.substr(0, dot);
+        size_t us = stem.rfind('_');
+        std::string prefix = (us == std::string::npos) ? stem : stem.substr(0, us);
+        by_prefix[prefix].push_back(s);
+        free(namelist[i]);
     }
-    else {
-        
-        for (int i = 0; i < n; i++) {
-            free(namelist[i]);
-        }
-    }
-
     free(namelist);
     closedir(dir);
+
+    for (auto& kv : by_prefix) {
+        std::vector<std::string>& files = kv.second;
+        int quota = backup_quota_for_prefix(kv.first.c_str());
+        if ((int)files.size() <= quota) continue;
+        std::sort(files.begin(), files.end());   /* 名字带时间戳，字典序即时间序 */
+        int remove_count = (int)files.size() - quota;
+        for (int i = 0; i < remove_count; i++) {
+            char filepath[256];
+            safe_snprintf(filepath, sizeof(filepath), "%s/%s", LOG_BACKUP_DIR, files[i].c_str());
+            unlink(filepath);
+        }
+    }
 }
 
 static size_t get_max_log_file_size_for(const char* path) {
@@ -276,6 +311,22 @@ static bool is_aux_log_enabled() {
     return runtime_log_config_enabled();
 }
 
+/*
+ * 辅助日志「按需创建」：只在真正写入之后才确保文件存在并放开权限。
+ *
+ * 早期版本在每次 daemon 启动时无条件创建全部 5 个日志文件，即使一个字节都没写过，
+ * 于是 config/ 里长期躺着 3~4 个 0 字节空壳，软件的日志页会显示成 "日志文件: 0/5"。
+ * 现在只有写过的辅助日志才会出现在磁盘上——日志页显示的 "N/5" 因此是真实含义。
+ */
+static void aux_log_created(const char* path) {
+    if (!path) return;
+    struct stat st;
+    if (stat(path, &st) != 0) return;
+    if ((st.st_mode & 0777) != 0644) {
+        chmod(path, 0644);
+    }
+}
+
 void log_debug_message(const char* message) {
     if (!is_aux_log_enabled()) {
         return;
@@ -299,6 +350,57 @@ void log_fas_message(const char* message) {
     }
     clear_log_if_needed_for(FAS_LOG_FILE);
     append_timestamped_log_line(FAS_LOG_FILE, message);
+    aux_log_created(FAS_LOG_FILE);
+}
+
+/*
+ * 分级日志：主日志只留「状态类」信息，调频细节分流到各自文件。
+ *
+ *   log_message()        主日志 log.txt        —— 启动/模式切换/前台变化/档位加载/致命错误
+ *   log_config_message() 调试日志 debug_log.txt —— 配置加载细节（动态调频动作表、日用负载表等）
+ *   log_fas_message()    FAS 日志 fas_log.txt  —— control_trace / hitch（帧追踪）
+ *   log_affinity_message() 亲和性日志          —— 线程绑核
+ *   log_stats_message()  统计日志 stats_log.txt —— daily_write / band_override /
+ *                                                  band_yield / 写入被钳制 / 写入未生效
+ *
+ * 这三个函数不做节流，调用方自己负责限流（例如 log_message_throttled）。
+ */
+void log_stats_message(const char* message) {
+    if (!is_aux_log_enabled()) {
+        return;
+    }
+    clear_log_if_needed_for(STATS_LOG_FILE);
+    append_timestamped_log_line(STATS_LOG_FILE, message);
+    aux_log_created(STATS_LOG_FILE);
+}
+
+void log_config_message(const char* message) {
+    if (!is_aux_log_enabled()) {
+        return;
+    }
+    clear_log_if_needed_for(DEBUG_LOG_FILE);
+    append_timestamped_log_line(DEBUG_LOG_FILE, message);
+    aux_log_created(DEBUG_LOG_FILE);
+}
+
+/*
+ * 与 log_message_throttled() 同语义，但写到调试日志。
+ * 用于「会反复发生、只需要留痕」的配置类告警，例如 pipeline cpu 配置越界——
+ * 它每次调度都可能命中，不限流会把调试日志刷爆。
+ */
+void log_config_message_throttled(const char* key, long long interval_ms, const char* message) {
+    if (!key || !key[0] || !message) return;
+    static std::mutex throttle_mutex;
+    static std::unordered_map<std::string, long long> last_ms_by_key;
+
+    long long now_ms = get_current_time_ms();
+    std::lock_guard<std::mutex> lock(throttle_mutex);
+    long long& last_ms = last_ms_by_key[key];
+    if (last_ms != 0 && now_ms - last_ms < interval_ms) {
+        return;
+    }
+    last_ms = now_ms;
+    log_config_message(message);
 }
 
 static void log_affinity_message(const char* message) {
@@ -367,18 +469,12 @@ static void log_affinity_message(const char* message) {
         }
         state.last_emit_ms = now_ms;
         append_timestamped_log_line(AFFINITY_LOG_FILE, message);
+        aux_log_created(AFFINITY_LOG_FILE);
         return;
     }
     clear_log_if_needed_for(AFFINITY_LOG_FILE);
     append_timestamped_log_line(AFFINITY_LOG_FILE, message);
-}
-
-static void log_stats_message(const char* message) {
-    if (!is_aux_log_enabled()) {
-        return;
-    }
-    clear_log_if_needed_for(STATS_LOG_FILE);
-    append_timestamped_log_line(STATS_LOG_FILE, message);
+    aux_log_created(AFFINITY_LOG_FILE);
 }
 
 static void log_affinity_failure_once(const char* message) {

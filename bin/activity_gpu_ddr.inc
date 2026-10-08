@@ -944,7 +944,7 @@ static void enforce_gpu_ddr_limits(bool force) {
                                       "GPU pwrlevel 由内核/平台接管（写入被改写 max:%d->%d min:%d->%d），已停止写入",
                                       g_gpu_target_max_pwrlevel, now_max_pl,
                                       g_gpu_target_min_pwrlevel, now_min_pl);
-                        log_message(msg);
+                        log_stats_message(msg);
                     }
                 } else {
                     g_gpu_write_fail_streak = 0;
@@ -995,7 +995,7 @@ static void enforce_gpu_ddr_limits(bool force) {
                                       "DDR 频率节点由内核 memlat/bwmon 接管（写入被改写 max:%d->%d min:%d->%d），已停止写入",
                                       g_ddr_applied_max_freq, now_max,
                                       g_ddr_applied_min_freq, now_min);
-                        log_message(msg);
+                        log_stats_message(msg);
                     }
                 } else {
                     g_ddr_write_fail_streak = 0;

@@ -700,7 +700,11 @@ static void verify_written_value(const char* path, const char* expected) {
         path,
         expected,
         actual[0] ? actual : "<empty>");
-    log_message(log_msg);
+    /*
+     * 这是「平台和我们抢写同一个频率节点」的诊断，属于调频细节，
+     * 走统计日志（stats_log.txt），不要污染主日志。
+     */
+    log_stats_message(log_msg);
 }
 
 int lock_val(const char* path, const char* value) {

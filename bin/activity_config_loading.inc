@@ -1327,7 +1327,7 @@ static bool load_thread_rules_dsl_config(const char* data, const char* config_pa
                   "已加载线程规则DSL配置: %s | apps:%d",
                   config_path ? config_path : "unknown",
                   loaded_count);
-    log_message(log_msg);
+    log_config_message(log_msg);
     return true;
 }
 
@@ -1496,14 +1496,14 @@ static void load_thread_signature_config() {
         char error_msg[256];
         safe_snprintf(error_msg, sizeof(error_msg), "无法打开线程签名扩展配置: %s (错误: %s)",
                       config_path, strerror(errno));
-        log_message(error_msg);
+        log_config_message(error_msg);
         return;
     }
 
     fseek(fp, 0, SEEK_END);
     long len = ftell(fp);
     if (len <= 0) {
-        log_message("线程签名扩展配置为空或读取失败");
+        log_config_message("线程签名扩展配置为空或读取失败");
         cleanup_resources(fp, NULL, NULL);
         return;
     }
@@ -1511,7 +1511,7 @@ static void load_thread_signature_config() {
 
     char* data = (char*)malloc(len + 1);
     if (!data) {
-        log_message("内存分配失败");
+        log_config_message("内存分配失败");
         cleanup_resources(fp, NULL, NULL);
         return;
     }
@@ -1531,7 +1531,7 @@ static void load_thread_signature_config() {
         if (error_ptr) {
             char error_msg[256];
             safe_snprintf(error_msg, sizeof(error_msg), "线程签名扩展JSON/DSL解析失败: %s", error_ptr);
-            log_message(error_msg);
+            log_config_message(error_msg);
         }
         cleanup_resources(NULL, data, NULL);
         return;
@@ -1581,7 +1581,7 @@ static void load_thread_signature_config() {
                   (int)g_thread_signature_config.worker_thread_patterns.size(),
                   (int)g_thread_signature_config.taskgraph_thread_patterns.size(),
                   (int)g_thread_app_rules.size());
-    log_message(log_msg);
+    log_config_message(log_msg);
 
     // 设备级 persistent 规则覆盖: 如果存在 {cpu_model}.persistent.json，
     // 其 persistent-scope 规则会替换模板中的同名包规则（用于跨SoC分发调参）
@@ -1639,7 +1639,7 @@ static void load_thread_signature_config() {
             fclose(pf);
             char pmsg[256];
             safe_snprintf(pmsg, sizeof(pmsg), "已加载设备持久规则覆盖: %s", persistent_override_path);
-            log_message(pmsg);
+            log_config_message(pmsg);
         }
     }
 
@@ -1675,14 +1675,14 @@ static void load_scheduler_session_config_json(const char* mode) {
         char error_msg[256];
         safe_snprintf(error_msg, sizeof(error_msg), "无法打开调度扩展配置: %s (错误: %s)",
                       config_path, strerror(errno));
-        log_message(error_msg);
+        log_config_message(error_msg);
         return;
     }
 
     fseek(fp, 0, SEEK_END);
     long len = ftell(fp);
     if (len <= 0) {
-        log_message("调度扩展配置为空或读取失败");
+        log_config_message("调度扩展配置为空或读取失败");
         cleanup_resources(fp, NULL, NULL);
         return;
     }
@@ -1690,7 +1690,7 @@ static void load_scheduler_session_config_json(const char* mode) {
 
     char* data = (char*)malloc(len + 1);
     if (!data) {
-        log_message("内存分配失败");
+        log_config_message("内存分配失败");
         cleanup_resources(fp, NULL, NULL);
         return;
     }
@@ -1706,7 +1706,7 @@ static void load_scheduler_session_config_json(const char* mode) {
         if (error_ptr) {
             char error_msg[256];
             safe_snprintf(error_msg, sizeof(error_msg), "调度扩展JSON解析失败: %s", error_ptr);
-            log_message(error_msg);
+            log_config_message(error_msg);
         }
         cleanup_resources(NULL, data, NULL);
         return;
@@ -1737,14 +1737,14 @@ void load_scene_categories_config() {
         char error_msg[256];
         safe_snprintf(error_msg, sizeof(error_msg), "无法打开场景分类配置: %s (错误: %s)",
                       SCENE_CATEGORIES_FILE, strerror(errno));
-        log_message(error_msg);
+        log_config_message(error_msg);
         return;
     }
 
     fseek(fp, 0, SEEK_END);
     long len = ftell(fp);
     if (len <= 0) {
-        log_message("场景分类配置为空或读取失败");
+        log_config_message("场景分类配置为空或读取失败");
         cleanup_resources(fp, NULL, NULL);
         return;
     }
@@ -1752,7 +1752,7 @@ void load_scene_categories_config() {
 
     char* data = (char*)malloc(len + 1);
     if (!data) {
-        log_message("内存分配失败");
+        log_config_message("内存分配失败");
         cleanup_resources(fp, NULL, NULL);
         return;
     }
@@ -1768,7 +1768,7 @@ void load_scene_categories_config() {
         if (error_ptr) {
             char error_msg[256];
             safe_snprintf(error_msg, sizeof(error_msg), "场景分类JSON解析失败: %s", error_ptr);
-            log_message(error_msg);
+            log_config_message(error_msg);
         }
         cleanup_resources(NULL, data, NULL);
         return;
@@ -1880,7 +1880,7 @@ void load_scene_categories_config() {
                   "已加载场景分类配置: %s | rules:%d",
                   SCENE_CATEGORIES_FILE,
                   (int)g_scene_category_rules.size());
-    log_message(log_msg);
+    log_config_message(log_msg);
 
     cleanup_resources(NULL, data, root);
     /* 场景分类规则变了：每应用的生效开关缓存作废 */

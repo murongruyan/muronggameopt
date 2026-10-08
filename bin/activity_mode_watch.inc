@@ -176,7 +176,7 @@ void load_mode_settings_json(const char* mode) {
         char error_msg[256];
         safe_snprintf(error_msg, sizeof(error_msg), "无法打开配置文件: %s (错误: %s)",
             config_path, strerror(errno));
-        log_message(error_msg);
+        log_config_message(error_msg);
         return;
     }
 
@@ -184,7 +184,7 @@ void load_mode_settings_json(const char* mode) {
     fseek(fp, 0, SEEK_END);
     long len = ftell(fp);
     if (len <= 0) {
-        log_message("配置文件为空或读取失败");
+        log_config_message("配置文件为空或读取失败");
         cleanup_resources(fp, NULL, NULL);
         return;
     }
@@ -193,7 +193,7 @@ void load_mode_settings_json(const char* mode) {
     // Allocate memory
     char* data = (char*)malloc(len + 1);
     if (!data) {
-        log_message("内存分配失败");
+        log_config_message("内存分配失败");
         cleanup_resources(fp, NULL, NULL);
         return;
     }
@@ -210,7 +210,7 @@ void load_mode_settings_json(const char* mode) {
         if (error_ptr) {
             char error_msg[256];
             safe_snprintf(error_msg, sizeof(error_msg), "JSON解析失败: %s", error_ptr);
-            log_message(error_msg);
+            log_config_message(error_msg);
         }
         cleanup_resources(NULL, data, NULL);
         return;
@@ -221,12 +221,12 @@ void load_mode_settings_json(const char* mode) {
     if (!mode_obj) {
         char error_msg[256];
         safe_snprintf(error_msg, sizeof(error_msg), "在JSON中未找到模式: %s", mode);
-        log_message(error_msg);
-        log_message("回退到均衡模式");
+        log_config_message(error_msg);
+        log_config_message("回退到均衡模式");
         mode_obj = cJSON_GetObjectItem(root, "balance");
         if (!mode_obj) {
             cleanup_resources(NULL, data, root);
-            log_message("均衡模式也不存在");
+            log_config_message("均衡模式也不存在");
             return;
         }
     }

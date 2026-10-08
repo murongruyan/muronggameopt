@@ -88,7 +88,11 @@ void ring_buffer__free(struct ring_buffer* rb);
 #define STATS_LOG_FILE "/data/adb/modules/muronggameopt/config/stats_log.txt"
 #define LOG_BACKUP_DIR "/data/adb/modules/muronggameopt/config/log_backups"
 #define MAX_LOG_FILE_SIZE (200 * 1024)
-#define MAX_AUX_LOG_FILE_SIZE (5 * 1024 * 1024) // 5MB for debug and stats logs
+/*
+ * 辅助日志单文件上限。原为 5MB——比主日志（200KB）还大 25 倍，是反的：
+ * 辅助日志量大且只是诊断用，压到 500KB 与主日志同量级即可。
+ */
+#define MAX_AUX_LOG_FILE_SIZE (500 * 1024)
 #define CONFIG_DIR "/data/adb/modules/muronggameopt/config/"
 #define SCENE_CATEGORIES_FILE CONFIG_DIR "categories.json"
 #define SCHEDULER_SKIP_PROCESSES_FILE CONFIG_DIR "skip_processes.txt"
@@ -559,12 +563,22 @@ typedef struct {
 static SchedulerRuntimeStats g_runtime_stats = {};
 
 // 函数声明
+/*
+ * 分级日志（实现见 activity_runtime_logging.inc，定义较晚，故此处前置声明）：
+ *   log_message / log_message_throttled  主日志 log.txt        —— 状态类信息
+ *   log_fas_message                      FAS 日志 fas_log.txt —— 帧追踪（control_trace / hitch）
+ *   log_stats_message                    统计日志 stats_log    —— 调频细节
+ *   log_config_message(_throttled)       调试日志 debug_log    —— 配置加载细节
+ *   log_affinity_message                 亲和性日志             —— 线程绑核
+ */
 void log_message(const char* message);
 void log_message_throttled(const char* key, long long interval_ms, const char* message);
 static bool is_aux_log_enabled();
 static void log_affinity_message(const char* message);
 void log_fas_message(const char* message);
-static void log_stats_message(const char* message);
+void log_stats_message(const char* message);
+void log_config_message(const char* message);
+void log_config_message_throttled(const char* key, long long interval_ms, const char* message);
 bool get_foreground_app(char* out_app, size_t out_size);
 void apply_settings();
 void apply_cpuctl_settings(const CpuCtlSettings* settings);

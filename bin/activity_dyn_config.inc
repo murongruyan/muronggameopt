@@ -280,14 +280,14 @@ static void load_dyn_config_json(const char* mode) {
 
     FILE* fp = fopen(DYN_CONFIG_FILE, "rb");
     if (!fp) {
-        log_message("dyn.json 不存在，动态调频使用内置默认值");
+        log_config_message("dyn.json 不存在，动态调频使用内置默认值");
     } else {
         fseek(fp, 0, SEEK_END);
         long len = ftell(fp);
         fseek(fp, 0, SEEK_SET);
         if (len <= 0 || len > 65536) {
             fclose(fp);
-            log_message("dyn.json 大小异常，动态调频使用内置默认值");
+            log_config_message("dyn.json 大小异常，动态调频使用内置默认值");
         } else {
             char* data = (char*)malloc((size_t)len + 1);
             if (!data) {
@@ -300,7 +300,7 @@ static void load_dyn_config_json(const char* mode) {
                 cJSON* root = cJSON_Parse(data);
                 free(data);
                 if (!root) {
-                    log_message("dyn.json 解析失败，动态调频使用内置默认值");
+                    log_config_message("dyn.json 解析失败，动态调频使用内置默认值");
                 } else {
                     apply_dyn_params_json(&g_dyn_params, root);
                     apply_dyn_corridor_json(root, false);
@@ -398,7 +398,7 @@ static void load_dyn_config_json(const char* mode) {
                         if (w <= 0) break;
                         written += w;
                     }
-                    log_message(log_msg);
+                    log_config_message(log_msg);
 
                     char control_msg[224];
                     safe_snprintf(control_msg, sizeof(control_msg),
@@ -409,7 +409,7 @@ static void load_dyn_config_json(const char* mode) {
                                   g_dyn_control.severe_streak,
                                   g_dyn_control.release_step_permille,
                                   g_dyn_control.release_hold_ms);
-                    log_message(control_msg);
+                    log_config_message(control_msg);
 
                     char daily_msg[288];
                     int daily_written = safe_snprintf(
@@ -430,7 +430,7 @@ static void load_dyn_config_json(const char* mode) {
                         if (w <= 0) break;
                         daily_written += w;
                     }
-                    log_message(daily_msg);
+                    log_config_message(daily_msg);
                     cJSON_Delete(root);
                     return;
                 }

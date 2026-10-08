@@ -2463,7 +2463,7 @@ static bool pipeline_channel_available() {
     if (g_pipeline_channel_state < 0) {
         g_pipeline_channel_state = (access(kPipelineTasksPath, W_OK) == 0) ? 1 : 0;
         if (g_pipeline_channel_state == 0) {
-            log_message("没有官方 pipeline 节点（非 ColorOS 机型），只按配置里的 cpus 绑核");
+            log_config_message("没有官方 pipeline 节点（非 ColorOS 机型），只按配置里的 cpus 绑核");
         }
     }
     return g_pipeline_channel_state == 1;
@@ -2582,7 +2582,7 @@ static void mark_pipeline_task_locked(pid_t tid,
             target_cpu = pipeline_cpu;
         } else {
             /* 配置的 cpu 不在 cpus 掩码里，登记了也跑不到 —— 回退并明确报错，避免静默误解。 */
-            log_message_throttled("pipeline_cpu_out_of_mask", 5000,
+            log_config_message_throttled("pipeline_cpu_out_of_mask", 5000,
                 "配置的 cpu 不在 cpus 掩码内，已回退为掩码最高核");
         }
     }
@@ -3892,7 +3892,7 @@ bool init_bpf() {
     if (err) {
         char msg[256];
         safe_snprintf(msg, sizeof(msg), "eBPF初始化失败: bpf_object__load=%d", err);
-        log_message(msg);
+        log_config_message(msg);
         bpf_object__close(g_bpf_obj);
         g_bpf_obj = nullptr;
         g_bpf_failed.store(1);
@@ -3928,7 +3928,7 @@ bool init_bpf() {
 
     g_bpf_switch_link = bpf_program__attach(g_bpf_switch_prog);
     if (libbpf_get_error(g_bpf_switch_link)) {
-        log_message("eBPF初始化失败: attach sched_switch");
+        log_config_message("eBPF初始化失败: attach sched_switch");
         g_bpf_switch_link = nullptr;
         bpf_object__close(g_bpf_obj);
         g_bpf_obj = nullptr;
@@ -3938,7 +3938,7 @@ bool init_bpf() {
 
     g_bpf_wakeup_link = bpf_program__attach(g_bpf_wakeup_prog);
     if (libbpf_get_error(g_bpf_wakeup_link)) {
-        log_message("eBPF初始化失败: attach sched_wakeup");
+        log_config_message("eBPF初始化失败: attach sched_wakeup");
         g_bpf_wakeup_link = nullptr;
         bpf_link__destroy(g_bpf_switch_link);
         g_bpf_switch_link = nullptr;
@@ -3950,7 +3950,7 @@ bool init_bpf() {
 
     g_bpf_process_fork_link = bpf_program__attach(g_bpf_process_fork_prog);
     if (libbpf_get_error(g_bpf_process_fork_link)) {
-        log_message("eBPF初始化失败: attach sched_process_fork");
+        log_config_message("eBPF初始化失败: attach sched_process_fork");
         g_bpf_process_fork_link = nullptr;
         bpf_link__destroy(g_bpf_wakeup_link);
         g_bpf_wakeup_link = nullptr;
@@ -3964,7 +3964,7 @@ bool init_bpf() {
 
     g_bpf_process_exec_link = bpf_program__attach(g_bpf_process_exec_prog);
     if (libbpf_get_error(g_bpf_process_exec_link)) {
-        log_message("eBPF初始化失败: attach sched_process_exec");
+        log_config_message("eBPF初始化失败: attach sched_process_exec");
         g_bpf_process_exec_link = nullptr;
         bpf_link__destroy(g_bpf_process_fork_link);
         g_bpf_process_fork_link = nullptr;
@@ -3980,7 +3980,7 @@ bool init_bpf() {
 
     g_bpf_process_affinity_link = bpf_program__attach(g_bpf_process_affinity_prog);
     if (libbpf_get_error(g_bpf_process_affinity_link)) {
-        log_message("eBPF初始化失败: attach sys_enter_sched_setaffinity");
+        log_config_message("eBPF初始化失败: attach sys_enter_sched_setaffinity");
         g_bpf_process_affinity_link = nullptr;
         bpf_link__destroy(g_bpf_process_exec_link);
         g_bpf_process_exec_link = nullptr;
@@ -4006,9 +4006,9 @@ bool init_bpf() {
         g_bpf_process_exit_link = bpf_program__attach(g_bpf_process_exit_prog);
         if (libbpf_get_error(g_bpf_process_exit_link)) {
             g_bpf_process_exit_link = nullptr;
-            log_message("eBPF: sched_process_exit 事件不可用，线程清册回退为低频扫描");
+            log_config_message("eBPF: sched_process_exit 事件不可用，线程清册回退为低频扫描");
         } else {
-            log_message("eBPF: 线程退出事件已挂载（事件驱动清册）");
+            log_config_message("eBPF: 线程退出事件已挂载（事件驱动清册）");
         }
     }
     struct bpf_map* runtime_map = bpf_object__find_map_by_name(g_bpf_obj, "thread_runtime_map");
@@ -4019,7 +4019,7 @@ bool init_bpf() {
     struct bpf_map* process_event_map = bpf_object__find_map_by_name(g_bpf_obj, "process_event_rb");
     if (!target_map || !runtime_map || !cpu_last_map || !urgent_map || !target_tid_map ||
         !frame_signal_map || !process_event_map) {
-        log_message("eBPF初始化失败: 找不到聚合 map");
+        log_config_message("eBPF初始化失败: 找不到聚合 map");
         bpf_link__destroy(g_bpf_process_affinity_link);
         g_bpf_process_affinity_link = nullptr;
         bpf_link__destroy(g_bpf_process_exec_link);
@@ -4048,7 +4048,7 @@ bool init_bpf() {
     g_frame_signal_ring = ring_buffer__new(
         g_frame_signal_rb_map_fd, handle_queuebuffer_frame_signal, NULL, &rb_opts);
     if (!g_frame_signal_ring) {
-        log_message("eBPF初始化失败: ring_buffer__new");
+        log_config_message("eBPF初始化失败: ring_buffer__new");
         bpf_link__destroy(g_bpf_process_affinity_link);
         g_bpf_process_affinity_link = nullptr;
         bpf_link__destroy(g_bpf_process_exec_link);
@@ -4067,7 +4067,7 @@ bool init_bpf() {
     g_process_event_ring = ring_buffer__new(
         g_process_event_rb_map_fd, handle_process_event_signal, NULL, &rb_opts);
     if (!g_process_event_ring) {
-        log_message("eBPF初始化失败: process_event ring_buffer__new");
+        log_config_message("eBPF初始化失败: process_event ring_buffer__new");
         ring_buffer__free(g_frame_signal_ring);
         g_frame_signal_ring = nullptr;
         bpf_link__destroy(g_bpf_process_affinity_link);

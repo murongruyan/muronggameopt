@@ -102,7 +102,7 @@ void apply_settings() {
                 safe_snprintf(log_msg, sizeof(log_msg),
                     "调速器 %s 在policy%d上不支持，跳过设置",
                     policy->governor, policy->policy_num);
-                log_message(log_msg);
+                log_stats_message(log_msg);
                 continue;
             }
 
