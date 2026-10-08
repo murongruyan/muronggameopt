@@ -1,0 +1,56 @@
+{
+  "enabled": 1,
+  "corridor_owner": "dyn",
+  "control": {
+    "deadband_permille": 30,
+    "sweetspot_permille": 100,
+    "ceiling_permille": 300,
+    "severe_streak": 2,
+    "release_step_permille": 250,
+    "release_hold_ms": 60
+  },
+  "daily": {
+    "enabled": 1,
+    "load_mode": "top2",
+    "hysteresis": 5,
+    "soften_permille": 1000,
+    "rise_hold_ms": 0,
+    "fall_hold_ms": 300,
+    "stages": [
+      { "load": 40,  "floor": 0,   "ceiling": 250 },
+      { "load": 70,  "floor": 100, "ceiling": 500 },
+      { "load": 88,  "floor": 300, "ceiling": 800 },
+      { "load": 100, "floor": 550, "ceiling": 1000 }
+    ]
+  },
+  "modes": {
+    "powersave": {
+      "enabled": 1,
+      "daily": {
+        "stages": [
+          { "load": 45,  "floor": 0,   "ceiling": 180 },
+          { "load": 75,  "floor": 80,  "ceiling": 400 },
+          { "load": 90,  "floor": 200, "ceiling": 650 },
+          { "load": 100, "floor": 400, "ceiling": 880 }
+        ]
+      }
+    },
+    "balance": {
+      "enabled": 1
+    },
+    "performance": {
+      "enabled": 1,
+      "daily": {
+        "stages": [
+          { "load": 35,  "floor": 150, "ceiling": 500 },
+          { "load": 65,  "floor": 350, "ceiling": 750 },
+          { "load": 85,  "floor": 550, "ceiling": 950 },
+          { "load": 100, "floor": 800, "ceiling": 1000 }
+        ]
+      }
+    },
+    "fast": {
+      "enabled": 0
+    }
+  }
+}

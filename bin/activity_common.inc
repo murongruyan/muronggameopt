@@ -8,18 +8,13 @@
 #include <ctype.h>
 #include <stdio.h>
 
-typedef struct {
-    int ceiling_freq;
-    int upper_load;
-} DynamicLoadCeilingStage;
-
+/*
+ * 动态调频的开关（每簇一份）。具体策略：
+ *   日用（无帧信号）→ dyn.json 的 daily 分段表（见 activity_dyn_config.inc）
+ *   游戏（有帧信号）→ FAS 的帧债动作表
+ */
 typedef struct {
     bool enabled;
-    int target_load;
-    int load_margin;
-    bool debug_log;
-    int low_load_lock_threshold;
-    std::vector<DynamicLoadCeilingStage> load_ceiling_stages;
 } DynamicTuningParams;
 
 struct AllCpuStats {
@@ -27,6 +22,9 @@ struct AllCpuStats {
     uint64_t total[32];
     int valid;
 };
+
+#include <shared_mutex>
+static std::shared_mutex g_mutex;
 
 static int read_all_cpu_stats(AllCpuStats* out) {
     if (!out) return 0;
@@ -77,7 +75,7 @@ static int read_all_cpu_stats(AllCpuStats* out) {
     return 1;
 }
 
-static long long get_current_time_ms() {
+long long get_current_time_ms() {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;

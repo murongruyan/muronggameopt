@@ -1,7 +1,9 @@
 id=muronggameopt
-name=慕容调度5.6
-version=5.6
-versionCode=56
+name=慕容调度
+version=6.0
+versionCode=60
 author=慕容茹艳（酷安慕容雪绒）
-description=万丈红尘缤纷彩，天涯云水路遥长。此刻风流归天地，不胜水中明月光。
+description=第三方用户态调度版，集成 eBPF 动态调频、动态/自定义线程分配与 FAS 帧感知调度，并自动清理风驰配置以避免冲突。
+variant=third_party
+entitlementVersion=6.0
 updateJson=https://raw.githubusercontent.com/murongruyan/muronggameopt/main/update3.json

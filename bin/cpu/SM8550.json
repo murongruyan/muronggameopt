@@ -1,0 +1,205 @@
+{
+  "version": "5.8",
+  "powersave": {
+    "cpu_policies": [
+      {
+        "cluster": 0,
+        "governor": "walt",
+        "max_freq": 1344000,
+        "min_freq": 441600,
+        "params": {
+          "boost": "-20",
+          "down_rate_limit_us": "1000",
+          "hispeed_freq": "556800",
+          "hispeed_load": "90",
+          "pl": "",
+          "rtg_boost_freq": "441600",
+          "up_rate_limit_us": "4000",
+          "target_loads": "80 556800:85 902400:90"
+        }
+      },
+      {
+        "cluster": 1,
+        "governor": "walt",
+        "max_freq": 1920000,
+        "min_freq": 614400,
+        "params": {
+          "boost": "-20",
+          "down_rate_limit_us": "1000",
+          "hispeed_freq": "729600",
+          "hispeed_load": "90",
+          "pl": "",
+          "rtg_boost_freq": "614400",
+          "up_rate_limit_us": "4000",
+          "target_loads": "80 729600:85 1286400:90"
+        }
+      },
+      {
+        "cluster": 2,
+        "governor": "walt",
+        "max_freq": 1843200,
+        "min_freq": 595200,
+        "params": {
+          "boost": "-13",
+          "down_rate_limit_us": "1000",
+          "hispeed_freq": "864000",
+          "hispeed_load": "90",
+          "pl": "",
+          "rtg_boost_freq": "595200",
+          "up_rate_limit_us": "4000",
+          "target_loads": "80 729600:85 1248000:90"
+        }
+      }
+    ],
+    "cpuset": {
+      "background": "0-2",
+      "systembackground": "1-3",
+      "foreground": "0-5",
+      "topapp": "0-7"
+    },
+    "features": {
+      "scheduler_master": true,
+      "dynamic_thread_scheduler": true,
+      "scene_category": true,
+      "base_profile": true,
+      "dynamic_tuning": true,
+      "fas": true,
+      "custom_thread": true
+    }
+  },
+  "balance": {
+    "cpu_policies": [
+      {
+        "cluster": 0,
+        "governor": "",
+        "max_freq": 1785600,
+        "min_freq": 441600,
+        "params": {
+          "boost": "0",
+          "down_rate_limit_us": "0",
+          "hispeed_freq": "902400",
+          "hispeed_load": "90",
+          "pl": "",
+          "rtg_boost_freq": "441600",
+          "up_rate_limit_us": "0",
+          "target_loads": "80 1017600:85 1555200:90"
+        }
+      },
+      {
+        "cluster": 1,
+        "governor": "",
+        "max_freq": 2457600,
+        "min_freq": 614400,
+        "params": {
+          "boost": "0",
+          "down_rate_limit_us": "0",
+          "hispeed_freq": "1286400",
+          "hispeed_load": "90",
+          "pl": "",
+          "rtg_boost_freq": "614400",
+          "up_rate_limit_us": "0",
+          "target_loads": "80 1401600:85 2188800:90"
+        }
+      },
+      {
+        "cluster": 2,
+        "governor": "",
+        "max_freq": 2841600,
+        "min_freq": 595200,
+        "params": {
+          "boost": "0",
+          "down_rate_limit_us": "0",
+          "hispeed_freq": "1248000",
+          "hispeed_load": "90",
+          "pl": "",
+          "rtg_boost_freq": "595200",
+          "up_rate_limit_us": "0",
+          "target_loads": "80 864000:85 1248000:90"
+        }
+      }
+    ],
+    "cpuset": {
+      "background": "0-3",
+      "systembackground": "2-3",
+      "foreground": "0-6",
+      "topapp": "0-7"
+    },
+    "features": {
+      "scheduler_master": true,
+      "custom_thread": true,
+      "dynamic_thread_scheduler": true,
+      "scene_category": true,
+      "base_profile": true
+    }
+  },
+  "performance": {
+    "cpu_policies": [
+      {
+        "cluster": 0,
+        "governor": "performance",
+        "max_freq": 2016000,
+        "min_freq": 787200
+      },
+      {
+        "cluster": 1,
+        "governor": "performance",
+        "max_freq": 2803200,
+        "min_freq": 1171200
+      },
+      {
+        "cluster": 2,
+        "governor": "performance",
+        "max_freq": 3187200,
+        "min_freq": 998400
+      }
+    ],
+    "cpuset": {
+      "background": "0-2",
+      "systembackground": "3-4",
+      "foreground": "0-6",
+      "topapp": "0-7"
+    },
+    "features": {
+      "scheduler_master": true,
+      "custom_thread": true,
+      "dynamic_thread_scheduler": true,
+      "scene_category": true,
+      "base_profile": true
+    }
+  },
+  "fast": {
+    "cpu_policies": [
+      {
+        "cluster": 0,
+        "governor": "performance",
+        "max_freq": 2016000,
+        "min_freq": 1017600
+      },
+      {
+        "cluster": 1,
+        "governor": "performance",
+        "max_freq": 2803200,
+        "min_freq": 1286400
+      },
+      {
+        "cluster": 2,
+        "governor": "performance",
+        "max_freq": 3187200,
+        "min_freq": 1248000
+      }
+    ],
+    "cpuset": {
+      "background": "0-1",
+      "systembackground": "2-3",
+      "foreground": "0-6",
+      "topapp": "0-7"
+    },
+    "features": {
+      "scheduler_master": true,
+      "custom_thread": true,
+      "dynamic_thread_scheduler": true,
+      "scene_category": true,
+      "base_profile": true
+    }
+  }
+}

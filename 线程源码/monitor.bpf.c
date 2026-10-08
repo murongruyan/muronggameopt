@@ -14,6 +14,11 @@
 #endif
 #endif
 
+struct queuebuffer_frame_signal {
+    __u64 ktime_ns;
+    __u64 buffer;
+};
+
 struct process_event_signal {
     __s32 pid;
     __s32 tid;
@@ -55,6 +60,11 @@ struct {
     __type(key, __u32);
     __type(value, __u64);
 } cpu_last_ts_map SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, 1 << 14);
+} frame_signal_rb SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
@@ -153,6 +163,24 @@ int handle_process_exec(struct bpf_raw_tracepoint_args *ctx) {
     return 0;
 }
 
+/*
+ * 线程/进程退出。用户态靠这个事件精确清册，不必再用 /proc 轮询兜底；
+ * 事件类型 4，字段布局与其它 process 事件一致（pid=tgid、tid=pid）。
+ */
+SEC("raw_tracepoint/sched_process_exit")
+int handle_process_exit(struct bpf_raw_tracepoint_args *ctx) {
+    struct task_struct *task = (struct task_struct *)ctx->args[0];
+    __u32 pid = BPF_CORE_READ(task, tgid);
+    __u32 tid = BPF_CORE_READ(task, pid);
+    char comm[16];
+
+    if (bpf_core_read_str(comm, sizeof(comm), &task->comm) <= 0) {
+        __builtin_memset(comm, 0, sizeof(comm));
+    }
+    emit_process_event(pid, tid, comm, 4);
+    return 0;
+}
+
 SEC("raw_tracepoint/sys_enter")
 int handle_sched_setaffinity(struct bpf_raw_tracepoint_args *ctx) {
     __u64 syscall_nr = ctx->args[0];
@@ -168,6 +196,21 @@ int handle_sched_setaffinity(struct bpf_raw_tracepoint_args *ctx) {
         __builtin_memset(comm, 0, sizeof(comm));
     }
     emit_process_event(pid, tid, comm, 3);
+    return 0;
+}
+
+SEC("uprobe/queuebuffer")
+int handle_queuebuffer(struct pt_regs *ctx) {
+    struct queuebuffer_frame_signal *signal;
+
+    signal = bpf_ringbuf_reserve(&frame_signal_rb, sizeof(*signal), 0);
+    if (!signal) {
+        return 0;
+    }
+
+    signal->ktime_ns = bpf_ktime_get_ns();
+    signal->buffer = (__u64)PT_REGS_PARM1(ctx);
+    bpf_ringbuf_submit(signal, 0);
     return 0;
 }
 

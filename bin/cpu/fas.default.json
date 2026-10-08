@@ -1,0 +1,177 @@
+{
+  "defaults": {
+    "enabled": 1,
+    "default_target_fps": 60,
+    "base_margin_fps": 0,
+    "kp": 3
+  },
+  "sweetspot_freq": {
+    "__MURONG_GENERATED_SWEETSPOT__": true
+  },
+  "deep_floor_freq": {
+    "__MURONG_GENERATED_DEEP_FLOOR__": true
+  },
+  "apps": [
+    {
+      "friendly": "王者荣耀/cfm/LOLM/球球大作战/金铲铲之战",
+      "packages": [
+        "com.tencent.tmgp.sgame",
+        "com.levelinfinite.sgameGlobal",
+        "com.levelinfinite.sgameGlobal.midaspay",
+        "com.tencent.tmgp.cf",
+        "com.tencent.lolm",
+        "com.ztgame.bob",
+        "com.tencent.jkchess"
+      ],
+      "fps_profiles": [
+        {
+          "target_fps": 60,
+          "margin_fps": 3,
+          "kp": 1.5
+        },
+        {
+          "target_fps": 90,
+          "margin_fps": 2.5,
+          "kp": 2
+        },
+        {
+          "target_fps": 120,
+          "margin_fps": 2,
+          "kp": 2.5,
+          "fallback": true
+        },
+        {
+          "target_fps": 144,
+          "margin_fps": 1.5,
+          "kp": 3
+        },
+        {
+          "target_fps": 165,
+          "margin_fps": 1.0,
+          "kp": 3.5
+        }
+      ]
+    },
+    {
+      "friendly": "和平精英/qq飞车/无畏契约:能源行动/CODM/暗区突围/巅峰极速/荒野行动/极品飞车:集结/DNFM",
+      "packages": [
+        "com.tencent.tmgp.pubgmhd",
+        "com.tencent.ig",
+        "com.pubg.krmobile",
+        "com.tencent.tmgp.speedmobile",
+        "com.tencent.tmgp.codev",
+        "com.tencent.tmgp.cod",
+        "com.activision.callofduty.warzone",
+        "com.tencent.mf.uam",
+        "com.netease.race",
+        "com.netease.hyxd.nearme.gamecenter",
+        "com.tencent.nfsonline",
+        "com.netease.aceracer.aligames",
+        "com.tencent.tmgp.dnf"
+      ],
+      "fps_profiles": [
+        {
+          "target_fps": 60,
+          "margin_fps": 1,
+          "kp": 2.5
+        },
+        {
+          "target_fps": 90,
+          "margin_fps": 1.5,
+          "kp": 2.8
+        },
+        {
+          "target_fps": 120,
+          "margin_fps": 2,
+          "kp": 3
+        },
+        {
+          "target_fps": 144,
+          "margin_fps": 2.5,
+          "kp": 3.2
+        },
+        {
+          "target_fps": 165,
+          "margin_fps": 3,
+          "kp": 3.5,
+          "fallback": true
+        }
+      ]
+    },
+    {
+      "friendly": "原神/异环/鸣潮/崩坏:星穹铁道/绝区零/第五人格/跑跑卡丁车/元气骑士/少女前线2/明日方舟/战双帕弥什/幻塔/逆水寒/永劫无间/星球重启/晶核/燕云十六声/洛克王国:世界/火影忍者/蛋仔派对/元梦之星/NBA 2K21/香肠派对/迷你世界/尘白禁区/碧蓝航线/重返未来:1999/来自星尘/学园偶像大师/猎魂觉醒/深空之眼/部落冲突/海岛奇兵/一念逍遥/网易狼人杀/崩坏3/阴阳师/炉石传说",
+      "packages": [
+        "com.miHoYo.Yuanshen",
+        "com.hottagames.yh.laohu",
+        "com.kurogame.mingchao",
+        "com.miHoYo.hkrpg",
+        "com.miHoYo.Nap",
+        "com.netease.lztys",
+        "com.netease.dwrg.nearme.gamecenter",
+        "com.tencent.tmgp.WePop",
+        "com.ChillyRoom.DungeonShooter",
+        "com.Sunborn.SnqxExilium",
+        "com.hypergryph.arknights",
+        "com.kurogame.haru.aligames",
+        "com.pwrd.hotta.laohu",
+        "com.netease.nshm",
+        "com.netease.l22",
+        "com.hermes.j1game.mi",
+        "com.hermes.p6game",
+        "com.netease.yyslscn",
+        "com.tencent.nrc",
+        "com.tencent.KiHan",
+        "com.netease.party",
+        "com.tencent.letsgo",
+        "com.t2ksports.nba2k21and",
+        "com.sofunny.Sausage",
+        "com.playmini.miniworld",
+        "com.dragonli.projectsnow.lhm",
+        "com.bilibili.azurlane",
+        "com.shenlan.m.reverse1999",
+        "com.hypergryph.exastris",
+        "com.bandainamcoent.idolmaster_gakuen",
+        "com.netease.AVALON",
+        "com.yongshi.tenojo.ys",
+        "com.tencent.tmgp.supercell.clashofclans",
+        "com.supercell.boombeach",
+        "com.leiting.xian",
+        "com.netease.lrs",
+        "com.miHoYo.bh3.uc",
+        "com.netease.onmyoji",
+        "com.hearthstone"
+      ],
+      "fps_profiles": [
+        {
+          "target_fps": 60,
+          "margin_fps": 2,
+          "kp": 1.5,
+          "fallback": true
+        },
+        {
+          "target_fps": 120,
+          "margin_fps": 3,
+          "kp": 2
+        },
+        {
+          "target_fps": 165,
+          "margin_fps": 3.5,
+          "kp": 2.8
+        }
+      ]
+    }
+  ],
+  "projects": [],
+  "_murong_remote": {
+    "config_version": "0",
+    "synced_at": 1777741871294,
+    "managed_packages": [],
+    "watermark": {
+      "trace_id": "22ed4cbf4e095346e521e5b1",
+      "user_hash": "edbb9b822196248e",
+      "device_hash": "2e590aec20919afa",
+      "config_version": "0",
+      "issued_at": "2026-05-03T01:11:11+08:00"
+    }
+  }
+}

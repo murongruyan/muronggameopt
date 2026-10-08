@@ -240,6 +240,125 @@ static bool scene_category_is_generic_game(const char* category) {
     return scene_category_equals(category, "Game");
 }
 
+static int read_sysfs_int_with_fallbacks(const char* const* paths, size_t count, int default_value) {
+    if (!paths) return default_value;
+    char buf[64];
+    for (size_t i = 0; i < count; i++) {
+        if (!paths[i] || !paths[i][0]) continue;
+        if (!read_text_file(paths[i], buf, sizeof(buf))) continue;
+        int value = atoi(buf);
+        if (value > 0 || strcmp(buf, "0") == 0) {
+            return value;
+        }
+    }
+    return default_value;
+}
+
+static bool read_sysfs_text_with_fallbacks(const char* const* paths,
+                                           size_t count,
+                                           char* out,
+                                           size_t out_size) {
+    if (!out || out_size == 0) return false;
+    out[0] = '\0';
+    if (!paths) return false;
+    for (size_t i = 0; i < count; i++) {
+        if (!paths[i] || !paths[i][0]) continue;
+        if (!read_text_file(paths[i], out, out_size)) continue;
+        out[strcspn(out, "\r\n")] = '\0';
+        if (out[0]) return true;
+    }
+    return false;
+}
+
+static int get_battery_capacity_percent() {
+    static long long last_check_ms = 0;
+    static int cached_capacity = -1;
+    long long now_ms = get_current_time_ms();
+    if (now_ms - last_check_ms < 5000) {
+        return cached_capacity;
+    }
+    last_check_ms = now_ms;
+
+    static const char* kCapacityPaths[] = {
+        "/sys/class/power_supply/battery/capacity",
+        "/sys/class/power_supply/BAT0/capacity",
+        "/sys/class/power_supply/bms/capacity"
+    };
+    cached_capacity = read_sysfs_int_with_fallbacks(
+        kCapacityPaths, sizeof(kCapacityPaths) / sizeof(kCapacityPaths[0]), -1);
+    if (cached_capacity < 0) return -1;
+    if (cached_capacity > 100) cached_capacity = 100;
+    return cached_capacity;
+}
+
+static bool is_power_connected() {
+    static long long last_check_ms = 0;
+    static int cached_connected = 0;
+    long long now_ms = get_current_time_ms();
+    if (now_ms - last_check_ms < 5000) {
+        return cached_connected != 0;
+    }
+    last_check_ms = now_ms;
+    cached_connected = 0;
+
+    static const char* kStatusPaths[] = {
+        "/sys/class/power_supply/battery/status",
+        "/sys/class/power_supply/BAT0/status"
+    };
+    char status[64];
+    if (read_sysfs_text_with_fallbacks(
+            kStatusPaths, sizeof(kStatusPaths) / sizeof(kStatusPaths[0]),
+            status, sizeof(status))) {
+        if (strcasecmp(status, "Charging") == 0 ||
+            strcasecmp(status, "Full") == 0 ||
+            strcasecmp(status, "Not charging") == 0) {
+            cached_connected = 1;
+            return true;
+        }
+    }
+
+    static const char* kOnlinePaths[] = {
+        "/sys/class/power_supply/usb/online",
+        "/sys/class/power_supply/ac/online",
+        "/sys/class/power_supply/wireless/online"
+    };
+    if (read_sysfs_int_with_fallbacks(
+            kOnlinePaths, sizeof(kOnlinePaths) / sizeof(kOnlinePaths[0]), 0) > 0) {
+        cached_connected = 1;
+    }
+    return cached_connected != 0;
+}
+
+static int get_power_protection_level() {
+    int capacity = get_battery_capacity_percent();
+    if (capacity < 0 || is_power_connected()) return 0;
+    if (capacity <= 10) return 2;
+    if (capacity <= 20) return 1;
+    return 0;
+}
+
+static int clamp_scene_boost_duration_for_power(const char* category, int duration_ms) {
+    if (duration_ms <= 0) return 0;
+    int level = get_power_protection_level();
+    if (level <= 0) return duration_ms;
+
+    bool critical_scene = scene_category_equals(category, "Camera") ||
+                          scene_category_equals(category, "Scanner");
+    bool responsive_scene = critical_scene ||
+                            scene_category_equals(category, "Launcher") ||
+                            scene_category_equals(category, "MiniProgram");
+
+    if (level == 1) {
+        if (critical_scene) return std::max(80, duration_ms * 3 / 4);
+        if (responsive_scene) return std::max(60, duration_ms * 2 / 3);
+        return duration_ms / 2;
+    }
+
+    if (critical_scene) return std::max(60, duration_ms / 2);
+    if (responsive_scene) return std::max(40, duration_ms / 3);
+    return 0;
+}
+
 static int get_scene_floor_freq_for_cluster(int policy_idx, int cluster_id, const char* current_app) {
     if (policy_idx < 0 || cluster_id < 0 || cluster_id >= cluster_count) return 0;
     if (g_scene_policy.screen_off) return 0;
@@ -268,31 +387,19 @@ static int get_scene_floor_freq_for_cluster(int policy_idx, int cluster_id, cons
         return get_policy_safe_floor_freq(policy_idx, khz_floor);
     }
     if (hok_scene) {
-        int khz_floor = 998400;
-        if (cluster_id == cluster_count - 1) {
-            khz_floor = 1958400;
-        } else if (cluster_count > 1 && cluster_id == cluster_count - 2) {
-            khz_floor = 1478400;
-        }
-        return get_policy_safe_floor_freq(policy_idx, khz_floor);
+        /*
+         * 游戏场景不再额外抬下限：官方游戏配置里 scaling_min 就是频率表第 0 档，
+         * 用"抬高保底"换稳定性的做法实测反而更费电（同帧率下我们的簇空闲频率
+         * 比官方高 150~250MHz，整机多 ~0.6W），帧率还更差。
+         * 下限交给档位自身的 min_freq，突发靠 governor 自己爬。
+         */
+        return 0;
     }
     if (genshin_scene) {
-        int khz_floor = 998400;
-        if (cluster_id == cluster_count - 1) {
-            khz_floor = 1766400;
-        } else if (cluster_count > 1 && cluster_id == cluster_count - 2) {
-            khz_floor = 1363200;
-        }
-        return get_policy_safe_floor_freq(policy_idx, khz_floor);
+        return 0;
     }
     if (generic_game_scene) {
-        int khz_floor = 844800;
-        if (cluster_id == cluster_count - 1) {
-            khz_floor = 1497600;
-        } else if (cluster_count > 1 && cluster_id == cluster_count - 2) {
-            khz_floor = 1171200;
-        }
-        return get_policy_safe_floor_freq(policy_idx, khz_floor);
+        return 0;
     }
     if (launcher_scene) {
         return get_policy_safe_floor_freq(policy_idx, cluster_id == cluster_count - 1 ? 1017600 : 883200);
@@ -311,10 +418,33 @@ static int get_scene_floor_freq_for_cluster(int policy_idx, int cluster_id, cons
         return get_policy_safe_floor_freq(policy_idx, khz_floor);
     }
     if (white_list_scene) {
-        int khz_floor = cluster_id == cluster_count - 1 ? 1017600 : 844800;
-        return get_policy_safe_floor_freq(policy_idx, khz_floor);
+        return 0;
     }
     return 0;
+}
+
+static int resolve_scene_focus_boost_duration_ms(const char* current_app, const char* category) {
+    if (g_scene_policy.screen_off) return 0;
+    int duration_ms = 0;
+    if (scene_category_equals(category, "Camera") || scene_category_equals(category, "Scanner") ||
+        g_scene_policy.camera_active || g_scene_policy.scanner_active) {
+        duration_ms = 260;
+    } else if (scene_category_is_hok(category)) {
+        duration_ms = 240;
+    } else if (scene_category_is_genshin(category)) {
+        duration_ms = 220;
+    } else if (scene_category_is_generic_game(category)) {
+        duration_ms = 160;
+    } else if (scene_category_equals(category, "MiniProgram") || g_scene_policy.mini_program_active) {
+        duration_ms = 180;
+    } else if (scene_category_equals(category, "ScrollOpt")) {
+        duration_ms = 120;
+    } else if (scene_category_equals(category, "WhiteList")) {
+        duration_ms = 100;
+    } else if (scene_category_equals(category, "Launcher") || is_launcher_package_name(current_app)) {
+        duration_ms = 140;
+    }
+    return clamp_scene_boost_duration_for_power(category, duration_ms);
 }
 
 std::string get_highest_mode_for_visible_apps() {
@@ -458,6 +588,38 @@ static void get_visible_window_scene_state(const char* current_app, int* visible
     if (multi_window_active) *multi_window_active = cached_multi_window;
 }
 
+static int read_process_uid(pid_t pid) {
+    if (pid <= 0) return -1;
+    char path[128];
+    safe_snprintf(path, sizeof(path), "/proc/%d/status", pid);
+    FILE* fp = fopen(path, "r");
+    if (!fp) return -1;
+    char line[256];
+    int uid = -1;
+    while (fgets(line, sizeof(line), fp)) {
+        if (strncmp(line, "Uid:", 4) == 0) {
+            char* ptr = line + 4;
+            while (*ptr && isspace((unsigned char)*ptr)) ptr++;
+            uid = atoi(ptr);
+            break;
+        }
+    }
+    fclose(fp);
+    return uid;
+}
+
+static bool read_uint64_file(const char* path, unsigned long long* out_value) {
+    if (!path || !out_value || !file_exists(path)) return false;
+    FILE* fp = fopen(path, "r");
+    if (!fp) return false;
+    unsigned long long value = 0;
+    bool ok = fscanf(fp, "%llu", &value) == 1;
+    fclose(fp);
+    if (!ok) return false;
+    *out_value = value;
+    return true;
+}
+
 static bool is_game_package_name(const char* package) {
     if (!package || !package[0]) return false;
     const SceneCategoryRule* scene_rule = find_scene_category_rule_by_package(package);
@@ -467,6 +629,7 @@ static bool is_game_package_name(const char* package) {
             return true;
         }
     }
+    if (is_fas_enabled_for_app(package)) return true;
     char mode[64];
     get_mode_for_package(package, mode, sizeof(mode));
     return get_mode_rank(mode) >= get_mode_rank("performance");
@@ -526,4 +689,54 @@ bool is_camera_active() {
 
 bool is_game_loading() {
     return false;
+}
+
+static bool is_download_active_for_foreground() {
+    static long long last_check_ms = 0;
+    static int cached_active = 0;
+    static int last_uid = -1;
+    static unsigned long long last_rx = 0;
+    static unsigned long long last_tx = 0;
+    long long now_ms = get_current_time_ms();
+    if (now_ms - last_check_ms < 2000) {
+        return cached_active != 0;
+    }
+
+    cached_active = 0;
+    int uid = read_process_uid(UnifiedScheduler::get_foreground_pid_snapshot());
+    if (uid <= 0) {
+        last_check_ms = now_ms;
+        last_uid = -1;
+        last_rx = 0;
+        last_tx = 0;
+        return false;
+    }
+
+    char rx_path[128];
+    char tx_path[128];
+    safe_snprintf(rx_path, sizeof(rx_path), "/proc/uid_stat/%d/tcp_rcv", uid);
+    safe_snprintf(tx_path, sizeof(tx_path), "/proc/uid_stat/%d/tcp_snd", uid);
+
+    unsigned long long rx = 0;
+    unsigned long long tx = 0;
+    if (!read_uint64_file(rx_path, &rx) || !read_uint64_file(tx_path, &tx)) {
+        last_check_ms = now_ms;
+        last_uid = uid;
+        last_rx = rx;
+        last_tx = tx;
+        return false;
+    }
+
+    if (last_uid == uid && last_check_ms > 0) {
+        unsigned long long delta_rx = rx >= last_rx ? (rx - last_rx) : 0;
+        unsigned long long delta_tx = tx >= last_tx ? (tx - last_tx) : 0;
+        unsigned long long busy_threshold = 256ULL * 1024ULL;
+        cached_active = (delta_rx >= busy_threshold || delta_tx >= busy_threshold) ? 1 : 0;
+    }
+
+    last_check_ms = now_ms;
+    last_uid = uid;
+    last_rx = rx;
+    last_tx = tx;
+    return cached_active != 0;
 }

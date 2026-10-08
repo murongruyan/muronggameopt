@@ -6,6 +6,21 @@ static void trim_process_suffix(char* package) {
     if (colon) *colon = '\0';
 }
 
+static bool token_looks_like_process_name(const std::string& token) {
+    if (token.size() < 5 || token.find('.') == std::string::npos) return false;
+    if (!isalpha((unsigned char)token[0])) return false;
+    if (token.front() == '.' || token.back() == '.') return false;
+    int dot_count = 0;
+    for (size_t i = 0; i < token.size(); i++) {
+        char c = token[i];
+        if (!(isalnum((unsigned char)c) || c == '.' || c == '_' || c == '-' || c == ':')) {
+            return false;
+        }
+        if (c == '.') dot_count++;
+    }
+    return dot_count >= 2;
+}
+
 static bool should_ignore_foreground_package(const char* package) {
     if (!package || !package[0]) return true;
     return strstr(package, "inputmethod") != NULL ||
@@ -42,6 +57,34 @@ static bool read_package_name_from_pid(pid_t pid, char* out_pkg, size_t out_size
     return true;
 }
 
+static bool read_process_name_from_pid(pid_t pid, char* out_process, size_t out_size) {
+    if (!out_process || out_size == 0 || pid <= 0) return false;
+    out_process[0] = '\0';
+
+    char path[128];
+    safe_snprintf(path, sizeof(path), "/proc/%d/cmdline", pid);
+    FILE* fp = fopen(path, "r");
+    if (!fp) return false;
+
+    char buf[256] = {0};
+    size_t n = fread(buf, 1, sizeof(buf) - 1, fp);
+    fclose(fp);
+    if (n == 0) return false;
+
+    buf[n] = '\0';
+    std::string raw_process = buf;
+    if (!token_looks_like_process_name(raw_process)) return false;
+    std::string base_package = raw_process;
+    trim_process_suffix(&base_package[0]);
+    base_package.resize(strlen(base_package.c_str()));
+    if (!token_looks_like_package(base_package) || should_ignore_foreground_package(base_package.c_str())) {
+        return false;
+    }
+
+    safe_strncpy(out_process, raw_process.c_str(), out_size);
+    return true;
+}
+
 static pid_t read_top_app_pid_from_cpuset_file(const char* path, char* out_pkg, size_t out_size) {
     if (!path || !out_pkg || out_size == 0 || !file_exists(path)) return -1;
     FILE* fp = fopen(path, "r");
@@ -70,7 +113,8 @@ static bool extract_package_activity_from_line(const char* line,
                                                char* out_pkg,
                                                size_t out_pkg_size,
                                                char* out_activity,
-                                               size_t out_activity_size) {
+                                               size_t out_activity_size,
+                                               bool apply_ignore_filter = true) {
     if (!line || !out_pkg || out_pkg_size == 0 || !out_activity || out_activity_size == 0) {
         return false;
     }
@@ -99,7 +143,8 @@ static bool extract_package_activity_from_line(const char* line,
         std::string base_pkg = raw_pkg;
         trim_process_suffix(&base_pkg[0]);
         base_pkg.resize(strlen(base_pkg.c_str()));
-        if (!token_looks_like_package(base_pkg) || should_ignore_foreground_package(base_pkg.c_str())) {
+        if (!token_looks_like_package(base_pkg) ||
+            (apply_ignore_filter && should_ignore_foreground_package(base_pkg.c_str()))) {
             return;
         }
         if (!raw_activity.empty() && raw_activity[0] == '.') {
@@ -130,12 +175,14 @@ static bool read_foreground_component_from_command(const char* command,
                                                    char* out_pkg,
                                                    size_t out_pkg_size,
                                                    char* out_activity,
-                                                   size_t out_activity_size) {
+                                                   size_t out_activity_size,
+                                                   bool* out_ignored_found = NULL) {
     if (!command || !out_pkg || out_pkg_size == 0 || !out_activity || out_activity_size == 0) {
         return false;
     }
     out_pkg[0] = '\0';
     out_activity[0] = '\0';
+    if (out_ignored_found) *out_ignored_found = false;
 
     FILE* fp = popen(command, "r");
     if (!fp) return false;
@@ -152,6 +199,21 @@ static bool read_foreground_component_from_command(const char* command,
         }
         if (extract_package_activity_from_line(line, out_pkg, out_pkg_size, out_activity, out_activity_size)) {
             found = true;
+            continue;
+        }
+        /*
+         * 解析出了组件但被忽略名单挡下（桌面、SystemUI、输入法等）：说明前台
+         * 确实存在，只是不该被调度。这个信息必须往外传，否则调用方会误判成
+         * "dumpsys 失败"，然后退到 cpuset 猜测，随机抓到别的进程。
+         */
+        if (out_ignored_found) {
+            char ignored_pkg[MAX_PACKAGE_LEN] = {0};
+            char ignored_activity[192] = {0};
+            if (extract_package_activity_from_line(line, ignored_pkg, sizeof(ignored_pkg),
+                                                   ignored_activity, sizeof(ignored_activity),
+                                                   false)) {
+                *out_ignored_found = true;
+            }
         }
     }
     pclose(fp);
@@ -161,34 +223,47 @@ static bool read_foreground_component_from_command(const char* command,
 static bool read_top_resumed_activity_package(char* out_pkg,
                                               size_t out_pkg_size,
                                               char* out_activity,
-                                              size_t out_activity_size) {
+                                              size_t out_activity_size,
+                                              bool* out_ignored_found = NULL) {
     if (!out_pkg || out_pkg_size == 0 || !out_activity || out_activity_size == 0) return false;
     out_pkg[0] = '\0';
     out_activity[0] = '\0';
+    if (out_ignored_found) *out_ignored_found = false;
 
+    bool ignored = false;
     if (read_foreground_component_from_command("dumpsys activity top-resumed-activity 2>/dev/null",
                                                NULL, NULL,
                                                out_pkg, out_pkg_size,
-                                               out_activity, out_activity_size)) {
+                                               out_activity, out_activity_size, &ignored)) {
         return true;
     }
+    if (ignored) { if (out_ignored_found) *out_ignored_found = true; return false; }
+
+    ignored = false;
     if (read_foreground_component_from_command("dumpsys window windows 2>/dev/null",
                                                "mcurrentfocus", "mfocusedapp",
                                                out_pkg, out_pkg_size,
-                                               out_activity, out_activity_size)) {
+                                               out_activity, out_activity_size, &ignored)) {
         return true;
     }
-    return read_foreground_component_from_command("dumpsys activity activities 2>/dev/null",
-                                                  "topresumedactivity", "mresumedactivity",
-                                                  out_pkg, out_pkg_size,
-                                                  out_activity, out_activity_size);
+    if (ignored) { if (out_ignored_found) *out_ignored_found = true; return false; }
+
+    ignored = false;
+    bool ok = read_foreground_component_from_command("dumpsys activity activities 2>/dev/null",
+                                                     "topresumedactivity", "mresumedactivity",
+                                                     out_pkg, out_pkg_size,
+                                                     out_activity, out_activity_size, &ignored);
+    if (!ok && ignored && out_ignored_found) *out_ignored_found = true;
+    return ok;
 }
 
 static const char* get_cached_foreground_activity_name() {
     return g_cached_foreground_activity;
 }
 
-char* get_foreground_app() {
+bool get_foreground_app(char* out_app, size_t out_size) {
+    if (!out_app || out_size == 0) return false;
+    out_app[0] = '\0';
     static char cached_app[MAX_PACKAGE_LEN] = "unknown";
     static char cached_dumpsys_app[MAX_PACKAGE_LEN] = "unknown";
     static char cached_cpuset_app[MAX_PACKAGE_LEN] = "unknown";
@@ -225,10 +300,12 @@ char* get_foreground_app() {
         now_ms - last_dumpsys_ms >= dumpsys_refresh_interval_ms ||
         strcmp(cached_app, "unknown") == 0;
     bool dumpsys_ok = false;
+    bool dumpsys_ignored = false;
 
     if (should_refresh_dumpsys) {
         dumpsys_ok = read_top_resumed_activity_package(dumpsys_pkg, sizeof(dumpsys_pkg),
-                                                       dumpsys_activity, sizeof(dumpsys_activity));
+                                                       dumpsys_activity, sizeof(dumpsys_activity),
+                                                       &dumpsys_ignored);
         if (dumpsys_ok) {
             safe_strncpy(cached_dumpsys_app, dumpsys_pkg, sizeof(cached_dumpsys_app));
             safe_strncpy(g_cached_foreground_activity, dumpsys_activity, sizeof(g_cached_foreground_activity));
@@ -238,6 +315,23 @@ char* get_foreground_app() {
         safe_strncpy(dumpsys_pkg, cached_dumpsys_app, sizeof(dumpsys_pkg));
         safe_strncpy(dumpsys_activity, g_cached_foreground_activity, sizeof(dumpsys_activity));
         dumpsys_ok = true;
+    }
+
+    /*
+     * 真实前台是桌面 / SystemUI / 输入法这一类"不该被调度"的界面时：
+     * 明确按"没有可调度的前台应用"处理，并且**不走 cpuset 猜测**。
+     * 之前这里会把 dumpsys 的"被过滤"当成失败，回退到 cpuset 启发式，
+     * 而那个启发式取的是 top-app cpuset 里最后一个可接受进程，
+     * 结果抓到输入法当游戏调度（实测就是这么错了一个多小时）。
+     */
+    if (dumpsys_ignored && !dumpsys_ok) {
+        safe_strncpy(cached_app, "unknown", sizeof(cached_app));
+        safe_strncpy(cached_dumpsys_app, "unknown", sizeof(cached_dumpsys_app));
+        cached_cpuset_app[0] = '\0';
+        cpuset_stable_hits = 0;
+        last_dumpsys_ms = now_ms;
+        safe_strncpy(out_app, "unknown", out_size);
+        return true;
     }
 
     if (cpuset_ok && dumpsys_ok && strcmp(pkg_buf, dumpsys_pkg) != 0 &&
@@ -258,22 +352,22 @@ char* get_foreground_app() {
     if (dumpsys_ok) {
         safe_strncpy(cached_app, dumpsys_pkg, sizeof(cached_app));
         last_stable_foreground_ms = now_ms;
-        char* result = strdup(cached_app);
-        if (result) return result;
+        safe_strncpy(out_app, cached_app, out_size);
+        return true;
     }
 
     if (cached_dumpsys_app[0] && strcmp(cached_dumpsys_app, "unknown") != 0 &&
         now_ms - last_dumpsys_ms < dumpsys_cache_ttl_ms) {
         safe_strncpy(cached_app, cached_dumpsys_app, sizeof(cached_app));
         last_stable_foreground_ms = now_ms;
-        char* result = strdup(cached_dumpsys_app);
-        if (result) return result;
+        safe_strncpy(out_app, cached_dumpsys_app, out_size);
+        return true;
     }
 
     if (cached_app[0] && strcmp(cached_app, "unknown") != 0 &&
         now_ms - last_stable_foreground_ms < stable_foreground_ttl_ms) {
-        char* result = strdup(cached_app);
-        if (result) return result;
+        safe_strncpy(out_app, cached_app, out_size);
+        return true;
     }
 
     if (cpuset_ok && cpuset_stable_hits >= 3 &&
@@ -281,14 +375,10 @@ char* get_foreground_app() {
          strcmp(pkg_buf, cached_app) == 0)) {
         safe_strncpy(cached_app, pkg_buf, sizeof(cached_app));
         last_stable_foreground_ms = now_ms;
-        char* result = strdup(cached_app);
-        if (result) return result;
+        safe_strncpy(out_app, cached_app, out_size);
+        return true;
     }
 
-    char* result = strdup(cached_app[0] ? cached_app : "unknown");
-    if (!result) {
-        log_message("内存分配失败：返回默认值");
-        return NULL;
-    }
-    return result;
+    safe_strncpy(out_app, cached_app[0] ? cached_app : "unknown", out_size);
+    return out_app[0] != '\0';
 }

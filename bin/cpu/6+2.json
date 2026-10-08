@@ -12,30 +12,51 @@
         "match": [
           "UnityMain"
         ],
-        "cpus": "6",
-        "fifo": 1
+        "limit": 1,
+        "cpus": "6-7",
+        "cpu": "7"
       },
       "gfx": {
         "match": [
           "UnityGfx*"
         ],
-        "cpus": "1-4",
-        "rr": 10
+        "limit": 1,
+        "cpus": "6-7",
+        "cpu": "6"
       },
       "worker": {
         "match": [
           "*worker*"
         ],
-        "cpus": "4-5",
-        "rr": 5
-      },
-      "extra:[Thread-*]": {
-        "cpus": "1-4",
-        "rr": 5
+        "cpus": "4-5"
       },
       "other": {
-        "cpus": "1-4",
-        "nice": -1
+        "nice": -1,
+        "cpus": "1-4"
+      }
+    },
+    {
+      "friendly": "cfm",
+      "packages": [
+        "com.tencent.tmgp.cf"
+      ],
+      "main": {
+        "match": [
+          "UnityMain"
+        ],
+        "limit": 1,
+        "cpus": "7"
+      },
+      "gfx": {
+        "match": [
+          "UnityGfx*"
+        ],
+        "limit": 1,
+        "cpus": "5"
+      },
+      "other": {
+        "nice": -1,
+        "cpus": "0-5"
       }
     },
     {
@@ -50,26 +71,22 @@
         "match": [
           "UnityMain"
         ],
-        "cpus": "6-7",
-        "fifo": 1
+        "limit": 1,
+        "cpus": "7"
       },
       "gfx": {
         "match": [
           "UnityGfx*"
         ],
-        "cpus": "6-7",
-        "rr": 10
+        "limit": 1,
+        "cpus": "5"
       },
       "worker": {
         "match": [
           "worker"
         ],
         "limit": 3,
-        "cpus": "4-5",
-        "rr": 5
-      },
-      "other": {
-        "cpus": "1-4"
+        "cpus": "3-4"
       }
     },
     {
@@ -77,7 +94,6 @@
       "packages": [
         "com.miHoYo.Yuanshen",
         "com.miHoYo.hkrpg",
-        "com.tencent.tmgp.cf",
         "com.netease.l22",
         "com.netease.nshm",
         "com.pwrd.hotta.laohu",
@@ -89,26 +105,22 @@
         "match": [
           "UnityMain"
         ],
-        "cpus": "6-7",
-        "fifo": 1
+        "limit": 1,
+        "cpus": "7"
       },
       "gfx": {
         "match": [
           "UnityGfx*"
         ],
-        "cpus": "6-7",
-        "rr": 10
+        "limit": 1,
+        "cpus": "5"
       },
       "worker": {
         "match": [
           "worker"
         ],
         "limit": 3,
-        "cpus": "4-5",
-        "rr": 5
-      },
-      "other": {
-        "cpus": "1-4"
+        "cpus": "3-4"
       }
     },
     {
@@ -120,21 +132,14 @@
         "match": [
           "UnityMain"
         ],
-        "cpus": "6-7",
-        "fifo": 1
+        "limit": 1,
+        "cpus": "7"
       },
       "extra:[UnityChoreograp*]": {
-        "limit": 1,
-        "cpus": "6-7",
-        "rr": 10
+        "limit": 1
       },
       "extra:[Job.worker*]": {
-        "limit": 3,
-        "cpus": "4-5",
-        "rr": 5
-      },
-      "other": {
-        "cpus": "1-4"
+        "limit": 3
       }
     },
     {
@@ -146,27 +151,26 @@
         "match": [
           "UnityMain"
         ],
-        "cpus": "6-7",
-        "fifo": 1
+        "limit": 1,
+        "cpus": "7"
       },
       "gfx": {
         "match": [
           "UnityGfx*"
         ],
-        "cpus": "6-7",
-        "rr": 10
+        "limit": 1,
+        "cpus": "5"
       },
       "worker": {
         "match": [
           "worker"
         ],
         "limit": 3,
-        "cpus": "4-5",
-        "rr": 5
+        "cpus": "3-4"
       },
       "other": {
-        "cpus": "1-4",
-        "nice": -1
+        "nice": -1,
+        "cpus": "0-5"
       }
     },
     {
@@ -178,30 +182,26 @@
         "match": [
           "Thread[0-20]"
         ],
-        "cpus": "6-7",
-        "fifo": 1
+        "limit": 1,
+        "cpus": "7"
       },
       "gfx": {
         "match": [
           "RenderThread*"
         ],
-        "cpus": "6-7",
-        "rr": 10
+        "limit": 1,
+        "cpus": "5"
       },
       "worker": {
         "match": [
           "RHIThread*"
         ],
         "limit": 3,
-        "cpus": "4-5",
-        "rr": 5
-      },
-      "extra:[Thread-*]": {
-        "cpus": "4-5"
+        "cpus": "3-4"
       },
       "other": {
-        "cpus": "1-4",
-        "nice": -1
+        "nice": -1,
+        "cpus": "0-5"
       }
     },
     {
@@ -213,22 +213,19 @@
         "match": [
           "UnityMain"
         ],
-        "cpus": "6-7",
-        "fifo": 1
+        "limit": 1,
+        "cpus": "7"
       },
       "gfx": {
         "match": [
           "UnityGfx*"
         ],
-        "cpus": "6-7",
-        "rr": 10
-      },
-      "extra:[Thread 1x1xb411]": {
-        "cpus": "4-5"
+        "limit": 1,
+        "cpus": "5"
       },
       "other": {
-        "cpus": "1-4",
-        "nice": -1
+        "nice": -1,
+        "cpus": "0-5"
       }
     },
     {
@@ -260,18 +257,15 @@
         "match": [
           "UnityMain"
         ],
-        "cpus": "6-7",
-        "fifo": 1
+        "limit": 1,
+        "cpus": "7"
       },
       "gfx": {
         "match": [
           "UnityGfx*"
         ],
-        "cpus": "4-5",
-        "rr": 10
-      },
-      "other": {
-        "cpus": "1-4"
+        "limit": 1,
+        "cpus": "5"
       }
     },
     {
@@ -283,18 +277,15 @@
         "match": [
           "UnityMain"
         ],
-        "cpus": "6-7",
-        "fifo": 1
+        "limit": 1,
+        "cpus": "7"
       },
       "gfx": {
         "match": [
           "UnityGfx*"
         ],
-        "cpus": "4-5",
-        "rr": 10
-      },
-      "other": {
-        "cpus": "1-4"
+        "limit": 1,
+        "cpus": "5"
       }
     },
     {
@@ -311,18 +302,15 @@
         "match": [
           "UnityMain"
         ],
-        "cpus": "6-7",
-        "fifo": 1
+        "limit": 1,
+        "cpus": "7"
       },
       "gfx": {
         "match": [
           "UnityGfx*"
         ],
-        "cpus": "6-7",
-        "rr": 10
-      },
-      "other": {
-        "cpus": "1-5"
+        "limit": 1,
+        "cpus": "5"
       }
     },
     {
@@ -341,11 +329,8 @@
         "match": [
           "UnityMain"
         ],
-        "cpus": "6-7",
-        "fifo": 1
-      },
-      "other": {
-        "cpus": "1-5"
+        "limit": 1,
+        "cpus": "7"
       }
     },
     {
@@ -357,6 +342,7 @@
         "match": [
           "*rthread*"
         ],
+        "limit": 1,
         "cpus": "6-7",
         "rr": 1
       },
@@ -373,18 +359,15 @@
         "match": [
           "Thread-[0-20]"
         ],
-        "cpus": "6-7",
-        "rr": 10
+        "limit": 1,
+        "cpus": "7"
       },
       "render": {
         "match": [
           "*rthread*"
         ],
-        "cpus": "6-7",
-        "rr": 1
-      },
-      "other": {
-        "cpus": "1-5"
+        "limit": 1,
+        "cpus": "5"
       }
     },
     {
@@ -398,18 +381,15 @@
           "GameThread",
           "Thread-[0-20]"
         ],
-        "cpus": "6-7",
-        "fifo": 1
+        "limit": 1,
+        "cpus": "7"
       },
       "render": {
         "match": [
           "*rthread*"
         ],
-        "cpus": "6-7",
-        "rr": 10
-      },
-      "other": {
-        "cpus": "1-5"
+        "limit": 1,
+        "cpus": "5"
       }
     },
     {
@@ -427,6 +407,7 @@
           "RenderThread*",
           "RHIThread*"
         ],
+        "limit": 1,
         "cpus": "6-7",
         "rr": 5
       },
@@ -457,6 +438,7 @@
           "RenderThread*",
           "RHIThread*"
         ],
+        "limit": 1,
         "cpus": "6-7",
         "rr": 1
       },
@@ -483,34 +465,30 @@
         "match": [
           "UnityMain"
         ],
-        "cpus": "6-7",
-        "fifo": 1
+        "limit": 1,
+        "cpus": "7"
       },
       "gfx": {
         "match": [
           "UnityGfx*"
         ],
-        "cpus": "4-5",
-        "rr": 10
+        "limit": 1,
+        "cpus": "5"
       },
       "render": {
         "match": [
           "RenderThread*",
           "RHIThread*"
         ],
-        "cpus": "6-7",
-        "rr": 1
+        "limit": 1,
+        "cpus": "5"
       },
       "worker": {
         "match": [
           "Job.Worker*"
         ],
         "limit": 2,
-        "cpus": "6-7",
-        "rr": 10
-      },
-      "other": {
-        "cpus": "1-4"
+        "cpus": "3-4"
       }
     },
     {
@@ -522,16 +500,16 @@
         "match": [
           "GameThread"
         ],
-        "cpus": "6-7",
-        "fifo": 1
+        "limit": 1,
+        "cpus": "7"
       },
       "render": {
         "match": [
           "RenderThread*",
           "RHIThread*"
         ],
-        "cpus": "6-7",
-        "rr": 1
+        "limit": 1,
+        "cpus": "5"
       },
       "worker": {
         "match": [
@@ -540,11 +518,7 @@
           "TaskGraph*"
         ],
         "limit": 3,
-        "cpus": "4-5",
-        "rr": 5
-      },
-      "other": {
-        "cpus": "1-5"
+        "cpus": "3-4"
       }
     },
     {
@@ -562,16 +536,16 @@
         "cpus": "6-7",
         "rr": 10
       },
-      "extra:[task*]": {
-        "limit": 2,
-        "cpus": "4-5"
-      },
-      "extra:[*loading]": {
-        "limit": 2,
-        "cpus": "1-4"
-      },
       "other": {
         "cpus": "0-5"
+      },
+      "extra:[task*]": {
+        "cpus": "4-5",
+        "limit": 2
+      },
+      "extra:[*loading]": {
+        "cpus": "1-4",
+        "limit": 2
       }
     },
     {
@@ -583,8 +557,8 @@
         "match": [
           "GameThread"
         ],
-        "cpus": "6-7",
-        "rr": 10
+        "limit": 1,
+        "cpus": "7"
       },
       "worker": {
         "match": [
@@ -593,11 +567,7 @@
           "AsyncLoading*"
         ],
         "limit": 2,
-        "cpus": "6-7",
-        "rr": 10
-      },
-      "other": {
-        "cpus": "1-5"
+        "cpus": "3-4"
       }
     },
     {
@@ -639,48 +609,48 @@
         "limit": 2,
         "cpus": "6-7"
       },
-      "extra:[binder]": {
-        "limit": 6,
-        "cpus": "1-5"
-      },
-      "extra:[.coolapk.market]": {
-        "limit": 6,
-        "cpus": "1-5"
-      },
-      "extra:[glide-source-th]": {
-        "limit": 6,
-        "cpus": "1-5"
-      },
-      "extra:[platform-single]": {
-        "limit": 6,
-        "cpus": "1-5"
-      },
-      "extra:[runnerwrapper_8]": {
-        "limit": 6,
-        "cpus": "1-5"
-      },
-      "extra:[jdfiledownloade]": {
-        "limit": 6,
-        "cpus": "1-5"
-      },
-      "extra:[jit thread pool]": {
-        "limit": 6,
-        "cpus": "1-5"
-      },
-      "extra:[doraemon-proces]": {
-        "limit": 6,
-        "cpus": "1-5"
-      },
-      "extra:[mediacodec_]": {
-        "limit": 6,
-        "cpus": "1-5"
-      },
-      "extra:[ijk_external_re]": {
-        "limit": 6,
-        "cpus": "1-5"
-      },
       "other": {
         "cpus": "1-3"
+      },
+      "extra:[binder]": {
+        "cpus": "1-5",
+        "limit": 6
+      },
+      "extra:[.coolapk.market]": {
+        "cpus": "1-5",
+        "limit": 6
+      },
+      "extra:[glide-source-th]": {
+        "cpus": "1-5",
+        "limit": 6
+      },
+      "extra:[platform-single]": {
+        "cpus": "1-5",
+        "limit": 6
+      },
+      "extra:[runnerwrapper_8]": {
+        "cpus": "1-5",
+        "limit": 6
+      },
+      "extra:[jdfiledownloade]": {
+        "cpus": "1-5",
+        "limit": 6
+      },
+      "extra:[jit thread pool]": {
+        "cpus": "1-5",
+        "limit": 6
+      },
+      "extra:[doraemon-proces]": {
+        "cpus": "1-5",
+        "limit": 6
+      },
+      "extra:[mediacodec_]": {
+        "cpus": "1-5",
+        "limit": 6
+      },
+      "extra:[ijk_external_re]": {
+        "cpus": "1-5",
+        "limit": 6
       }
     },
     {
@@ -691,44 +661,44 @@
         "com.autonavi.minimap",
         "com.tencent.mm"
       ],
-      "extra:[heaptaskdaemon]": {
-        "limit": 8,
-        "cpus": "1-5"
-      },
-      "extra:[videodec_]": {
-        "limit": 8,
-        "cpus": "1-5"
-      },
-      "extra:[weexjsbridgeth]": {
-        "limit": 8,
-        "cpus": "1-5"
-      },
-      "extra:[javascriptthrea]": {
-        "limit": 8,
-        "cpus": "1-5"
-      },
-      "extra:[map-logical]": {
-        "limit": 8,
-        "cpus": "1-5"
-      },
-      "extra:[utonavi.minimap]": {
-        "limit": 8,
-        "cpus": "1-5"
-      },
-      "extra:[com.tencent.mm]": {
-        "limit": 8,
-        "cpus": "1-5"
-      },
-      "extra:[default_matrix_]": {
-        "limit": 8,
-        "cpus": "1-5"
-      },
-      "extra:[binder]": {
-        "limit": 8,
-        "cpus": "1-5"
-      },
       "other": {
         "cpus": "1-3"
+      },
+      "extra:[heaptaskdaemon]": {
+        "cpus": "1-5",
+        "limit": 8
+      },
+      "extra:[videodec_]": {
+        "cpus": "1-5",
+        "limit": 8
+      },
+      "extra:[weexjsbridgeth]": {
+        "cpus": "1-5",
+        "limit": 8
+      },
+      "extra:[javascriptthrea]": {
+        "cpus": "1-5",
+        "limit": 8
+      },
+      "extra:[map-logical]": {
+        "cpus": "1-5",
+        "limit": 8
+      },
+      "extra:[utonavi.minimap]": {
+        "cpus": "1-5",
+        "limit": 8
+      },
+      "extra:[com.tencent.mm]": {
+        "cpus": "1-5",
+        "limit": 8
+      },
+      "extra:[default_matrix_]": {
+        "cpus": "1-5",
+        "limit": 8
+      },
+      "extra:[binder]": {
+        "cpus": "1-5",
+        "limit": 8
       }
     },
     {
@@ -744,82 +714,82 @@
         "limit": 2,
         "cpus": "6-7"
       },
-      "extra:[audiotrack]": {
-        "limit": 4,
-        "cpus": "1-5"
-      },
-      "extra:[heaptaskdaemon]": {
-        "limit": 4,
-        "cpus": "1-5"
-      },
-      "extra:[codec]": {
-        "limit": 4,
-        "cpus": "1-4"
-      },
-      "extra:[#pty-]": {
-        "limit": 4,
-        "cpus": "1-4"
-      },
       "other": {
         "cpus": "1-3"
+      },
+      "extra:[audiotrack]": {
+        "cpus": "1-5",
+        "limit": 4
+      },
+      "extra:[heaptaskdaemon]": {
+        "cpus": "1-5",
+        "limit": 4
+      },
+      "extra:[codec]": {
+        "cpus": "1-4",
+        "limit": 4
+      },
+      "extra:[#pty-]": {
+        "cpus": "1-4",
+        "limit": 4
       }
     },
     {
       "friendly": "SurfaceFlinger常驻",
-      "scope": "persistent",
       "packages": [
         "surfaceflinger"
       ],
+      "scope": "persistent",
+      "other": {
+        "cpus": "0-5"
+      },
       "extra:[=renderengine]": {
-        "limit": 1,
         "cpus": "7",
+        "limit": 1,
         "fifo": 10
       },
       "extra:[=surfaceflinger]": {
-        "limit": 1,
         "cpus": "7",
+        "limit": 1,
         "fifo": 5
       },
       "extra:[sf*]": {
-        "limit": 1,
         "cpus": "7",
+        "limit": 1,
         "nice": -5
       },
       "extra:[*sync*]": {
-        "limit": 1,
         "cpus": "7",
+        "limit": 1,
         "nice": -5
       },
       "extra:[app*]": {
-        "limit": 1,
         "cpus": "7",
+        "limit": 1,
         "nice": -5
       },
       "extra:[binder:*]": {
-        "limit": 8,
-        "cpus": "0-5"
-      },
-      "other": {
-        "cpus": "0-5"
+        "cpus": "0-5",
+        "limit": 8
       }
     },
     {
       "friendly": "显示Composer常驻",
-      "scope": "persistent",
       "packages": [
         "vendor.qti.hardware.display.composer-service",
         "android.hardware.graphics.composer3-service"
       ],
-      "extra:[=renderengine]": {
-        "limit": 1,
-        "cpus": "7"
-      },
-      "extra:[=receivethread]": {
-        "limit": 1,
-        "cpus": "7"
-      },
+      "scope": "persistent",
       "other": {
         "cpus": "0-5"
+      },
+      "extra:[=renderengine]": {
+        "cpus": "7",
+        "limit": 1
+      },
+      "extra:[=receivethread]": {
+        "cpus": "7",
+        "limit": 1
       }
     }
   ]

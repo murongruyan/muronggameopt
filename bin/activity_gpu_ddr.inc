@@ -24,6 +24,21 @@ static int g_ddr_applied_min_freq = 0;
 static int g_ddr_applied_max_freq = 0;
 static bool g_ddr_monitor_enabled = false;
 
+/*
+ * 内核/平台自己接管的 GPU/DDR 节点。
+ *
+ * memlat(bwmon) 与 kgsl dcvs 各管一半：写进去马上被改回去（日志里的
+ * "写入未生效(被内核改写)" 就是它们）。写失败本身不可怕，可怕的是**写入那一瞬间是生效的**——
+ * 我们每次写都会把平台的 DDR latfloor 提升/GPU 上限短暂清掉，等内核改回来，
+ * 正好落在这段时间里的帧就会变成 25~40ms 的深坑。
+ * 所以连续写不进去就彻底停手，不再碰这些节点。
+ */
+static bool g_gpu_pwrlevel_write_disabled = false;
+static bool g_ddr_node_write_disabled = false;
+static int g_gpu_write_fail_streak = 0;
+static int g_ddr_write_fail_streak = 0;
+static const int kKernelOwnedWriteStreakLimit = 5;
+
 static bool read_text_file_local(const char* path, char* buf, size_t buf_size);
 
 static int read_int_file_simple(const char* path, int fallback) {
@@ -216,6 +231,148 @@ static int snap_freq_nearest(const std::vector<int>& freqs, int requested, int f
 
 static int round_double_to_int(double value) {
     return (int)(value >= 0.0 ? value + 0.5 : value - 0.5);
+}
+
+static int interpolate_int_range(int min_value, int max_value, double ratio) {
+    if (max_value <= min_value) {
+        return min_value;
+    }
+    if (ratio < 0.0) ratio = 0.0;
+    if (ratio > 1.0) ratio = 1.0;
+    double value = (double)min_value + ((double)(max_value - min_value) * ratio);
+    return round_double_to_int(value);
+}
+
+static double clamp_ratio01(double ratio) {
+    if (ratio < 0.0) return 0.0;
+    if (ratio > 1.0) return 1.0;
+    return ratio;
+}
+
+/*
+ * GPU/DDR 的 FAS 联动比例：由动作档位直接给出。
+ * 以前是拿"目标频率在频率表里的位置"折算比例，那是被 CPU 频率间接决定的；
+ * 现在档位本身就是"这一帧欠多少时间"，GPU/DDR 跟着帧债走更直接。
+ *   深睡 0.0 / 甜点 0.35 / 放开档位上限 0.7 / 顶格 1.0
+ */
+static bool get_fas_control_ratio(double* out_ratio) {
+    if (!out_ratio) return false;
+    if (g_cached_fas_buffer_usable.load() <= 0) {
+        return false;
+    }
+    int action = g_cached_fas_action_level.load();
+    if (action < FAS_ACTION_DEEP_SLEEP) {
+        return false;
+    }
+    if (action > FAS_ACTION_MAX_FREQ) action = FAS_ACTION_MAX_FREQ;
+
+    static const double kActionRatio[4] = {0.0, 0.35, 0.7, 1.0};
+    *out_ratio = clamp_ratio01(kActionRatio[action]);
+    return true;
+}
+
+static void apply_fas_range_window(int base_min,
+                                   int base_max,
+                                   const std::vector<int>& available_freqs,
+                                   bool use_nearest_snap,
+                                   int* io_min,
+                                   int* io_max) {
+    if (!io_min || !io_max || base_max <= base_min) {
+        return;
+    }
+
+    double fas_ratio = 0.0;
+    if (!get_fas_control_ratio(&fas_ratio)) {
+        return;
+    }
+
+    const bool guard_active = g_cached_fas_guard_active.load() > 0;
+    double min_ratio = guard_active
+        ? (0.70 + fas_ratio * 0.30)
+        : (fas_ratio * 0.55);
+    double max_ratio = guard_active
+        ? std::max(fas_ratio, 0.92)
+        : fas_ratio;
+
+    min_ratio = clamp_ratio01(min_ratio);
+    max_ratio = clamp_ratio01(max_ratio);
+    if (max_ratio < min_ratio) {
+        max_ratio = min_ratio;
+    }
+
+    int target_min = interpolate_int_range(base_min, base_max, min_ratio);
+    int target_max = interpolate_int_range(base_min, base_max, max_ratio);
+
+    if (!available_freqs.empty()) {
+        if (use_nearest_snap) {
+            target_min = snap_freq_nearest(available_freqs, target_min, target_min);
+            target_max = snap_freq_nearest(available_freqs, target_max, target_max);
+        } else {
+            target_min = snap_freq_floor(available_freqs, target_min, target_min);
+            target_max = snap_freq_ceiling(available_freqs, target_max, target_max);
+        }
+    }
+
+    if (target_min < base_min) target_min = base_min;
+    if (target_max > base_max) target_max = base_max;
+    if (target_min > target_max) target_min = target_max;
+
+    *io_min = target_min;
+    *io_max = target_max;
+}
+
+/*
+ * GPU/DDR 的 FAS 联动窗口：**只抬地板，绝不压天花板**。
+ *
+ * 实测（SM8850 王者荣耀）：原来 GPU/DDR 和 CPU 共用同一套"区间整体缩放"的算法，
+ * 于是深睡档（ratio=0）被翻译成 [base_min, base_min]，也就是
+ *   DDR 上限压到 547MHz、GPU 上限压到最低 pwrlevel(17)
+ * 内核不认这两个值（memlat/bwmon 与 kgsl dcvs 自己管），每 250ms 改回去一次，
+ * 日志里反复出现：
+ *   /sys/devices/system/cpu/bus_dcvs/DDR/soc:qcom,memlat:ddr:gold/max_freq -> 期望 [547000] 实际 [4780000]
+ *   /sys/class/kgsl/kgsl-3d0/max_pwrlevel -> 期望 [17] 实际 [1]
+ * 危害不在"写不进去"，而在"写进去的那一瞬间是生效的"：DDR 的 latfloor 提升与 GPU
+ * 频率上限会被短暂清掉，内核的工作队列改回来之前的这段时间，落进去的帧就是 25~40ms
+ * 的深坑（这也是同一局里掉帧时刻 DDR 正好贴在档位上、而其他统计量都看不出来的原因）。
+ *
+ * 语义对齐官方：官方对 GPU 只写"地板"（云控 gpuctrl=578000000 是 GPU 下限），
+ * 从不压上限。所以这里
+ *   ratio 0（深睡/有预算）→ 地板=base_min，天花板=base_max（完全放开，交给平台自己调）
+ *   ratio 1（顶格）      → 地板=base_max，天花板=base_max
+ *   卡顿守卫             → 地板抬到 70%~100%（守卫本来就是"帧已经不稳了"），天花板照旧放开
+ */
+static void apply_fas_floor_window(int base_min,
+                                   int base_max,
+                                   const std::vector<int>& available_freqs,
+                                   bool use_nearest_snap,
+                                   int* io_min,
+                                   int* io_max) {
+    if (!io_min || !io_max || base_max <= base_min) {
+        return;
+    }
+
+    *io_min = base_min;
+    *io_max = base_max;
+
+    double fas_ratio = 0.0;
+    if (!get_fas_control_ratio(&fas_ratio)) {
+        return;
+    }
+
+    const bool guard_active = g_cached_fas_guard_active.load() > 0;
+    double floor_ratio = guard_active ? (0.70 + fas_ratio * 0.30) : fas_ratio;
+    floor_ratio = clamp_ratio01(floor_ratio);
+
+    int target_min = interpolate_int_range(base_min, base_max, floor_ratio);
+    if (!available_freqs.empty()) {
+        target_min = use_nearest_snap
+            ? snap_freq_nearest(available_freqs, target_min, target_min)
+            : snap_freq_floor(available_freqs, target_min, target_min);
+    }
+    if (target_min < base_min) target_min = base_min;
+    if (target_min > base_max) target_min = base_max;
+    if (target_min > *io_min) *io_min = target_min;
+    /* 天花板始终是 base_max：GPU/DDR 上 FAS 只有"抬地板"这一种动作 */
 }
 
 static int resolve_special_freq_value(const char* raw, bool is_gpu, int fallback) {
@@ -500,6 +657,17 @@ static bool resolve_gpu_frequency_range(int* out_min_freq, int* out_max_freq) {
         min_freq = max_freq;
     }
 
+    /*
+     * 这里**不再套 FAS 的联动窗口**（2026-09-22 修正）。
+     *
+     * 原先 GPU/DDR 跟着帧债抬地板，实测两个后果：
+     *   1) DDR 的 memlat min_freq 是内核 governor 真会照做的下限，被抬上去之后
+     *      整局 DDR 钉在最高档（PerfDog 记的 DDR 从 6.4Gbps 变成 9.6Gbps），功耗 +1.7W；
+     *   2) GPU 的地板抬到 pwrlevel 0 等于把 GPU 钉在 1200MHz。
+     * 官方对自己 GPU 只写一个固定下限（云控 gpuctrl），DDR 由平台自己的 memlat/bwmon 管；
+     * 我们的职责是 CPU 侧的帧感知，GPU/DDR 只在**用户在档位 JSON 里显式配了**时才动。
+     */
+
     *out_min_freq = min_freq;
     *out_max_freq = max_freq;
     return true;
@@ -541,9 +709,89 @@ static bool resolve_ddr_frequency_range(int* out_min_freq, int* out_max_freq) {
         min_freq = max_freq;
     }
 
+    /* 同 GPU：DDR 的 FAS 联动已撤掉，只有档位 JSON 显式配了边界才写（见上面那段说明） */
+
     *out_min_freq = min_freq;
     *out_max_freq = max_freq;
     return true;
+}
+
+/*
+ * GPU / DDR 的地板策略：**只加地板，且只撤销我们自己加的那一层**。
+ *
+ * 平台（COSA 云控 / 热控）本来就在这些节点上设下限——官方给王者荣耀写的 gpuctrl=578000000
+ * 就是 GPU 下限，memlat 也在给自己设 DDR 下限。旧实现每次都把"当前想要的值"整段写回去，
+ * 于是：
+ *   - 深睡档（FAS ratio=0）被翻译成上限=下限，等于把平台的 DDR 上限/GPU 上限清掉；
+ *   - 取消加速时又把平台设的地板推平。
+ * 这里改成：
+ *   - 第一次动手前记下节点原值（g_gpu_base_min_pwrlevel / g_ddr_base_min_freq）；
+ *   - 只在"我们要的比现在更紧"时才写（GPU 的 pwrlevel 数值越小越高频）；
+ *   - 不需要加速了就把原值写回去，不把平台的设置留在被我们改过的状态；
+ *   - 天花板除用户显式配置外一概不碰。
+ */
+static int g_gpu_base_min_pwrlevel = -1;   /* -1 = 还没读到过原值 */
+static bool g_gpu_floor_ours = false;
+static int g_ddr_base_min_freq = 0;        /* 0 = 还没读到过原值 */
+static bool g_ddr_floor_ours = false;
+static int g_ddr_last_boost_freq = -1;
+/* 我们自己写进去的那一层，只有节点还等于它时才撤回（别把平台同时改的值推平） */
+static int g_gpu_ours_level = -1;
+static int g_ddr_ours_freq = 0;
+
+static void apply_gpu_floor_level(int want_level) {
+    if (!g_gpu_min_pwrlevel_path[0] || want_level < 0) return;
+    int current = read_int_file_simple(g_gpu_min_pwrlevel_path, -1);
+    if (current < 0) return;
+    if (g_gpu_base_min_pwrlevel < 0 && !g_gpu_floor_ours) {
+        g_gpu_base_min_pwrlevel = current;   /* 第一次见到的原值 */
+    }
+    int base = g_gpu_base_min_pwrlevel >= 0 ? g_gpu_base_min_pwrlevel : current;
+    int reference = g_gpu_floor_ours ? base : current;
+
+    if (want_level < reference) {
+        write_int_value_with_perm(g_gpu_min_pwrlevel_path, want_level, 0644, 0644);
+        g_gpu_ours_level = want_level;
+        g_gpu_floor_ours = true;
+    } else if (g_gpu_floor_ours && want_level >= base) {
+        /*
+         * 加速结束：只撤回"我们抬上去的那一层"。
+         * 只有节点还等于我们写进去的值时才写回原值；如果期间平台自己又改过
+         * （例如它在游戏里把地板抬到 1100MHz），就什么都不做，别把平台的设置推平。
+         */
+        if (g_gpu_ours_level >= 0 && current == g_gpu_ours_level && current != base) {
+            write_int_value_with_perm(g_gpu_min_pwrlevel_path, base, 0644, 0644);
+        }
+        g_gpu_floor_ours = false;
+        g_gpu_ours_level = -1;
+    }
+}
+
+static void apply_ddr_floor_freq(int want_min_freq) {
+    if (g_ddr_min_freq_paths.empty() || want_min_freq <= 0) return;
+    int current = read_int_file_simple(g_ddr_min_freq_paths.front().c_str(), -1);
+    if (current < 0) return;
+    if (g_ddr_base_min_freq <= 0 && !g_ddr_floor_ours) {
+        g_ddr_base_min_freq = current;
+    }
+    int base = g_ddr_base_min_freq > 0 ? g_ddr_base_min_freq : current;
+    int reference = g_ddr_floor_ours ? base : current;
+
+    if (want_min_freq > reference) {
+        for (size_t i = 0; i < g_ddr_min_freq_paths.size(); i++) {
+            write_int_value_default(g_ddr_min_freq_paths[i].c_str(), want_min_freq);
+        }
+        g_ddr_ours_freq = want_min_freq;
+        g_ddr_floor_ours = true;
+    } else if (g_ddr_floor_ours && want_min_freq <= base) {
+        if (g_ddr_ours_freq > 0 && current == g_ddr_ours_freq && current != base) {
+            for (size_t i = 0; i < g_ddr_min_freq_paths.size(); i++) {
+                write_int_value_default(g_ddr_min_freq_paths[i].c_str(), base);
+            }
+        }
+        g_ddr_floor_ours = false;
+        g_ddr_ours_freq = 0;
+    }
 }
 
 void apply_gpu_settings() {
@@ -554,27 +802,44 @@ void apply_gpu_settings() {
         return;
     }
 
-    int high_level = clamp_gpu_level(gpu.high_level);
+    /*
+     * GPU 只写"地板"（min_pwrlevel），不动平台/内核设的上限（max_pwrlevel）。
+     *
+     * 依据两条：官方云控对自己 GPU 也只写下限（gpuctrl=578000000）；
+     * 实测写上限会被 kgsl dcvs 改回去（旧日志：期望 17 实际 1），
+     * 而写它的副作用是把平台设的上限清掉——和一个只该加地板的调度器无关。
+     * 只有用户在档位 JSON 里显式配了 GPU 上限（high_level / max_freq）时才收紧上限。
+     */
+    bool manage_ceiling = (clamp_gpu_level(gpu.high_level) >= 0) ||
+                          (gpu.max_freq > 0 && gpu.max_freq < g_gpu_hw_max_freq);
+    int high_level = manage_ceiling ? clamp_gpu_level(gpu.high_level) : -1;
     int low_level = clamp_gpu_level(gpu.low_level);
-    if (high_level < 0) {
+    if (manage_ceiling && high_level < 0) {
         high_level = find_gpu_pwrlevel_for_max_freq(max_freq);
     }
     if (low_level < 0) {
         low_level = find_gpu_pwrlevel_for_min_freq(min_freq);
     }
-    if (high_level < 0 || low_level < 0 || high_level > low_level) {
+    if (low_level < 0 || (manage_ceiling && (high_level < 0 || high_level > low_level))) {
         g_gpu_monitor_enabled = false;
         return;
     }
 
-    write_int_value_with_perm(g_gpu_max_pwrlevel_path, high_level, 0644, 0644);
-    write_int_value_with_perm(g_gpu_min_pwrlevel_path, low_level, 0644, 0644);
+    if (!g_gpu_pwrlevel_write_disabled) {
+        apply_gpu_floor_level(low_level);
+        if (manage_ceiling) {
+            write_int_value_with_perm(g_gpu_max_pwrlevel_path, high_level, 0644, 0644);
+        }
+    }
 
-    g_gpu_target_max_pwrlevel = high_level;
     g_gpu_target_min_pwrlevel = low_level;
+    /* -1 = 上限不归我们管（不写、也不拿它当"我们写过的值"去比对） */
+    g_gpu_target_max_pwrlevel = manage_ceiling ? high_level : -1;
     g_gpu_applied_min_freq = min_freq;
-    g_gpu_applied_max_freq = max_freq;
-    g_gpu_monitor_enabled = (min_freq > g_gpu_hw_min_freq || max_freq < g_gpu_hw_max_freq);
+    g_gpu_applied_max_freq = manage_ceiling ? max_freq : g_gpu_hw_max_freq;
+    double fas_ratio = 0.0;
+    bool fas_active = get_fas_control_ratio(&fas_ratio);
+    g_gpu_monitor_enabled = fas_active || (min_freq > g_gpu_hw_min_freq || max_freq < g_gpu_hw_max_freq);
 }
 
 void apply_ddr_settings() {
@@ -585,24 +850,33 @@ void apply_ddr_settings() {
         return;
     }
 
-    for (size_t i = 0; i < g_ddr_max_freq_paths.size(); i++) {
-        write_int_value_default(g_ddr_max_freq_paths[i].c_str(), max_freq);
+    if (!g_ddr_node_write_disabled) {
+        /* 只加地板，且只撤销我们自己加的那一层；天花板留着让平台自己管 */
+        apply_ddr_floor_freq(min_freq);
     }
-    for (size_t i = 0; i < g_ddr_min_freq_paths.size(); i++) {
-        write_int_value_default(g_ddr_min_freq_paths[i].c_str(), min_freq);
-    }
-    if (g_ddr_boost_freq_path[0]) {
+    /*
+     * boost_freq 是"请求一次 DDR 提频"的投票口。这里只在**用户显式配了 DDR 下限**时
+     * 才顺手投一票（那是他要求保持的最低带宽），FAS 不再自己往里写——
+     * 2026-09-22 实测：FAS 有帧债就往这里写，DDR 被钉在最高档，整局功耗 +1.7W。
+     */
+    if (g_ddr_boost_freq_path[0] && min_freq > g_ddr_hw_min_freq) {
         int boost_freq = std::min(max_freq, std::max(min_freq, g_ddr_hw_min_freq));
-        write_int_value_default(g_ddr_boost_freq_path, boost_freq);
+        if (boost_freq != g_ddr_last_boost_freq) {
+            write_int_value_default(g_ddr_boost_freq_path, boost_freq);
+            g_ddr_last_boost_freq = boost_freq;
+        }
     }
 
     g_ddr_applied_min_freq = min_freq;
-    g_ddr_applied_max_freq = max_freq;
-    g_ddr_monitor_enabled = (min_freq > g_ddr_hw_min_freq || max_freq < g_ddr_hw_max_freq);
+    /* 上限我们不写（平台/memlat 自己管），所以不拿它当"我们写过的值" */
+    g_ddr_applied_max_freq = g_ddr_hw_max_freq;
+    double fas_ratio = 0.0;
+    bool fas_active = get_fas_control_ratio(&fas_ratio);
+    g_ddr_monitor_enabled = fas_active || (min_freq > g_ddr_hw_min_freq || max_freq < g_ddr_hw_max_freq);
 }
 
 static void enforce_gpu_ddr_limits(bool force) {
-    if (g_pause_game_scheduler.load() != 0) {
+    if (should_pause_our_game_scheduler()) {
         return;
     }
     static long long last_check_ms = 0;
@@ -612,12 +886,32 @@ static void enforce_gpu_ddr_limits(bool force) {
     }
     last_check_ms = now_ms;
 
-    if (g_gpu_monitor_enabled) {
+    double gpu_fas_ratio = 0.0;
+    bool gpu_fas_active = get_fas_control_ratio(&gpu_fas_ratio);
+    if (!g_gpu_pwrlevel_write_disabled && (g_gpu_monitor_enabled || gpu_fas_active)) {
         bool need_reapply = force;
-        int current_min_pl = read_int_file_simple(g_gpu_min_pwrlevel_path, g_gpu_target_min_pwrlevel);
-        int current_max_pl = read_int_file_simple(g_gpu_max_pwrlevel_path, g_gpu_target_max_pwrlevel);
-        if (current_min_pl != g_gpu_target_min_pwrlevel || current_max_pl != g_gpu_target_max_pwrlevel) {
-            need_reapply = true;
+        int desired_gpu_min = 0;
+        int desired_gpu_max = 0;
+        if (resolve_gpu_frequency_range(&desired_gpu_min, &desired_gpu_max)) {
+            if (desired_gpu_min != g_gpu_applied_min_freq || desired_gpu_max != g_gpu_applied_max_freq) {
+                need_reapply = true;
+            }
+        }
+        /*
+         * 只有"我们抬过地板、而节点比目标还松"才算被改回去，需要再写一次。
+         * 节点比我们的目标更紧（平台自己又抬了）是正常情况，不用管。
+         */
+        if (g_gpu_floor_ours) {
+            int current_min_pl = read_int_file_simple(g_gpu_min_pwrlevel_path, -1);
+            if (current_min_pl >= 0 && current_min_pl > g_gpu_target_min_pwrlevel) {
+                need_reapply = true;
+            }
+        }
+        if (g_gpu_target_max_pwrlevel >= 0) {
+            int current_max_pl = read_int_file_simple(g_gpu_max_pwrlevel_path, g_gpu_target_max_pwrlevel);
+            if (current_max_pl != g_gpu_target_max_pwrlevel) {
+                need_reapply = true;
+            }
         }
         int current_gpu_freq = read_int_file_simple(g_gpu_cur_freq_path, 0);
         if (current_gpu_freq > 0 && current_gpu_freq < 10000) {
@@ -629,20 +923,51 @@ static void enforce_gpu_ddr_limits(bool force) {
         }
         if (need_reapply) {
             apply_gpu_settings();
+            /*
+             * 写完立刻回读：还是被改回去，就说明这个节点归内核/平台管。
+             * 连续 kKernelOwnedWriteStreakLimit 次都这样就不再写了 ——
+             * 继续写只会在"写入瞬间生效"的窗口里把平台的上限/底噪清掉。
+             */
+            if (!g_gpu_pwrlevel_write_disabled && g_gpu_floor_ours) {
+                int now_min_pl = read_int_file_simple(g_gpu_min_pwrlevel_path, -1);
+                bool stuck = (now_min_pl >= 0 && now_min_pl > g_gpu_target_min_pwrlevel);
+                int now_max_pl = now_min_pl;
+                if (g_gpu_target_max_pwrlevel >= 0) {
+                    now_max_pl = read_int_file_simple(g_gpu_max_pwrlevel_path, g_gpu_target_max_pwrlevel);
+                    if (now_max_pl != g_gpu_target_max_pwrlevel) stuck = true;
+                }
+                if (stuck) {
+                    if (++g_gpu_write_fail_streak >= kKernelOwnedWriteStreakLimit) {
+                        g_gpu_pwrlevel_write_disabled = true;
+                        char msg[256];
+                        safe_snprintf(msg, sizeof(msg),
+                                      "GPU pwrlevel 由内核/平台接管（写入被改写 max:%d->%d min:%d->%d），已停止写入",
+                                      g_gpu_target_max_pwrlevel, now_max_pl,
+                                      g_gpu_target_min_pwrlevel, now_min_pl);
+                        log_message(msg);
+                    }
+                } else {
+                    g_gpu_write_fail_streak = 0;
+                }
+            }
         }
     }
 
-    if (g_ddr_monitor_enabled) {
+    double ddr_fas_ratio = 0.0;
+    bool ddr_fas_active = get_fas_control_ratio(&ddr_fas_ratio);
+    if (!g_ddr_node_write_disabled && (g_ddr_monitor_enabled || ddr_fas_active)) {
         bool need_reapply = force;
-        if (!g_ddr_min_freq_paths.empty()) {
-            int current_ddr_min = read_int_file_simple(g_ddr_min_freq_paths.front().c_str(), g_ddr_applied_min_freq);
-            if (current_ddr_min != g_ddr_applied_min_freq) {
+        int desired_ddr_min = 0;
+        int desired_ddr_max = 0;
+        if (resolve_ddr_frequency_range(&desired_ddr_min, &desired_ddr_max)) {
+            if (desired_ddr_min != g_ddr_applied_min_freq || desired_ddr_max != g_ddr_applied_max_freq) {
                 need_reapply = true;
             }
         }
-        if (!g_ddr_max_freq_paths.empty()) {
-            int current_ddr_max = read_int_file_simple(g_ddr_max_freq_paths.front().c_str(), g_ddr_applied_max_freq);
-            if (current_ddr_max != g_ddr_applied_max_freq) {
+        /* 同 GPU：只有我们自己抬的地板被推平才重写；天花板不归我们管 */
+        if (g_ddr_floor_ours && !g_ddr_min_freq_paths.empty()) {
+            int current_ddr_min = read_int_file_simple(g_ddr_min_freq_paths.front().c_str(), -1);
+            if (current_ddr_min >= 0 && current_ddr_min < g_ddr_applied_min_freq) {
                 need_reapply = true;
             }
         }
@@ -653,6 +978,29 @@ static void enforce_gpu_ddr_limits(bool force) {
         }
         if (need_reapply) {
             apply_ddr_settings();
+            /* 同 GPU：连续写不进去说明这些节点（memlat/bwmon）归内核管，停手。 */
+            if (!g_ddr_node_write_disabled && g_ddr_floor_ours) {
+                bool stuck = false;
+                int now_max = g_ddr_applied_max_freq;
+                int now_min = g_ddr_applied_min_freq;
+                if (!g_ddr_min_freq_paths.empty()) {
+                    now_min = read_int_file_simple(g_ddr_min_freq_paths.front().c_str(), -1);
+                    if (now_min >= 0 && now_min < g_ddr_applied_min_freq) stuck = true;
+                }
+                if (stuck) {
+                    if (++g_ddr_write_fail_streak >= kKernelOwnedWriteStreakLimit) {
+                        g_ddr_node_write_disabled = true;
+                        char msg[256];
+                        safe_snprintf(msg, sizeof(msg),
+                                      "DDR 频率节点由内核 memlat/bwmon 接管（写入被改写 max:%d->%d min:%d->%d），已停止写入",
+                                      g_ddr_applied_max_freq, now_max,
+                                      g_ddr_applied_min_freq, now_min);
+                        log_message(msg);
+                    }
+                } else {
+                    g_ddr_write_fail_streak = 0;
+                }
+            }
         }
     }
 }

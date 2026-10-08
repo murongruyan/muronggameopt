@@ -1,299 +1,155 @@
 {
-  "version": "5.6",
+  "version": "6.0",
   "powersave": {
     "cpu_policies": [
       {
         "cluster": 0,
-        "governor": "schedutil",
-        "max_freq": 2361600,
+        "governor": "walt",
+        "max_freq": 2611200,
         "min_freq": 384000,
-        "params": {}
+        "params": {
+          "boost": "0",
+          "down_rate_limit_us": "0",
+          "hispeed_cond_freq": "787200",
+          "hispeed_freq": "1996800",
+          "hispeed_load": "90",
+          "pl": "",
+          "rtg_boost_freq": "787200",
+          "up_rate_limit_us": "0",
+          "zone_max_util_pct": "2611200 90"
+        }
       },
       {
         "cluster": 1,
-        "governor": "schedutil",
-        "max_freq": 2880000,
+        "governor": "walt",
+        "max_freq": 3648000,
         "min_freq": 768000,
-        "params": {}
+        "params": {
+          "boost": "0",
+          "down_rate_limit_us": "0",
+          "hispeed_cond_freq": "0",
+          "hispeed_freq": "1862400",
+          "hispeed_load": "90",
+          "pl": "",
+          "rtg_boost_freq": "883200",
+          "up_rate_limit_us": "0",
+          "zone_max_util_pct": "3648000 80"
+        }
       }
-    ],
-    "cpuset": {
-      "background": "0-5",
-      "systembackground": "0-5",
-      "foreground": "0-6",
-      "topapp": "0-7"
-    },
-    "extra_writes": [
-      {
-        "path": "/proc/sys/walt/sched_high_perf_cluster_freq_cap",
-        "value": "2147483647 2147483647"
-      },
-      {
-        "path": "/proc/sys/walt/sched_max_freq_partial_halt",
-        "value": "2147483647"
-      },
-      {
-        "path": "/proc/sys/walt/cluster0/smart_freq/ipc_freq_levels",
-        "value": "2361600 2361600 2361600 2361600 2361600"
-      },
-      {
-        "path": "/proc/sys/walt/cluster1/smart_freq/ipc_freq_levels",
-        "value": "2880000 2880000 2880000 2880000 2880000"
-      },
-      {
-        "path": "/sys/kernel/msm_performance/parameters/cpu_max_freq",
-        "value": "0:2745600 1:2745600 2:2745600 3:2745600 4:2745600 5:2745600 6:2880000 7:2880000"
-      }
-    ],
-    "gpu": {
-      "high_level": 9,
-      "low_level": 17
-    },
-    "ddr": {
-      "min_freq": "ddr_min",
-      "max_freq": "ddr_max*0.5"
-    },
-    "cpuctl": {
-      "background": {
-        "uclamp_min": 0,
-        "uclamp_max": 40,
-        "latency_sensitive": 0,
-        "shares": 192
-      },
-      "systembackground": {
-        "uclamp_min": 0,
-        "uclamp_max": 50,
-        "latency_sensitive": 0,
-        "shares": 260
-      },
-      "foreground": {
-        "uclamp_min": 0,
-        "uclamp_max": 60,
-        "latency_sensitive": 0,
-        "shares": 360
-      },
-      "topapp": {
-        "uclamp_min": 0,
-        "uclamp_max": 65,
-        "latency_sensitive": 1,
-        "shares": 480
-      }
-    }
+    ]
   },
   "balance": {
     "cpu_policies": [
       {
         "cluster": 0,
-        "governor": "",
+        "governor": "walt",
         "max_freq": 3187200,
-        "min_freq": 883200,
+        "min_freq": 1113600,
         "params": {
-          "hispeed_cond_freq": "998400",
-          "hispeed_freq": "1785600",
-          "hispeed_load": "80",
-          "rtg_boost_freq": "1228800",
-          "zone_max_util_pct": "3187200 90"
+          "boost": "0",
+          "down_rate_limit_us": "0",
+          "hispeed_cond_freq": "787200",
+          "hispeed_freq": "1996800",
+          "hispeed_load": "70",
+          "pl": "",
+          "rtg_boost_freq": "883200",
+          "up_rate_limit_us": "0",
+          "zone_max_util_pct": "2611200 90"
         }
       },
       {
         "cluster": 1,
-        "governor": "",
-        "max_freq": 3648000,
-        "min_freq": 1017600,
+        "governor": "walt",
+        "max_freq": 4070400,
+        "min_freq": 1267200,
         "params": {
-          "hispeed_cond_freq": "1132800",
-          "hispeed_freq": "1747200",
-          "hispeed_load": "80",
+          "boost": "0",
+          "down_rate_limit_us": "0",
+          "hispeed_cond_freq": "0",
+          "hispeed_freq": "1862400",
+          "hispeed_load": "70",
+          "pl": "",
           "rtg_boost_freq": "1267200",
-          "zone_max_util_pct": "3648000 80"
+          "up_rate_limit_us": "0",
+          "zone_max_util_pct": "4070400 80"
         }
       }
-    ],
-    "cpuset": {
-      "background": "0-2",
-      "systembackground": "1-2",
-      "foreground": "0-6",
-      "topapp": "0-7"
-    },
-    "gpu": {
-      "high_level": 5,
-      "low_level": 15
-    },
-    "ddr": {
-      "min_freq": "ddr_min*2.5",
-      "max_freq": "ddr_max*0.7"
-    },
-    "cpuctl": {
-      "background": {
-        "uclamp_min": 0,
-        "uclamp_max": 70,
-        "latency_sensitive": 0,
-        "shares": 512
-      },
-      "systembackground": {
-        "uclamp_min": 0,
-        "uclamp_max": 70,
-        "latency_sensitive": 0,
-        "shares": 512
-      },
-      "foreground": {
-        "uclamp_min": 10,
-        "uclamp_max": 80,
-        "latency_sensitive": 0,
-        "shares": 568
-      },
-      "topapp": {
-        "uclamp_min": 0,
-        "uclamp_max": 100,
-        "latency_sensitive": 1,
-        "shares": 1024
-      }
-    }
+    ]
   },
   "performance": {
     "cpu_policies": [
       {
         "cluster": 0,
-        "governor": "performance",
-        "max_freq": 2745600,
-        "min_freq": 384000,
-        "params": {}
+        "governor": "walt",
+        "max_freq": 3302400,
+        "min_freq": 1228800,
+        "params": {
+          "boost": "0",
+          "down_rate_limit_us": "0",
+          "hispeed_cond_freq": "787200",
+          "hispeed_freq": "2496000",
+          "hispeed_load": "70",
+          "pl": "0",
+          "rtg_boost_freq": "1228800",
+          "up_rate_limit_us": "0",
+          "zone_max_util_pct": "2611200 90"
+        }
       },
       {
         "cluster": 1,
-        "governor": "performance",
-        "max_freq": 2880000,
-        "min_freq": 768000,
-        "params": {}
+        "governor": "walt",
+        "max_freq": 4396800,
+        "min_freq": 1497600,
+        "params": {
+          "boost": "0",
+          "down_rate_limit_us": "0",
+          "hispeed_cond_freq": "0",
+          "hispeed_freq": "2668800",
+          "hispeed_load": "70",
+          "pl": "0",
+          "rtg_boost_freq": "1497600",
+          "up_rate_limit_us": "0",
+          "zone_max_util_pct": "2147483647 80"
+        }
       }
-    ],
-    "cpuset": {
-      "background": "0-6",
-      "systembackground": "0-6",
-      "foreground": "0-6",
-      "topapp": "0-7"
-    },
-    "extra_writes": [
-      {
-        "path": "/proc/sys/walt/sched_high_perf_cluster_freq_cap",
-        "value": "1497600 1497600"
-      },
-      {
-        "path": "/proc/sys/walt/sched_max_freq_partial_halt",
-        "value": "1555200"
-      },
-      {
-        "path": "/proc/sys/walt/cluster0/smart_freq/ipc_freq_levels",
-        "value": "1497600 1497600 1497600 1497600 1497600"
-      },
-      {
-        "path": "/proc/sys/walt/cluster1/smart_freq/ipc_freq_levels",
-        "value": "1555200 1555200 1555200 1555200 1555200"
-      }
-    ],
-    "gpu": {
-      "high_level": 3,
-      "low_level": 13
-    },
-    "ddr": {
-      "min_freq": "ddr_min*3.0",
-      "max_freq": "ddr_max*0.9"
-    },
-    "cpuctl": {
-      "background": {
-        "uclamp_min": 0,
-        "uclamp_max": 70,
-        "latency_sensitive": 0,
-        "shares": 768
-      },
-      "systembackground": {
-        "uclamp_min": 0,
-        "uclamp_max": 70,
-        "latency_sensitive": 0,
-        "shares": 768
-      },
-      "foreground": {
-        "uclamp_min": 20,
-        "uclamp_max": 100,
-        "latency_sensitive": 1,
-        "shares": 1024
-      },
-      "topapp": {
-        "uclamp_min": 30,
-        "uclamp_max": 100,
-        "latency_sensitive": 1,
-        "shares": 1024
-      }
-    }
+    ]
   },
   "fast": {
     "cpu_policies": [
       {
         "cluster": 0,
-        "governor": "",
+        "governor": "walt",
         "max_freq": 3628800,
-        "min_freq": 1440000,
+        "min_freq": 1555200,
         "params": {
-          "hispeed_cond_freq": "0",
-          "hispeed_freq": "2611200",
+          "boost": "0",
+          "down_rate_limit_us": "0",
+          "hispeed_cond_freq": "787200",
+          "hispeed_freq": "2899200",
           "hispeed_load": "70",
-          "rtg_boost_freq": "1785600",
-          "zone_max_util_pct": "2147483647 90"
+          "pl": "0",
+          "rtg_boost_freq": "1555200",
+          "up_rate_limit_us": "0",
+          "zone_max_util_pct": "2611200 90"
         }
       },
       {
         "cluster": 1,
-        "governor": "",
+        "governor": "walt",
         "max_freq": 4608000,
-        "min_freq": 1497600,
+        "min_freq": 1747200,
         "params": {
+          "boost": "0",
+          "down_rate_limit_us": "0",
           "hispeed_cond_freq": "0",
           "hispeed_freq": "2880000",
           "hispeed_load": "70",
+          "pl": "0",
           "rtg_boost_freq": "1747200",
+          "up_rate_limit_us": "0",
           "zone_max_util_pct": "2147483647 80"
         }
       }
-    ],
-    "cpuset": {
-      "background": "0-2",
-      "systembackground": "1-2",
-      "foreground": "0-6",
-      "topapp": "0-7"
-    },
-    "gpu": {
-      "high_level": 0,
-      "low_level": 10
-    },
-    "ddr": {
-      "min_freq": "ddr_max*0.5",
-      "max_freq": "ddr_max"
-    },
-    "cpuctl": {
-      "background": {
-        "uclamp_min": 0,
-        "uclamp_max": 100,
-        "latency_sensitive": 0,
-        "shares": 1024
-      },
-      "systembackground": {
-        "uclamp_min": 0,
-        "uclamp_max": 100,
-        "latency_sensitive": 0,
-        "shares": 1024
-      },
-      "foreground": {
-        "uclamp_min": 40,
-        "uclamp_max": 100,
-        "latency_sensitive": 1,
-        "shares": 1024
-      },
-      "topapp": {
-        "uclamp_min": 100,
-        "uclamp_max": 100,
-        "latency_sensitive": 1,
-        "shares": 1024
-      }
-    }
+    ]
   }
 }

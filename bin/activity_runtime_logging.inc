@@ -1,11 +1,28 @@
+static std::recursive_mutex g_log_file_mutex;
+static std::mutex g_affinity_log_throttle_mutex;
+
+static bool safe_localtime_copy(time_t now, struct tm* out_tm) {
+    if (!out_tm) return false;
+#if defined(_WIN32)
+    return localtime_s(out_tm, &now) == 0;
+#else
+    return localtime_r(&now, out_tm) != NULL;
+#endif
+}
+
 static void append_timestamped_log_line(const char* path, const char* message) {
     if (!path || !message) return;
+    std::lock_guard<std::recursive_mutex> lock(g_log_file_mutex);
     FILE* log = fopen(path, "a");
     if (!log) return;
     time_t now = time(NULL);
-    struct tm* tm_info = localtime(&now);
+    struct tm tm_info = {};
     char timestamp[32];
-    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", tm_info);
+    if (safe_localtime_copy(now, &tm_info)) {
+        strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", &tm_info);
+    } else {
+        safe_strncpy(timestamp, "1970-01-01 00:00:00", sizeof(timestamp));
+    }
     fprintf(log, "%s - %s\n", timestamp, message);
     fclose(log);
 }
@@ -50,7 +67,7 @@ static void trace_instantf(const char* category, const char* format, ...) {
 static const char* get_backup_prefix_for_log(const char* path) {
     if (strcmp(path, LOG_FILE) == 0) return "log";
     if (strcmp(path, DEBUG_LOG_FILE) == 0) return "debug_log";
-    if (strcmp(path, TRACE_LOG_FILE) == 0) return "trace_log";
+    if (strcmp(path, FAS_LOG_FILE) == 0) return "fas_log";
     if (strcmp(path, AFFINITY_LOG_FILE) == 0) return "affinity_log";
     if (strcmp(path, STATS_LOG_FILE) == 0) return "stats_log";
     return "misc_log";
@@ -58,14 +75,20 @@ static const char* get_backup_prefix_for_log(const char* path) {
 
 static void backup_log_file(const char* path, bool announce) {
     if (!path) return;
+    std::lock_guard<std::recursive_mutex> lock(g_log_file_mutex);
     mkdir(LOG_BACKUP_DIR, 0755);
     time_t now = time(NULL);
-    struct tm* tm_info = localtime(&now);
+    struct tm tm_info = {};
+    if (!safe_localtime_copy(now, &tm_info)) {
+        memset(&tm_info, 0, sizeof(tm_info));
+        tm_info.tm_year = 70;
+        tm_info.tm_mday = 1;
+    }
     char backup_path[256];
     safe_snprintf(backup_path, sizeof(backup_path), "%s/%s_%04d%02d%02d_%02d%02d%02d.bak",
         LOG_BACKUP_DIR, get_backup_prefix_for_log(path),
-        tm_info->tm_year + 1900, tm_info->tm_mon + 1, tm_info->tm_mday,
-        tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec);
+        tm_info.tm_year + 1900, tm_info.tm_mon + 1, tm_info.tm_mday,
+        tm_info.tm_hour, tm_info.tm_min, tm_info.tm_sec);
 
     if (rename(path, backup_path) == 0) {
         ensure_log_file_exists(path);
@@ -86,18 +109,19 @@ void backup_and_clear_log() {
     mkdir(LOG_BACKUP_DIR, 0755);
     backup_log_file(LOG_FILE, false);
     backup_log_file(DEBUG_LOG_FILE, false);
-    backup_log_file(TRACE_LOG_FILE, false);
+    backup_log_file(FAS_LOG_FILE, false);
     backup_log_file(AFFINITY_LOG_FILE, false);
     backup_log_file(STATS_LOG_FILE, false);
     ensure_log_file_exists(LOG_FILE);
     ensure_log_file_exists(DEBUG_LOG_FILE);
-    ensure_log_file_exists(TRACE_LOG_FILE);
+    ensure_log_file_exists(FAS_LOG_FILE);
     ensure_log_file_exists(AFFINITY_LOG_FILE);
     ensure_log_file_exists(STATS_LOG_FILE);
 }
 
 
 void cleanup_old_logs() {
+    std::lock_guard<std::recursive_mutex> lock(g_log_file_mutex);
     DIR* dir = opendir(LOG_BACKUP_DIR);
     if (!dir) return;
 
@@ -140,7 +164,7 @@ void cleanup_old_logs() {
 static size_t get_max_log_file_size_for(const char* path) {
     if (!path) return MAX_LOG_FILE_SIZE;
     if (strcmp(path, DEBUG_LOG_FILE) == 0 ||
-        strcmp(path, TRACE_LOG_FILE) == 0 ||
+        strcmp(path, FAS_LOG_FILE) == 0 ||
         strcmp(path, AFFINITY_LOG_FILE) == 0 ||
         strcmp(path, STATS_LOG_FILE) == 0) {
         return MAX_AUX_LOG_FILE_SIZE;
@@ -150,6 +174,7 @@ static size_t get_max_log_file_size_for(const char* path) {
 
 
 void clear_log_if_needed_for(const char* path) {
+    std::lock_guard<std::recursive_mutex> lock(g_log_file_mutex);
     struct stat st;
     size_t max_size = get_max_log_file_size_for(path);
     if (stat(path, &st) == 0 && st.st_size > (off_t)max_size) {
@@ -162,24 +187,103 @@ void log_message(const char* message) {
     append_timestamped_log_line(LOG_FILE, message);
 }
 
-static bool is_aux_log_enabled() {
-    if (g_dyn_params.debug_log) {
-        return true;
+/*
+ * 同一类事件限流写主日志。用于"会反复发生但只需要留痕"的消息，
+ * 例如前台 PID 反复刷新、前台识别连续失败——它们不该把主日志刷满。
+ */
+void log_message_throttled(const char* key, long long interval_ms, const char* message) {
+    if (!key || !key[0] || !message) return;
+
+    struct LogThrottleState {
+        long long last_ms;
+        unsigned long long suppressed;
+    };
+    static std::mutex throttle_mutex;
+    static std::unordered_map<std::string, LogThrottleState> states;
+
+    long long now_ms = get_current_time_ms();
+    std::lock_guard<std::mutex> lock(throttle_mutex);
+    auto& state = states[key];
+    if (state.last_ms != 0 && now_ms - state.last_ms < interval_ms) {
+        state.suppressed++;
+        return;
     }
-    for (int i = 0; i < cluster_count && i < MAX_CLUSTERS; i++) {
-        if (g_cluster_dyn_params[i].debug_log) {
-            return true;
+
+    unsigned long long suppressed = state.suppressed;
+    state.last_ms = now_ms;
+    state.suppressed = 0;
+
+    if (suppressed > 0) {
+        char summary[256];
+        safe_snprintf(summary, sizeof(summary),
+                      "%s | 同类消息已抑制 %llu 条", message, suppressed);
+        log_message(summary);
+        return;
+    }
+    log_message(message);
+}
+
+/*
+ * 辅助日志开关：读 config/log.conf（每 5 秒检查一次改动）。
+ *
+ * 以前它寄生在动态调频参数里（g_dyn_params.debug_log / 每簇 debug_log），
+ * 结果是"关动态调频"会顺手把 FAS、亲和性、统计日志一起关掉，反之亦然。
+ * 现在开关独立成文件；旧位置仅作为迁移期兼容，读到 true 仍然生效。
+ *
+ * 文件格式（任选其一）：
+ *   enabled=1
+ *   1
+ */
+static bool runtime_log_config_enabled() {
+    static bool loaded = false;
+    static bool enabled = false;
+    static long long last_check_ms = 0;
+
+    long long now_ms = get_current_time_ms();
+    if (loaded && now_ms - last_check_ms < 5000) {
+        return enabled;
+    }
+    loaded = true;
+    last_check_ms = now_ms;
+
+    /* 这里用 fopen 直接读，避免依赖后置声明的辅助函数 */
+    char text[64] = {0};
+    FILE* fp = fopen(LOG_CONFIG_FILE, "r");
+    if (!fp) {
+        enabled = false;
+        return enabled;
+    }
+    if (!fgets(text, sizeof(text), fp)) {
+        text[0] = '\0';
+    }
+    fclose(fp);
+
+    std::string value = trim_copy(text);
+    const char* cursor = value.c_str();
+    if (strncmp(cursor, "enabled", 7) == 0) {
+        const char* eq = strchr(cursor, '=');
+        if (eq) {
+            value = trim_copy(std::string(eq + 1));
         }
     }
-    return false;
+    std::string lowered = scheduler_to_lower_copy(value.c_str());
+    enabled = (lowered == "1" || lowered == "true" || lowered == "on" || lowered == "yes");
+    return enabled;
+}
+
+static bool is_aux_log_enabled() {
+    /* 只认 config/log.conf；旧的 dynamic_tuning.debug_log 位置已废弃，不再读取。 */
+    return runtime_log_config_enabled();
 }
 
 void log_debug_message(const char* message) {
     if (!is_aux_log_enabled()) {
         return;
     }
+    static std::mutex throttle_mutex;
     static long long last_log_ms = 0;
     long long now_ms = get_current_time_ms();
+    std::lock_guard<std::mutex> lock(throttle_mutex);
     if (now_ms - last_log_ms < 1000) {
         return;
     }
@@ -187,6 +291,14 @@ void log_debug_message(const char* message) {
 
     clear_log_if_needed_for(DEBUG_LOG_FILE);
     append_timestamped_log_line(DEBUG_LOG_FILE, message);
+}
+
+void log_fas_message(const char* message) {
+    if (!is_aux_log_enabled()) {
+        return;
+    }
+    clear_log_if_needed_for(FAS_LOG_FILE);
+    append_timestamped_log_line(FAS_LOG_FILE, message);
 }
 
 static void log_affinity_message(const char* message) {
@@ -209,6 +321,10 @@ static void log_affinity_message(const char* message) {
         if (prefix == "线程绑核应用") return 15000;
         if (prefix == "绑核失败") return 5000;
         if (prefix == "cpuset恢复") return 10000;
+        /* 撤回失败会在每轮调度里重试，必须限流，否则一局能刷几千行。 */
+        if (prefix == "恢复线程调度失败") return 10000;
+        if (prefix == "恢复线程优先级失败") return 10000;
+        if (prefix == "恢复线程绑核失败") return 10000;
         if (prefix == "锁定守护重打") return 15000;
         if (prefix == "线程采样") return 30000;
         if (prefix == "静态规则绑核") return 15000;
@@ -221,10 +337,9 @@ static void log_affinity_message(const char* message) {
         long long suppressed_since_ms;
         int suppressed_count;
     };
-    static std::mutex throttle_mutex;
     static std::unordered_map<std::string, AffinityLogThrottleState> throttle_states;
     long long now_ms = get_current_time_ms();
-    std::lock_guard<std::mutex> lock(throttle_mutex);
+    std::lock_guard<std::mutex> lock(g_affinity_log_throttle_mutex);
     std::string prefix = extract_affinity_log_prefix(message);
     long long min_interval_ms = get_affinity_log_min_interval_ms(prefix);
     if (min_interval_ms > 0 && !prefix.empty()) {
@@ -267,8 +382,10 @@ static void log_stats_message(const char* message) {
 }
 
 static void log_affinity_failure_once(const char* message) {
+    static std::mutex throttle_mutex;
     static long long last_log_ms = 0;
     long long now_ms = get_current_time_ms();
+    std::lock_guard<std::mutex> lock(throttle_mutex);
     if (now_ms - last_log_ms < 1000) {
         return;
     }
@@ -279,7 +396,7 @@ static void log_affinity_failure_once(const char* message) {
 static void emit_runtime_stats_snapshot(const char* current_app, long long now_ms) {
     static long long last_emit_ms = 0;
     static long long prev_loop_ticks = 0;
-    static long long prev_policy_eval_ticks = 0;
+    static long long prev_dynamic_tuning_ticks = 0;
     static long long prev_freq_update_count = 0;
     static long long prev_affinity_apply_count = 0;
     static long long prev_affinity_fail_count = 0;
@@ -287,13 +404,20 @@ static void emit_runtime_stats_snapshot(const char* current_app, long long now_m
     static long long prev_boost_request_count = 0;
     static long long prev_apply_settings_count = 0;
     static long long prev_foreground_switch_count = 0;
+    static long long prev_thread_proc_scan_count = 0;
+    static long long prev_thread_event_fork_count = 0;
+    static long long prev_thread_event_exit_count = 0;
+    static long long prev_thread_event_bind_count = 0;
+    static long long prev_thread_event_unbind_count = 0;
+    static long long prev_guard_yield_count = 0;
+    static long long prev_affinity_backoff_count = 0;
 
     if (now_ms - last_emit_ms < 5000) {
         return;
     }
 
     long long loop_ticks = g_runtime_stats.loop_ticks.load();
-    long long policy_eval_ticks = g_runtime_stats.policy_eval_ticks.load();
+    long long dynamic_tuning_ticks = g_runtime_stats.dynamic_tuning_ticks.load();
     long long freq_update_count = g_runtime_stats.freq_update_count.load();
     long long affinity_apply_count = g_runtime_stats.affinity_apply_count.load();
     long long affinity_fail_count = g_runtime_stats.affinity_fail_count.load();
@@ -301,30 +425,44 @@ static void emit_runtime_stats_snapshot(const char* current_app, long long now_m
     long long boost_request_count = g_runtime_stats.boost_request_count.load();
     long long apply_settings_count = g_runtime_stats.apply_settings_count.load();
     long long foreground_switch_count = g_runtime_stats.foreground_switch_count.load();
+    long long thread_proc_scan_count = g_runtime_stats.thread_proc_scan_count.load();
+    long long thread_event_fork_count = g_runtime_stats.thread_event_fork_count.load();
+    long long thread_event_exit_count = g_runtime_stats.thread_event_exit_count.load();
+    long long thread_event_bind_count = g_runtime_stats.thread_event_bind_count.load();
+    long long thread_event_unbind_count = g_runtime_stats.thread_event_unbind_count.load();
+    long long guard_yield_count = g_runtime_stats.guard_yield_count.load();
+    long long affinity_backoff_count = g_runtime_stats.affinity_backoff_count.load();
 
-    char msg[512];
+    char msg[768];
     safe_snprintf(
         msg,
         sizeof(msg),
-        "runtime_stats | app:%s | mode:%s | loops:%lld(+%lld) | policy:%lld(+%lld) | freq:%lld(+%lld) | aff_ok:%lld(+%lld) | aff_fail:%lld(+%lld) | guard:%lld(+%lld) | boost:%lld(+%lld) | apply:%lld(+%lld) | fg_switch:%lld(+%lld)",
+        "runtime_stats | app:%s | mode:%s | loops:%lld(+%lld) | dyn:%lld(+%lld) | freq:%lld(+%lld) | aff_ok:%lld(+%lld) | aff_fail:%lld(+%lld) | aff_backoff:%lld(+%lld) | guard:%lld(+%lld) | guard_yield:%lld(+%lld) | boost:%lld(+%lld) | apply:%lld(+%lld) | fg_switch:%lld(+%lld) | proc_scan:%lld(+%lld) | ev_fork:%lld(+%lld) | ev_exit:%lld(+%lld) | ev_bind:%lld(+%lld) | ev_unbind:%lld(+%lld)",
         current_app && current_app[0] ? current_app : "unknown",
         g_current_mode,
         loop_ticks, loop_ticks - prev_loop_ticks,
-        policy_eval_ticks, policy_eval_ticks - prev_policy_eval_ticks,
+        dynamic_tuning_ticks, dynamic_tuning_ticks - prev_dynamic_tuning_ticks,
         freq_update_count, freq_update_count - prev_freq_update_count,
         affinity_apply_count, affinity_apply_count - prev_affinity_apply_count,
         affinity_fail_count, affinity_fail_count - prev_affinity_fail_count,
+        affinity_backoff_count, affinity_backoff_count - prev_affinity_backoff_count,
         guard_reapply_count, guard_reapply_count - prev_guard_reapply_count,
+        guard_yield_count, guard_yield_count - prev_guard_yield_count,
         boost_request_count, boost_request_count - prev_boost_request_count,
         apply_settings_count, apply_settings_count - prev_apply_settings_count,
-        foreground_switch_count, foreground_switch_count - prev_foreground_switch_count);
+        foreground_switch_count, foreground_switch_count - prev_foreground_switch_count,
+        thread_proc_scan_count, thread_proc_scan_count - prev_thread_proc_scan_count,
+        thread_event_fork_count, thread_event_fork_count - prev_thread_event_fork_count,
+        thread_event_exit_count, thread_event_exit_count - prev_thread_event_exit_count,
+        thread_event_bind_count, thread_event_bind_count - prev_thread_event_bind_count,
+        thread_event_unbind_count, thread_event_unbind_count - prev_thread_event_unbind_count);
     log_stats_message(msg);
     trace_instantf("murong_stats",
-                   "app=%s mode=%s loops=%lld policy=%lld freq=%lld aff=%lld guard=%lld boost=%lld apply=%lld fg=%lld",
+                   "app=%s mode=%s loops=%lld dyn=%lld freq=%lld aff=%lld guard=%lld boost=%lld apply=%lld fg=%lld",
                    current_app && current_app[0] ? current_app : "unknown",
                    g_current_mode,
                    loop_ticks,
-                   policy_eval_ticks,
+                   dynamic_tuning_ticks,
                    freq_update_count,
                    affinity_apply_count,
                    guard_reapply_count,
@@ -333,20 +471,29 @@ static void emit_runtime_stats_snapshot(const char* current_app, long long now_m
                    foreground_switch_count);
 
     prev_loop_ticks = loop_ticks;
-    prev_policy_eval_ticks = policy_eval_ticks;
+    prev_dynamic_tuning_ticks = dynamic_tuning_ticks;
     prev_freq_update_count = freq_update_count;
     prev_affinity_apply_count = affinity_apply_count;
     prev_affinity_fail_count = affinity_fail_count;
     prev_guard_reapply_count = guard_reapply_count;
+    prev_guard_yield_count = guard_yield_count;
+    prev_affinity_backoff_count = affinity_backoff_count;
     prev_boost_request_count = boost_request_count;
     prev_apply_settings_count = apply_settings_count;
     prev_foreground_switch_count = foreground_switch_count;
+    prev_thread_proc_scan_count = thread_proc_scan_count;
+    prev_thread_event_fork_count = thread_event_fork_count;
+    prev_thread_event_exit_count = thread_event_exit_count;
+    prev_thread_event_bind_count = thread_event_bind_count;
+    prev_thread_event_unbind_count = thread_event_unbind_count;
     last_emit_ms = now_ms;
 }
 
 static void log_scheduler_probe_once(const char* message) {
+    static std::mutex throttle_mutex;
     static long long last_log_ms = 0;
     long long now_ms = get_current_time_ms();
+    std::lock_guard<std::mutex> lock(throttle_mutex);
     if (now_ms - last_log_ms < 5000) {
         return;
     }
@@ -360,3 +507,4 @@ static void log_affinity_success_once(pid_t tid, const char* mask_desc) {
     safe_snprintf(msg, sizeof(msg), "tid:%d | affinity_applied:%s", tid, mask_desc);
     log_scheduler_probe_once(msg);
 }
+

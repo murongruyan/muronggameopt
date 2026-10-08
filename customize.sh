@@ -69,6 +69,17 @@ com.tencent.tmgp.codev balance
 com.netease.yyslscn balance
 com.tencent.tmgp.dfm balance
 com.tencent.tmgp.cf balance" > "$CONFIG_DIR/mode.txt"
+
+    # FAS 频率按本机档位生成（gen_fas.sh）：
+    #   1. 目标 fas.json 已存在 -> 不覆盖（用户会在软件里手改 fas.json）
+    #   2. 同名模块上一次安装留下的 fas.json -> 原样继承
+    #   3. 才用 bin/cpu/fas.default.json 模板 + 本机真实档位表生成
+    #      频率一律吸附到 scaling_available/boost_frequencies 的并集，
+    #      读不到档位表时留空，绝不写入其它 SoC 的硬编码频率
+    if [ -f "$MODPATH/bin/cpu/gen_fas.sh" ]; then
+        ui_print "- 按本机 CPU 档位生成 FAS 频率配置"
+        sh "$MODPATH/bin/cpu/gen_fas.sh" "$MODPATH"
+    fi
 }
 
 print_modname
@@ -79,11 +90,14 @@ main
 
 # 修复权限设置
 set_perm_recursive "$MODPATH" 0 0 0755 0644
-set_perm "$MODPATH/bin/activity_diaodu" 0 2000 0755
+[ -f "$MODPATH/bin/activity_diaodu" ] && set_perm "$MODPATH/bin/activity_diaodu" 0 2000 0755
 set_perm "$MODPATH/service.sh" 0 0 0755
-set_perm "$MODPATH/activity_diaodu.rc" 0 0 0755
+[ -f "$MODPATH/activity_diaodu.rc" ] && set_perm "$MODPATH/activity_diaodu.rc" 0 0 0755
+[ -f "$MODPATH/hmbird_restore_once.sh" ] && set_perm "$MODPATH/hmbird_restore_once.sh" 0 0 0755
+[ -f "$MODPATH/fengchi_cleanup.sh" ] && set_perm "$MODPATH/fengchi_cleanup.sh" 0 0 0755
 set_perm "$MODPATH/vtools/init_vtools.sh" 0 0 0755
 set_perm "$MODPATH/vtools/powercfg.sh" 0 0 0755
+[ -f "$MODPATH/bin/sqlite3" ] && set_perm "$MODPATH/bin/sqlite3" 0 0 0755
 
 ui_print "生成scene控制文件"
 sh "$MODPATH/vtools/init_vtools.sh" "$(realpath $MODPATH/module.prop)"

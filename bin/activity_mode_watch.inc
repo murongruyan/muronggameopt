@@ -1,3 +1,81 @@
+static int read_policy_freq_default(int policy_num, const char* node_name, int fallback) {
+    if (policy_num < 0 || !node_name || !node_name[0]) {
+        return fallback;
+    }
+    char path[256];
+    safe_snprintf(path, sizeof(path),
+                  "/sys/devices/system/cpu/cpufreq/policy%d/%s",
+                  policy_num,
+                  node_name);
+    char buf[64] = {0};
+    if (!read_text_file(path, buf, sizeof(buf))) {
+        return fallback;
+    }
+    int value = atoi(buf);
+    return value > 0 ? value : fallback;
+}
+
+static void reset_cpuctl_group(CpuCtlGroup* group) {
+    if (!group) return;
+    group->uclamp_min = -1;
+    group->uclamp_max = -1;
+    group->latency_sensitive = -1;
+    group->shares = -1;
+}
+
+static void reset_mode_runtime_state() {
+    for (int i = 0; i < policy_count; i++) {
+        int policy_num = cpu_policies[i].policy_num;
+        int cluster_id = cpu_policies[i].cluster_id;
+        int hw_min_freq = cpu_policies[i].hw_min_freq;
+        int min_freq_fallback = cpu_policies[i].min_freq > 0 ? cpu_policies[i].min_freq : hw_min_freq;
+        int max_freq_fallback = cpu_policies[i].max_freq > 0 ? cpu_policies[i].max_freq : min_freq_fallback;
+        /* memset 会清掉配置态字段，这里先存后恢复（否则每次重载模式开关都会被重置）。 */
+        int respect_min_freq_in_game = cpu_policies[i].respect_min_freq_in_game;
+
+        memset(&cpu_policies[i], 0, sizeof(cpu_policies[i]));
+        cpu_policies[i].policy_num = policy_num;
+        cpu_policies[i].cluster_id = cluster_id;
+        cpu_policies[i].hw_min_freq = hw_min_freq;
+        cpu_policies[i].respect_min_freq_in_game = respect_min_freq_in_game;
+        cpu_policies[i].min_freq = read_policy_freq_default(policy_num, "scaling_min_freq", min_freq_fallback);
+        cpu_policies[i].max_freq = read_policy_freq_default(policy_num, "scaling_max_freq", max_freq_fallback);
+        if (cpu_policies[i].max_freq > 0 && cpu_policies[i].min_freq > cpu_policies[i].max_freq) {
+            cpu_policies[i].min_freq = cpu_policies[i].max_freq;
+        }
+        if (cpu_policies[i].min_freq <= 0 && hw_min_freq > 0) {
+            cpu_policies[i].min_freq = hw_min_freq;
+        }
+        if (cpu_policies[i].max_freq <= 0) {
+            cpu_policies[i].max_freq = cpu_policies[i].min_freq;
+        }
+    }
+
+    memset(&cpuset, 0, sizeof(cpuset));
+    reset_cpuctl_group(&cpuctl.background);
+    reset_cpuctl_group(&cpuctl.systembackground);
+    reset_cpuctl_group(&cpuctl.foreground);
+    reset_cpuctl_group(&cpuctl.topapp);
+    gpu.min_freq = 0;
+    gpu.max_freq = 0;
+    gpu.high_level = -1;
+    gpu.low_level = -1;
+    ddr.min_freq = 0;
+    ddr.max_freq = 0;
+    ddr.min_expr[0] = '\0';
+    ddr.max_expr[0] = '\0';
+
+    sched_boost_settings.top_boost = -1;
+    sched_boost_settings.sched_boost = -1;
+    sched_config_settings.downmigrate = -1;
+    sched_config_settings.upmigrate = -1;
+    sched_config_settings.group_downmigrate = -1;
+    sched_config_settings.group_upmigrate = -1;
+    stune_settings.prefer_idle = -1;
+    stune_settings.boost = -1;
+    g_extra_write_count = 0;
+}
+
 static bool parse_runtime_feature_flag_from_text(const char* text, const char* key, bool* out_value) {
     if (!text || !key || !key[0] || !out_value) return false;
     size_t key_len = strlen(key);
@@ -61,21 +139,28 @@ static bool apply_runtime_feature_overrides_from_shared_config(const char* mode)
         if (data) free(data);
         return false;
     }
+    /*
+     * sched.txt 里只保留总开关。
+     *
+     * 其余功能开关全部下沉到各自的配置文件：
+     *   动态调频 -> bin/cpu/dyn.json 的 enabled
+     *   FAS      -> bin/cpu/fas.json 的 defaults.enabled
+     *   自定义线程 / 动态线程 -> 各自的应用规则（6+2.json / *.threads.json）
+     *   场景分类 / 基础档 -> 默认跟随总开关（配置存在即生效）
+     * 每应用与场景分类规则只能"收窄"，不能把总开关关掉的功能重新打开
+     * （见 resolve_runtime_feature_switches_for_app 的 clamp）。
+     */
     bool value = false;
     if (parse_runtime_feature_flag_alias_from_text(data, "main", "scheduler_master", &value)) {
         g_mode_runtime_features.scheduler_master_enabled = value;
     }
-    if (parse_runtime_feature_flag_alias_from_text(data, "bpf", "dynamic_thread_scheduler", &value)) {
-        g_mode_runtime_features.bpf_thread_enabled = value;
-    } else if (parse_runtime_feature_flag_from_text(data, "bpf_thread", &value)) {
-        g_mode_runtime_features.bpf_thread_enabled = value;
-    }
-    if (parse_runtime_feature_flag_alias_from_text(data, "cat", "scene_category", &value)) {
-        g_mode_runtime_features.scene_category_enabled = value;
-    }
-    if (parse_runtime_feature_flag_alias_from_text(data, "base", "base_profile", &value)) {
-        g_mode_runtime_features.base_profile_enabled = value;
-    }
+    g_mode_runtime_features.dynamic_tuning_enabled = g_dyn_params.enabled;
+    g_mode_runtime_features.fas_enabled = g_fas_enabled_config;
+    g_mode_runtime_features.custom_thread_enabled = true;
+    g_mode_runtime_features.dynamic_thread_scheduler_enabled = true;
+    g_mode_runtime_features.scene_category_enabled = true;
+    g_mode_runtime_features.base_profile_enabled = true;
+    invalidate_runtime_feature_switch_cache();
     free(data);
     return true;
 }
@@ -146,60 +231,56 @@ void load_mode_settings_json(const char* mode) {
         }
     }
 
-    // 免费版只保留规则线程与基础策略，不启用动态线程学习器。
-    g_dyn_params.enabled = 0;
-    g_dyn_params.target_load = 85;
-    g_dyn_params.load_margin = 5;
-    g_dyn_params.debug_log = 0;
-    g_dyn_params.low_load_lock_threshold = 0;
-    g_dyn_params.load_ceiling_stages.clear();
+    // Reset dynamic tuning params to defaults
     g_mode_runtime_features.scheduler_master_enabled = true;
-    g_mode_runtime_features.bpf_thread_enabled = true;
+    g_mode_runtime_features.dynamic_tuning_enabled = true;
+    g_mode_runtime_features.fas_enabled = true;
+    g_mode_runtime_features.custom_thread_enabled = true;
+    g_mode_runtime_features.dynamic_thread_scheduler_enabled = true;
     g_mode_runtime_features.scene_category_enabled = true;
     g_mode_runtime_features.base_profile_enabled = true;
-    gpu.min_freq = 0;
-    gpu.max_freq = 0;
-    gpu.high_level = -1;
-    gpu.low_level = -1;
-    ddr.min_freq = 0;
-    ddr.max_freq = 0;
-    ddr.min_expr[0] = '\0';
-    ddr.max_expr[0] = '\0';
+    g_scheduler_session_config.learning_duration_ms = 120 * 1000;
+    g_scheduler_session_config.guard_interval_ms = 1000;
+    reset_mode_runtime_state();
 
-    cJSON* features = cJSON_GetObjectItem(mode_obj, "features");
-    if (features && cJSON_IsObject(features)) {
-        cJSON* scheduler_master = cJSON_GetObjectItem(features, "scheduler_master");
-        if (scheduler_master &&
-            (cJSON_IsBool(scheduler_master) || cJSON_IsNumber(scheduler_master))) {
-            g_mode_runtime_features.scheduler_master_enabled = scheduler_master->valueint != 0;
-        }
-        cJSON* bpf_thread = cJSON_GetObjectItem(features, "bpf_thread");
-        if (!bpf_thread) {
-            bpf_thread = cJSON_GetObjectItem(features, "dynamic_thread_scheduler");
-        }
-        if (bpf_thread &&
-            (cJSON_IsBool(bpf_thread) || cJSON_IsNumber(bpf_thread))) {
-            g_mode_runtime_features.bpf_thread_enabled = bpf_thread->valueint != 0;
-        }
-        cJSON* scene_category = cJSON_GetObjectItem(features, "scene_category");
-        if (scene_category &&
-            (cJSON_IsBool(scene_category) || cJSON_IsNumber(scene_category))) {
-            g_mode_runtime_features.scene_category_enabled = scene_category->valueint != 0;
-        }
-        cJSON* base_profile = cJSON_GetObjectItem(features, "base_profile");
-        if (base_profile &&
-            (cJSON_IsBool(base_profile) || cJSON_IsNumber(base_profile))) {
-            g_mode_runtime_features.base_profile_enabled = base_profile->valueint != 0;
-        }
-    }
+    /*
+     * 动态调频参数来自独立的 bin/cpu/dyn.json（不再放在 cpu.json 里）。
+     * 这里重新载入，保证改配置后热重载也能生效。
+     */
+    load_dyn_config_json(mode);
+    g_mode_runtime_features.dynamic_tuning_enabled = g_dyn_params.enabled;
+    /*
+     * 甜点频率与深睡地板都按档位不同，切档位必须一起重解析。
+     * 历史 bug：这里只重载了甜点，深睡地板要等 fas.json 变更才刷新，
+     * 导致切到 performance 后地板仍是上一个档位的值（例如 883200）。
+     */
+    load_fas_sweetspot_for_mode(mode);
+    load_fas_deep_floor_for_mode(mode);
+
+    /* cpu.json 里的 features 开关块已废弃：开关只认总开关与各功能自己的配置。 */
 
     apply_runtime_feature_overrides_from_shared_config(mode);
 
-    for (int i = 0; i < cluster_count; i++) {
-        g_cluster_dyn_params[i] = g_dyn_params;
-    }
+    load_scheduler_session_config_json(mode);
+    g_scheduler_session_config_base = g_scheduler_session_config;
+    /* 开关/规则/档位都变了，每应用的生效开关缓存要作废 */
+    invalidate_runtime_feature_switch_cache();
 
-    g_extra_write_count = 0;
+    /* 每簇参数已由 load_dyn_config_json() 填好（全局 + clusters 覆盖） */
+
+    /*
+     * 模式层默认：respect_min_freq_in_game 写在本模式下时，套用到该模式的所有 policy。
+     * policy 对象里各自再写一次可以覆盖（见下面 policy 层解析）。
+     */
+    {
+        cJSON* mode_respect = cJSON_GetObjectItem(mode_obj, "respect_min_freq_in_game");
+        if (mode_respect && (cJSON_IsBool(mode_respect) || cJSON_IsNumber(mode_respect))) {
+            int on = cJSON_IsTrue(mode_respect) || mode_respect->valueint != 0;
+            for (int k = 0; k < policy_count; k++) {
+                cpu_policies[k].respect_min_freq_in_game = on;
+            }
+        }
+    }
 
     // Parse CPU policies
     cJSON* policies = cJSON_GetObjectItem(mode_obj, "cpu_policies");
@@ -239,6 +320,18 @@ void load_mode_settings_json(const char* mode) {
                                 if (min_freq && cJSON_IsNumber(min_freq)) {
                                     p->min_freq = min_freq->valueint;
                                 }
+
+                                /*
+                                 * respect_min_freq_in_game：
+                                 *   1/true = 游戏里把本档位 min_freq 当硬地板（高刷场景想要高地板时用）
+                                 *   0/false/不写 = 沿用历史省电行为（游戏里下限退到硬件最低档）
+                                 */
+                                cJSON* respect = cJSON_GetObjectItem(policy, "respect_min_freq_in_game");
+                                if (respect && (cJSON_IsBool(respect) || cJSON_IsNumber(respect))) {
+                                    p->respect_min_freq_in_game = cJSON_IsTrue(respect) || respect->valueint != 0;
+                                }
+
+                                /* optimum_freq 已搬到 fas.json（FAS 甜点频率），这里不再读取 */
 
                                 // Set governor params
                                 cJSON* params = cJSON_GetObjectItem(policy, "params");
@@ -509,26 +602,28 @@ void load_mode_settings_json(const char* mode) {
         }
     }
 
-    // Dynamic boost switch has been replaced by g_dyn_params, kept for legacy JSON compatibility
-    cJSON* dynamic_boost = cJSON_GetObjectItem(mode_obj, "dynamic_boost");
-    if (dynamic_boost && cJSON_IsTrue(dynamic_boost)) {
-        g_dyn_params.enabled = 1;
-    } else if (dynamic_boost && cJSON_IsFalse(dynamic_boost)) {
-        g_dyn_params.enabled = 0;
-    }
-
-    if (g_dyn_params.debug_log) {
-        char log_msg[256];
-        safe_snprintf(log_msg, sizeof(log_msg), "模式 %s 的线程调度配置已启用", mode);
-        log_debug_message(log_msg);
+    /*
+     * 功能开关汇总：写主日志（档位加载时才发生，不会刷屏）。
+     *
+     * 之前这里用 log_debug_message 连打两行，而 log_debug_message 有 1 秒全局节流，
+     * 第二行永远被吃掉，等于没有这条日志。现在汇总行走主日志，始终可见。
+     */
+    {
+        /* 打印"生效值"而不是"存储值"：总开关关掉时解析结果全为 0，
+           打印存储值会让人以为功能还开着。 */
+        RuntimeFeatureSwitches eff = normalize_runtime_feature_switches(g_mode_runtime_features);
+        char log_msg[320];
         safe_snprintf(log_msg, sizeof(log_msg),
-                      "模式 %s 的功能开关 | master:%d | bpf:%d | scene:%d | base:%d",
+                      "模式 %s 的功能开关(生效) | master:%d | dynamic_tuning:%d | fas:%d | custom_thread:%d | dynamic_thread:%d | scene:%d | base:%d",
                       mode,
-                      g_mode_runtime_features.scheduler_master_enabled ? 1 : 0,
-                      g_mode_runtime_features.bpf_thread_enabled ? 1 : 0,
-                      g_mode_runtime_features.scene_category_enabled ? 1 : 0,
-                      g_mode_runtime_features.base_profile_enabled ? 1 : 0);
-        log_debug_message(log_msg);
+                      eff.scheduler_master_enabled ? 1 : 0,
+                      eff.dynamic_tuning_enabled ? 1 : 0,
+                      eff.fas_enabled ? 1 : 0,
+                      eff.custom_thread_enabled ? 1 : 0,
+                      eff.dynamic_thread_scheduler_enabled ? 1 : 0,
+                      eff.scene_category_enabled ? 1 : 0,
+                      eff.base_profile_enabled ? 1 : 0);
+        log_message(log_msg);
     }
 
     // Unified resource cleanup
@@ -557,29 +652,39 @@ static const long long kConfigReloadCooldownMs = 3000;
 
 static ConfigReloadWatchState g_mode_reload_watch = {};
 static ConfigReloadWatchState g_scene_categories_reload_watch = {};
+static ConfigReloadWatchState g_skip_processes_reload_watch = {};
+static ConfigReloadWatchState g_fas_reload_watch = {};
+static ConfigReloadWatchState g_dyn_reload_watch = {};
 static ConfigReloadWatchState g_thread_signature_reload_watch = {};
 static ConfigReloadWatchState g_thread_persistent_reload_watch = {};
 static ConfigReloadWatchState g_runtime_features_reload_watch = {};
+static ConfigReloadWatchState g_scheduler_reload_watch = {};
 static ConfigReloadWatchState g_cpu_reload_watch = {};
+
+static void build_persistent_thread_override_path(char* out, size_t out_size) {
+    if (!out || out_size == 0) return;
+    safe_snprintf(out, out_size, "%s%s.persistent.json", CPU_CONFIG_DIR, cpu_model);
+}
 
 static bool compute_file_content_hash64(const char* path, uint64_t* out_hash) {
     if (!path || !path[0] || !out_hash || !file_exists(path)) {
         return false;
     }
 
-    char* data = NULL;
-    size_t len = 0;
-    if (!read_file_all(path, &data, &len) || !data) {
-        if (data) free(data);
-        return false;
-    }
-
+    FILE* fp = fopen(path, "rb");
+    if (!fp) return false;
     uint64_t hash = 1469598103934665603ULL;
-    for (size_t i = 0; i < len; i++) {
-        hash ^= (unsigned char)data[i];
-        hash *= 1099511628211ULL;
+    unsigned char buffer[4096];
+    size_t bytes_read = 0;
+    while ((bytes_read = fread(buffer, 1, sizeof(buffer), fp)) > 0) {
+        for (size_t i = 0; i < bytes_read; i++) {
+            hash ^= buffer[i];
+            hash *= 1099511628211ULL;
+        }
     }
-    free(data);
+    const bool read_ok = ferror(fp) == 0;
+    fclose(fp);
+    if (!read_ok) return false;
     *out_hash = hash;
     return true;
 }
@@ -644,11 +749,19 @@ static bool should_reload_pending_config(ConfigReloadWatchState* state, const ch
 void prime_config_reload_watch_hashes() {
     prime_config_reload_watch_state(&g_mode_reload_watch, MODE_FILE);
     prime_config_reload_watch_state(&g_scene_categories_reload_watch, SCENE_CATEGORIES_FILE);
+    prime_config_reload_watch_state(
+        &g_skip_processes_reload_watch,
+        SCHEDULER_SKIP_PROCESSES_FILE);
+    prime_config_reload_watch_state(&g_fas_reload_watch, FAS_CONFIG_FILE);
+    prime_config_reload_watch_state(&g_dyn_reload_watch, DYN_CONFIG_FILE);
     prime_config_reload_watch_state(&g_thread_signature_reload_watch, get_thread_signature_config_path());
+
     char persistent_path[256];
     build_persistent_thread_override_path(persistent_path, sizeof(persistent_path));
     prime_config_reload_watch_state(&g_thread_persistent_reload_watch, persistent_path);
+
     prime_config_reload_watch_state(&g_runtime_features_reload_watch, get_runtime_feature_config_path());
+    prime_config_reload_watch_state(&g_scheduler_reload_watch, get_scheduler_config_path());
     prime_config_reload_watch_state(&g_cpu_reload_watch, get_cpu_config_path());
 }
 
@@ -675,6 +788,27 @@ void process_pending_config_reloads() {
         load_scene_categories_config();
     }
 
+    if (should_reload_pending_config(
+            &g_skip_processes_reload_watch,
+            SCHEDULER_SKIP_PROCESSES_FILE)) {
+        log_message("进程调度排除名单已变更，正在热重载");
+        load_scheduler_skip_processes_config();
+        if (refresh_scheduler_skip_process_state()) {
+            handle_scheduler_skip_process_transition();
+        }
+    }
+
+    if (should_reload_pending_config(&g_fas_reload_watch, FAS_CONFIG_FILE)) {
+        log_message("FAS 配置内容已变更，正在热重载");
+        load_fas_config();
+    }
+
+    if (should_reload_pending_config(&g_dyn_reload_watch, DYN_CONFIG_FILE)) {
+        log_message("动态调频配置内容已变更，正在热重载");
+        load_dyn_config_json(g_current_mode);
+        g_mode_runtime_features.dynamic_tuning_enabled = g_dyn_params.enabled;
+    }
+
     const char* runtime_feature_config_path = get_runtime_feature_config_path();
     if (should_reload_pending_config(&g_runtime_features_reload_watch, runtime_feature_config_path)) {
         log_message("调度开关配置内容已变更，正在热重载");
@@ -694,6 +828,13 @@ void process_pending_config_reloads() {
     if (should_reload_pending_config(&g_thread_persistent_reload_watch, persistent_path)) {
         log_message("设备持久规则覆盖内容已变更，正在热重载");
         load_thread_signature_config();
+        UnifiedScheduler::reload_thread_config_now();
+    }
+
+    const char* scheduler_config_path = get_scheduler_config_path();
+    if (should_reload_pending_config(&g_scheduler_reload_watch, scheduler_config_path)) {
+        log_message("会话配置内容已变更，正在热重载");
+        load_scheduler_session_config_json(g_current_mode);
         UnifiedScheduler::reload_thread_config_now();
     }
 
@@ -728,20 +869,32 @@ void handle_inotify_events(int inotify_fd, int wd_general_config_dir, int wd_cpu
                     mark_config_reload_pending(&g_mode_reload_watch);
                 } else if (strcmp(event->name, "categories.json") == 0) {
                     mark_config_reload_pending(&g_scene_categories_reload_watch);
+                } else if (event_name_matches_config_path(
+                               event->name,
+                               SCHEDULER_SKIP_PROCESSES_FILE)) {
+                    mark_config_reload_pending(&g_skip_processes_reload_watch);
                 } else if (event_name_matches_config_path(event->name, get_runtime_feature_config_path())) {
                     mark_config_reload_pending(&g_runtime_features_reload_watch);
                 }
-            } else if (event->wd == wd_cpu_config_dir && event->len > 0) {
-                if (event_name_matches_config_path(event->name, get_thread_signature_config_path())) {
+            }
+            else if (event->wd == wd_cpu_config_dir && event->len > 0) {
+                if (strcmp(event->name, "fas.json") == 0) {
+                    mark_config_reload_pending(&g_fas_reload_watch);
+                } else if (strcmp(event->name, "dyn.json") == 0) {
+                    mark_config_reload_pending(&g_dyn_reload_watch);
+                } else if (event_name_matches_config_path(event->name, get_thread_signature_config_path())) {
                     mark_config_reload_pending(&g_thread_signature_reload_watch);
                 } else {
+                    // 检查是否触发了设备级 persistent 规则覆盖文件变更
                     char persistent_path[256];
                     build_persistent_thread_override_path(persistent_path, sizeof(persistent_path));
                     if (event_name_matches_config_path(event->name, persistent_path)) {
                         mark_config_reload_pending(&g_thread_persistent_reload_watch);
                     }
                 }
-                if (event_name_matches_config_path(event->name, get_cpu_config_path())) {
+                if (event_name_matches_config_path(event->name, get_scheduler_config_path())) {
+                    mark_config_reload_pending(&g_scheduler_reload_watch);
+                } else if (event_name_matches_config_path(event->name, get_cpu_config_path())) {
                     mark_config_reload_pending(&g_cpu_reload_watch);
                 }
             }

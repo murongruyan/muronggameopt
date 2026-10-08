@@ -48,34 +48,53 @@ void apply_cpuctl_settings(const CpuCtlSettings* settings) {
 }
 
 void apply_settings() {
+    if (is_scheduler_skip_process_active()) {
+        return;
+    }
     g_runtime_stats.apply_settings_count.fetch_add(1);
 
     const bool base_profile_enabled = is_base_profile_runtime_enabled();
 
     if (base_profile_enabled) {
-        lock_val("/dev/cpuset/background/cpus", cpuset.background);
-        lock_val("/dev/cpuset/system-background/cpus", cpuset.systembackground);
-        lock_val("/dev/cpuset/foreground/cpus", cpuset.foreground);
-        lock_val("/dev/cpuset/top-app/cpus", cpuset.topapp);
+        if (cpuset.background[0] != '\0') {
+            lock_val("/dev/cpuset/background/cpus", cpuset.background);
+        }
+        if (cpuset.systembackground[0] != '\0') {
+            lock_val("/dev/cpuset/system-background/cpus", cpuset.systembackground);
+        }
+        if (cpuset.foreground[0] != '\0') {
+            lock_val("/dev/cpuset/foreground/cpus", cpuset.foreground);
+        }
+        if (cpuset.topapp[0] != '\0') {
+            lock_val("/dev/cpuset/top-app/cpus", cpuset.topapp);
+        }
     }
 
     for (int i = 0; i < policy_count; i++) {
         CpuPolicy* policy = &cpu_policies[i];
         char path[256];
 
-        safe_snprintf(path, sizeof(path),
-            "/sys/devices/system/cpu/cpufreq/policy%d/scaling_max_freq",
-            policy->policy_num);
-        char max_freq_str[32];
-        safe_snprintf(max_freq_str, sizeof(max_freq_str), "%d", policy->max_freq);
-        lock_val(path, max_freq_str);
+        /*
+         * 频率为空只代表"这一档不限制频率"，不代表跳过调速器和参数。
+         * 之前用 continue 把三者一起跳过，导致界面上改调速器参数偶发不生效。
+         */
+        if (policy->max_freq > 0) {
+            safe_snprintf(path, sizeof(path),
+                "/sys/devices/system/cpu/cpufreq/policy%d/scaling_max_freq",
+                policy->policy_num);
+            char max_freq_str[32];
+            safe_snprintf(max_freq_str, sizeof(max_freq_str), "%d", policy->max_freq);
+            lock_val(path, max_freq_str);
+        }
 
-        safe_snprintf(path, sizeof(path),
-            "/sys/devices/system/cpu/cpufreq/policy%d/scaling_min_freq",
-            policy->policy_num);
-        char min_freq_str[32];
-        safe_snprintf(min_freq_str, sizeof(min_freq_str), "%d", policy->min_freq);
-        lock_val(path, min_freq_str);
+        if (policy->min_freq > 0) {
+            safe_snprintf(path, sizeof(path),
+                "/sys/devices/system/cpu/cpufreq/policy%d/scaling_min_freq",
+                policy->policy_num);
+            char min_freq_str[32];
+            safe_snprintf(min_freq_str, sizeof(min_freq_str), "%d", policy->min_freq);
+            lock_val(path, min_freq_str);
+        }
 
         if (policy->governor[0] != 0) {
             if (!is_governor_supported(policy->policy_num, policy->governor)) {

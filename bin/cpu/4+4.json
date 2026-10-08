@@ -12,26 +12,20 @@
         "match": [
           "UnityMain"
         ],
-        "cpus": "7",
-        "fifo": 1
+        "cpus": "7"
       },
       "gfx": {
         "match": [
           "UnityGfx*"
         ],
-        "cpus": "4-7",
-        "rr": 10
+        "cpus": "5"
       },
       "worker": {
         "match": [
           "*worker*"
         ],
         "limit": 3,
-        "cpus": "4-5",
-        "rr": 5
-      },
-      "other": {
-        "cpus": "1-4"
+        "cpus": "3-4"
       }
     },
     {
@@ -92,29 +86,20 @@
         "match": [
           "UnityMain"
         ],
-        "cpus": "7",
-        "fifo": 1
+        "cpus": "7"
       },
       "gfx": {
         "match": [
           "UnityGfx*"
         ],
-        "cpus": "4-7",
-        "rr": 10
+        "cpus": "5"
       },
       "worker": {
         "match": [
           "Job.worker*"
         ],
         "limit": 3,
-        "cpus": "4-5",
-        "rr": 5
-      },
-      "extra:[Thread 1x1xb411]": {
-        "cpus": "7"
-      },
-      "other": {
-        "cpus": "4-6"
+        "cpus": "3-4"
       }
     },
     {
@@ -130,18 +115,13 @@
           "GameThread",
           "Thread-[0-20]"
         ],
-        "cpus": "7",
-        "rr": 10
+        "cpus": "7"
       },
       "render": {
         "match": [
           "*rthread*"
         ],
-        "cpus": "4-5",
-        "rr": 1
-      },
-      "other": {
-        "cpus": "4-6"
+        "cpus": "5"
       }
     },
     {
@@ -193,8 +173,7 @@
           "GameThread",
           "UnityMain"
         ],
-        "cpus": "7",
-        "fifo": 1
+        "cpus": "7"
       },
       "render": {
         "match": [
@@ -202,7 +181,7 @@
           "RHIThread*"
         ],
         "limit": 2,
-        "cpus": "4-7"
+        "cpus": "5"
       },
       "worker": {
         "match": [
@@ -211,19 +190,13 @@
           "AsyncLoading*"
         ],
         "limit": 2,
-        "cpus": "6-7",
-        "rr": 10
+        "cpus": "3-4"
       },
       "extra:[task*]": {
-        "limit": 2,
-        "cpus": "4-5"
+        "limit": 2
       },
       "extra:[*loading]": {
-        "limit": 2,
-        "cpus": "0-4"
-      },
-      "other": {
-        "cpus": "4-5"
+        "limit": 2
       }
     },
     {

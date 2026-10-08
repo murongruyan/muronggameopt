@@ -73,6 +73,11 @@ jobs:
           RELEASE_NAME="${INPUT_RELEASE_NAME:-${DEFAULT_RELEASE_NAME}}"
           ZIP_FILE_NAME="murongdiaodu-free-module-${MODULE_VERSION}.zip"
           ARTIFACT_NAME="murongdiaodu-free-module-${MODULE_VERSION}"
+          # 纯线程版：与免费版是替换关系（id 相同），只换 name 与频率链
+          THREAD_RELEASE_TAG="慕容线程"
+          THREAD_RELEASE_NAME="慕容线程"
+          THREAD_ZIP_FILE="murongdiaodu-free-thread-module-${MODULE_VERSION}.zip"
+          THREAD_ARTIFACT_NAME="murongdiaodu-free-thread-module-${MODULE_VERSION}"
           RAW_BASE_URL="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}"
           RELEASE_NOTES_FILE="${RUNNER_TEMP}/free-module-release-notes.txt"
 
@@ -89,6 +94,10 @@ jobs:
             echo "RELEASE_NAME=${RELEASE_NAME}"
             echo "ZIP_FILE_NAME=${ZIP_FILE_NAME}"
             echo "ARTIFACT_NAME=${ARTIFACT_NAME}"
+            echo "THREAD_RELEASE_TAG=${THREAD_RELEASE_TAG}"
+            echo "THREAD_RELEASE_NAME=${THREAD_RELEASE_NAME}"
+            echo "THREAD_ZIP_FILE=${THREAD_ZIP_FILE}"
+            echo "THREAD_ARTIFACT_NAME=${THREAD_ARTIFACT_NAME}"
             echo "RAW_BASE_URL=${RAW_BASE_URL}"
             echo "RELEASE_NOTES_FILE=${RELEASE_NOTES_FILE}"
           } >> "${GITHUB_ENV}"
@@ -110,6 +119,8 @@ jobs:
           version_code = int(os.environ["MODULE_VERSION_CODE"])
           release_tag = os.environ["RELEASE_TAG"]
           zip_file_name = os.environ["ZIP_FILE_NAME"]
+          thread_tag = os.environ["THREAD_RELEASE_TAG"]
+          thread_zip = os.environ["THREAD_ZIP_FILE"]
           raw_base_url = os.environ["RAW_BASE_URL"]
           repo = os.environ["GITHUB_REPOSITORY"]
           changelog_notes = os.environ.get("INPUT_CHANGELOG_NOTES", "").strip() or f"Release {version}"
@@ -142,6 +153,18 @@ jobs:
           }
           Path("update3.json").write_text(
             json.dumps(update_json, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+          )
+
+          # 纯线程版单独一条更新链：否则线程版用户更新后会被换成完整版
+          thread_json = {
+            "version": version,
+            "versionCode": version_code,
+            "zipUrl": f"https://github.com/{repo}/releases/download/{thread_tag}/{thread_zip}",
+            "changelog": f"{raw_base_url}/changelog.txt",
+          }
+          Path("update4.json").write_text(
+            json.dumps(thread_json, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
           )
 
@@ -179,7 +202,9 @@ jobs:
 
           APP_DIR="线程源码"
           BIN_DIR="bin"
-          CXX_SHARED_SO="$SYSROOT/usr/lib/aarch64-linux-android/libc++_shared.so"
+          FAS_DIR="$BIN_DIR/fas"
+          BUILD_DIR="dist/build"
+          mkdir -p "$BUILD_DIR/fas"
           test -f "$APP_DIR/monitor.skel.h"
 
           clang -target bpf -g -O2 -D__TARGET_ARCH_arm64 \
@@ -193,29 +218,96 @@ jobs:
             --sysroot="$SYSROOT" \
             -I"$APP_DIR" \
             -I"$APP_DIR/bpf" \
+            -I"$BIN_DIR" \
+            -I"$FAS_DIR" \
             -std=c++17 -Wall -O3 -fPIE \
             -c "$BIN_DIR/activity_diaodu.cpp" \
-            -o "$BIN_DIR/activity_diaodu.o"
+            -o "$BUILD_DIR/activity_diaodu.o"
 
           "$CLANG" \
             --target="$TARGET" \
             --sysroot="$SYSROOT" \
             -Wall -O3 -fPIE \
             -c "$BIN_DIR/cJSON.c" \
-            -o "$BIN_DIR/cJSON.o"
+            -o "$BUILD_DIR/cJSON.o"
+
+          for unit in fas_config fas_sampling fas_target fas_engine; do
+            "$CLANGXX" \
+              --target="$TARGET" \
+              --sysroot="$SYSROOT" \
+              -I"$APP_DIR" \
+              -I"$BIN_DIR" \
+              -I"$FAS_DIR" \
+              -std=c++17 -Wall -O3 -fPIE \
+              -c "$FAS_DIR/${unit}.cpp" \
+              -o "$BUILD_DIR/fas/${unit}.o"
+          done
 
           "$CLANGXX" \
             --target="$TARGET" \
             --sysroot="$SYSROOT" \
             -fPIE -pie \
+            -static-libstdc++ \
             -L"$APP_DIR" \
             -o "$BIN_DIR/activity_diaodu" \
-            "$BIN_DIR/activity_diaodu.o" \
-            "$BIN_DIR/cJSON.o" \
-            -lbpf -lz -lc++_shared -lc -lm -ldl -latomic
+            "$BUILD_DIR/activity_diaodu.o" \
+            "$BUILD_DIR/cJSON.o" \
+            "$BUILD_DIR/fas/fas_config.o" \
+            "$BUILD_DIR/fas/fas_sampling.o" \
+            "$BUILD_DIR/fas/fas_target.o" \
+            "$BUILD_DIR/fas/fas_engine.o" \
+            -lbpf -lz -lc -lm -ldl -latomic
 
-          cp "$CXX_SHARED_SO" "$BIN_DIR/libc++_shared.so"
-          rm -f "$BIN_DIR/activity_diaodu.o" "$BIN_DIR/cJSON.o"
+          # ---------- 纯线程版（等价 bin/build.bat thread）----------
+          # 关键：-DMURONG_THREAD_ONLY，且【不编】fas_config/fas_sampling/fas_target/fas_engine，
+          # 改编 fas/fas_thread_stub.cpp（空桩）。只换 fas.json 不够 —— 那样二进制里仍带完整 FAS 引擎。
+          # 产物写到 bin/ 下（Package 步骤会 rm -rf dist），中间产物与完整版分开命名。
+          test -f "$FAS_DIR/fas_thread_stub.cpp"
+          mkdir -p "$BUILD_DIR/thread"
+
+          "$CLANGXX" \
+            --target="$TARGET" \
+            --sysroot="$SYSROOT" \
+            -I"$APP_DIR" \
+            -I"$APP_DIR/bpf" \
+            -I"$BIN_DIR" \
+            -I"$FAS_DIR" \
+            -DMURONG_THREAD_ONLY \
+            -std=c++17 -Wall -O3 -fPIE -Wno-unused-function \
+            -c "$BIN_DIR/activity_diaodu.cpp" \
+            -o "$BUILD_DIR/thread/activity_diaodu.thread.o"
+
+          "$CLANG" \
+            --target="$TARGET" \
+            --sysroot="$SYSROOT" \
+            -Wall -O3 -fPIE \
+            -c "$BIN_DIR/cJSON.c" \
+            -o "$BUILD_DIR/thread/cJSON.thread.o"
+
+          "$CLANGXX" \
+            --target="$TARGET" \
+            --sysroot="$SYSROOT" \
+            -I"$APP_DIR" \
+            -I"$BIN_DIR" \
+            -I"$FAS_DIR" \
+            -DMURONG_THREAD_ONLY \
+            -std=c++17 -Wall -O3 -fPIE \
+            -c "$FAS_DIR/fas_thread_stub.cpp" \
+            -o "$BUILD_DIR/thread/fas_thread_stub.o"
+
+          "$CLANGXX" \
+            --target="$TARGET" \
+            --sysroot="$SYSROOT" \
+            -fPIE -pie \
+            -static-libstdc++ \
+            -L"$APP_DIR" \
+            -o "$BIN_DIR/activity_diaodu.thread" \
+            "$BUILD_DIR/thread/activity_diaodu.thread.o" \
+            "$BUILD_DIR/thread/cJSON.thread.o" \
+            "$BUILD_DIR/thread/fas_thread_stub.o" \
+            -lbpf -lz -lc -lm -ldl -latomic
+
+          ls -l "$BIN_DIR/activity_diaodu" "$BIN_DIR/activity_diaodu.thread"
 
       - name: Package Flashable Zip
         shell: bash
@@ -229,17 +321,123 @@ jobs:
           cp customize.sh dist/module/
           cp service.sh dist/module/
           cp activity_diaodu.rc dist/module/
+          cp fengchi_cleanup.sh dist/module/
+          cp hmbird_restore_once.sh dist/module/
           cp -a META-INF/. dist/module/META-INF/
           cp -a config/. dist/module/config/
           cp -a vtools/. dist/module/vtools/
           cp bin/activity_diaodu dist/module/bin/
           cp bin/libbpf.so dist/module/bin/
           cp bin/monitor.bpf.o dist/module/bin/
-          cp bin/libc++_shared.so dist/module/bin/
+          cp bin/sqlite3 dist/module/bin/
           cp bin/cpu/*.json dist/module/bin/cpu/
+          # 纯线程版专用模板不进完整版包
+          rm -f dist/module/bin/cpu/fas.threads.json dist/module/bin/cpu/dyn.threads.json
+          # 带上按本机档位生成 fas.json 的脚本，否则 customize.sh 的 -f 判定会跳过生成
+          cp bin/cpu/gen_fas.sh dist/module/bin/cpu/
 
           cd dist/module
           zip -r "../${ZIP_FILE_NAME}" .
+          cd ../..
+
+          # ---------- 纯线程版包（替换关系：id 相同，只换 name 与频率链）----------
+          mkdir -p dist/module-thread/META-INF dist/module-thread/bin/cpu dist/module-thread/config dist/module-thread/vtools
+
+          cp module.prop dist/module-thread/
+          cp customize.sh dist/module-thread/
+          cp service.sh dist/module-thread/
+          cp activity_diaodu.rc dist/module-thread/
+          cp fengchi_cleanup.sh dist/module-thread/
+          cp hmbird_restore_once.sh dist/module-thread/
+          cp -a META-INF/. dist/module-thread/META-INF/
+          cp -a config/. dist/module-thread/config/
+          cp -a vtools/. dist/module-thread/vtools/
+          cp bin/activity_diaodu.thread dist/module-thread/bin/activity_diaodu
+          cp bin/libbpf.so dist/module-thread/bin/
+          cp bin/monitor.bpf.o dist/module-thread/bin/
+          cp bin/sqlite3 dist/module-thread/bin/
+          cp bin/cpu/*.json dist/module-thread/bin/cpu/
+          cp bin/cpu/gen_fas.sh dist/module-thread/bin/cpu/
+
+          # dyn.json -> enabled:0（缺文件时 daemon 默认 enabled=true，必须显式关）
+          cp dist/module-thread/bin/cpu/dyn.threads.json dist/module-thread/bin/cpu/dyn.json
+          rm -f dist/module-thread/bin/cpu/dyn.threads.json
+          # FAS 显式关闭：apps 为空、defaults.enabled=0，不带完整 FAS 应用规则
+          rm -f dist/module-thread/bin/cpu/fas.default.json
+          mv dist/module-thread/bin/cpu/fas.threads.json dist/module-thread/bin/cpu/fas.default.json
+
+          sed -i 's/^name=.*/name=慕容线程/' dist/module-thread/module.prop
+          sed -i "s|^updateJson=.*|updateJson=${RAW_BASE_URL}/update4.json|" dist/module-thread/module.prop
+
+          cd dist/module-thread
+          zip -r "../${THREAD_ZIP_FILE}" .
+
+      - name: Verify Module Zips
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TOOLCHAIN="$ANDROID_SDK_ROOT/ndk/${ANDROID_NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64"
+
+          unzip -Z1 "dist/${ZIP_FILE_NAME}" > dist/free-files.txt
+          grep -qx 'bin/activity_diaodu' dist/free-files.txt
+          grep -qx 'bin/sqlite3' dist/free-files.txt
+          grep -qx 'bin/cpu/6+2.json' dist/free-files.txt
+          grep -qx 'bin/cpu/gen_fas.sh' dist/free-files.txt
+          grep -qx 'bin/cpu/dyn.json' dist/free-files.txt
+          grep -qx 'bin/cpu/fas.default.json' dist/free-files.txt
+          grep -qx 'fengchi_cleanup.sh' dist/free-files.txt
+          if grep -Eq '^(bin/cpu/fas\.json|bin/cpu/(fas|dyn)\.threads\.json|bin/activity_diaodu\.thread$)' dist/free-files.txt; then
+            echo "Free package contains unexpected files."
+            exit 1
+          fi
+          unzip -p "dist/${ZIP_FILE_NAME}" module.prop | grep -qx 'id=muronggameopt'
+          unzip -p "dist/${ZIP_FILE_NAME}" module.prop | grep -qx 'variant=third_party'
+          unzip -p "dist/${ZIP_FILE_NAME}" bin/cpu/fas.default.json | grep -q '__MURONG_GENERATED_SWEETSPOT__'
+
+          # ---------- 纯线程版 ----------
+          unzip -Z1 "dist/${THREAD_ZIP_FILE}" > dist/free-thread-files.txt
+          grep -qx 'bin/activity_diaodu' dist/free-thread-files.txt
+          grep -qx 'bin/sqlite3' dist/free-thread-files.txt
+          grep -qx 'bin/cpu/6+2.json' dist/free-thread-files.txt
+          grep -qx 'bin/cpu/gen_fas.sh' dist/free-thread-files.txt
+          grep -qx 'bin/cpu/dyn.json' dist/free-thread-files.txt
+          grep -qx 'bin/cpu/fas.default.json' dist/free-thread-files.txt
+          grep -qx 'fengchi_cleanup.sh' dist/free-thread-files.txt
+          if grep -Eq '^(bin/cpu/fas\.json|bin/cpu/(fas|dyn)\.threads\.json|bin/activity_diaodu\.thread$)' dist/free-thread-files.txt; then
+            echo "Thread-only package contains unexpected files."
+            exit 1
+          fi
+          unzip -p "dist/${THREAD_ZIP_FILE}" module.prop | grep -qx 'id=muronggameopt'
+          unzip -p "dist/${THREAD_ZIP_FILE}" module.prop | grep -qx 'name=慕容线程'
+          unzip -p "dist/${THREAD_ZIP_FILE}" module.prop | grep -qx 'variant=third_party'
+          unzip -p "dist/${THREAD_ZIP_FILE}" module.prop | grep -qx "updateJson=${RAW_BASE_URL}/update4.json"
+          unzip -p "dist/${THREAD_ZIP_FILE}" bin/cpu/dyn.json | grep -q '"enabled": 0'
+          unzip -p "dist/${THREAD_ZIP_FILE}" bin/cpu/fas.default.json | grep -q '"enabled": 0'
+          unzip -p "dist/${THREAD_ZIP_FILE}" bin/cpu/fas.default.json | grep -q '"apps": \[\]'
+
+          # ---------- 两个包里的二进制必须是各自编出来的那一个 ----------
+          full_zip_bin="$(unzip -p "dist/${ZIP_FILE_NAME}" bin/activity_diaodu | sha256sum | cut -d' ' -f1)"
+          [ "$full_zip_bin" = "$(sha256sum bin/activity_diaodu | cut -d' ' -f1)" ] || { echo "Free zip binary != full build output"; exit 1; }
+          thread_zip_bin="$(unzip -p "dist/${THREAD_ZIP_FILE}" bin/activity_diaodu | sha256sum | cut -d' ' -f1)"
+          [ "$thread_zip_bin" = "$(sha256sum bin/activity_diaodu.thread | cut -d' ' -f1)" ] || { echo "Thread zip binary != thread build output"; exit 1; }
+          [ "$thread_zip_bin" != "$full_zip_bin" ] || { echo "Both packages carry the same binary"; exit 1; }
+
+          NM="${TOOLCHAIN}/bin/llvm-nm"
+          test -x "$NM" || { echo "llvm-nm not found: $NM"; exit 1; }
+          FULL_SYMS="$("$NM" -C --defined-only bin/activity_diaodu)"
+          THREAD_SYMS="$("$NM" -C --defined-only bin/activity_diaodu.thread)"
+          for sym in fas_config_load fas_buffer_push fas_take_snapshot fas_resolve_target_fps; do
+            if ! grep -q "$sym" <<<"$FULL_SYMS"; then
+              echo "full build missing expected symbol: $sym"
+              exit 1
+            fi
+            if grep -q "$sym" <<<"$THREAD_SYMS"; then
+              echo "thread-only build still contains FAS engine symbol: $sym"
+              exit 1
+            fi
+          done
+          echo "Binary checks OK | full=$full_zip_bin | thread=$thread_zip_bin"
 
       - name: Upload Module Zip
         continue-on-error: true
@@ -249,6 +447,14 @@ jobs:
           path: dist/${{ env.ZIP_FILE_NAME }}
           retention-days: 1
 
+      - name: Upload Thread-Only Module Zip
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.THREAD_ARTIFACT_NAME }}
+          path: dist/${{ env.THREAD_ZIP_FILE }}
+          retention-days: 1
+
       - name: Commit Version Files
         if: github.event_name == 'workflow_dispatch'
         shell: bash
@@ -256,7 +462,7 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add module.prop update3.json changelog.txt
+          git add module.prop update3.json update4.json changelog.txt
           if git diff --cached --quiet; then
             echo "No version file changes to commit."
           else
@@ -282,3 +488,17 @@ jobs:
           name: ${{ env.RELEASE_NAME }}
           replacesArtifacts: true
           tag: ${{ env.RELEASE_TAG }}
+
+      - name: Publish Thread-Only Release
+        if: github.event_name == 'workflow_dispatch'
+        uses: ncipollo/release-action@v1
+        with:
+          allowUpdates: true
+          artifactErrorsFailBuild: true
+          artifacts: dist/${{ env.THREAD_ZIP_FILE }}
+          bodyFile: ${{ env.RELEASE_NOTES_FILE }}
+          commit: ${{ env.RELEASE_COMMIT_SHA }}
+          makeLatest: false
+          name: ${{ env.THREAD_RELEASE_NAME }}
+          replacesArtifacts: true
+          tag: ${{ env.THREAD_RELEASE_TAG }}

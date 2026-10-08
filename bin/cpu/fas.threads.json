@@ -1,0 +1,12 @@
+{
+  "defaults": {
+    "enabled": 0,
+    "default_target_fps": 60,
+    "base_margin_fps": 0,
+    "kp": 3
+  },
+  "sweetspot_freq": {},
+  "deep_floor_freq": {},
+  "apps": [],
+  "projects": []
+}

@@ -499,6 +499,12 @@ const char* get_runtime_feature_config_path() {
     return CONFIG_DIR "sched.txt";
 }
 
+const char* get_scheduler_config_path() {
+    static char path[256];
+    safe_snprintf(path, sizeof(path), "%s%s.scheduler.json", CPU_CONFIG_DIR, cpu_model);
+    return path;
+}
+
 static void build_cluster_layout_name(char* out, size_t out_size) {
     if (!out || out_size == 0) return;
     out[0] = '\0';
@@ -538,94 +544,221 @@ const char* get_thread_signature_config_path() {
     return path;
 }
 
-#define MAX_BLACKLIST 128
-static char g_write_blacklist[MAX_BLACKLIST][256];
-static int g_blacklist_count = 0;
+/*
+ * 内核节点写入路径。
+ *
+ * 现场暴露过两个缺陷：
+ *
+ *  1. 值被原样写入。部分 vendor 节点只接受一种 token 布局，例如 walt 的
+ *     zone_max_util_pct（"<频率> <占用>"）在值尾带空格时直接返回 EINVAL；
+ *     而任何回读节点再写回的值都会带尾空格（节点 show 出来就带）。
+ *     写入前归一化，整类消除这种"手动 echo 成功、程序里失败"。
+ *  2. 某路径因 EACCES/EPERM/EROFS/ENOENT 失败过一次就被永久拉黑，后续静默
+ *     返回 0。开机早期节点尚未创建、/sys 仍只读等瞬态问题会让该参数一直
+ *     不生效直到重启。现在改为永不拉黑、每次重试，失败日志按路径限流，
+ *     并在写入后回读校验。
+ */
 
-int lock_val(const char* path, const char* value) {
-    for (int i = 0; i < g_blacklist_count; i++) {
-        if (strcmp(g_write_blacklist[i], path) == 0) {
-            return 0;
+#define MAX_WRITE_FAILURE_TRACKED 128
+#define WRITE_FAILURE_LOG_INTERVAL_MS 30000LL
+#define WRITE_VERIFY_LOG_INTERVAL_MS 120000LL
+
+struct WriteFailureRecord {
+    char path[256];
+    long long last_fail_log_ms;
+    long long last_verify_log_ms;
+    unsigned long long fail_count;
+    unsigned long long verify_mismatch_count;
+};
+
+static std::vector<WriteFailureRecord> g_write_failure_records;
+
+static WriteFailureRecord* get_write_failure_record(const char* path) {
+    if (!path || !path[0]) return NULL;
+    for (size_t i = 0; i < g_write_failure_records.size(); i++) {
+        if (strcmp(g_write_failure_records[i].path, path) == 0) {
+            return &g_write_failure_records[i];
+        }
+    }
+    if (g_write_failure_records.size() >= MAX_WRITE_FAILURE_TRACKED) {
+        return NULL;
+    }
+    WriteFailureRecord record = {};
+    safe_strncpy(record.path, path, sizeof(record.path));
+    g_write_failure_records.push_back(record);
+    return &g_write_failure_records.back();
+}
+
+/* 去掉首尾空白，并把内部连续空白折叠成单个空格。 */
+static void normalize_config_value(const char* raw, char* out, size_t out_size) {
+    if (!out || out_size == 0) return;
+    out[0] = '\0';
+    if (!raw) return;
+
+    size_t used = 0;
+    bool pending_space = false;
+    for (const char* p = raw; *p; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+            if (used > 0) pending_space = true;
+            continue;
+        }
+        if (pending_space) {
+            if (used + 2 >= out_size) break;
+            out[used++] = ' ';
+            pending_space = false;
+        }
+        if (used + 1 >= out_size) break;
+        out[used++] = (char)c;
+    }
+    out[used] = '\0';
+}
+
+static void log_write_failure_throttled(WriteFailureRecord* record,
+                                        const char* path,
+                                        const char* value,
+                                        const char* stage,
+                                        int err) {
+    long long now_ms = get_current_time_ms();
+    if (record) {
+        record->fail_count++;
+        if (record->last_fail_log_ms != 0 &&
+            now_ms - record->last_fail_log_ms < WRITE_FAILURE_LOG_INTERVAL_MS) {
+            return;
+        }
+        record->last_fail_log_ms = now_ms;
+    }
+
+    char log_msg[384];
+    safe_snprintf(log_msg, sizeof(log_msg),
+        "写入失败(%s): %s -> %s (错误: %s, 累计 %llu 次)",
+        stage ? stage : "write",
+        path,
+        value && value[0] ? value : "<empty>",
+        strerror(err > 0 ? err : EIO),
+        record ? record->fail_count : 0ULL);
+    log_message(log_msg);
+}
+
+static bool parse_leading_double(const char* text, double* out) {
+    if (!text || !text[0] || !out) return false;
+    char* end = NULL;
+    double value = strtod(text, &end);
+    if (end == text) return false;
+    *out = value;
+    return true;
+}
+
+/*
+ * 写入后回读校验。内核会自己归一化（例如 cpuctl 的 "0" 读回是 "0.00"）
+ * 或按可用 OPP 夹取，所以先比字符串再比数值，两者都不等才报告。
+ * 只记录不回滚，避免把内核的正常改写当成失败处理。
+ */
+static void verify_written_value(const char* path, const char* expected) {
+    if (!path || !expected || !expected[0]) return;
+
+    FILE* fp = fopen(path, "r");
+    if (!fp) return;
+
+    char raw[256] = {0};
+    if (!fgets(raw, sizeof(raw), fp)) {
+        fclose(fp);
+        return;
+    }
+    fclose(fp);
+
+    char actual[256];
+    normalize_config_value(raw, actual, sizeof(actual));
+    if (strcmp(actual, expected) == 0) return;
+
+    double expected_number = 0.0;
+    double actual_number = 0.0;
+    if (parse_leading_double(expected, &expected_number) &&
+        parse_leading_double(actual, &actual_number)) {
+        double diff = expected_number - actual_number;
+        if (diff < 0) diff = -diff;
+        double scale = expected_number < 0 ? -expected_number : expected_number;
+        if (diff <= (scale > 1.0 ? scale * 0.000001 : 0.000001)) {
+            return;
         }
     }
 
-    FILE* fp = fopen(path, "w");
-    if (fp) {
-        int result = fprintf(fp, "%s", value);
-        int close_ret = fclose(fp);
-
-        if (result < 0 || close_ret != 0) {
-            int err = errno;
-            char log_msg[256];
-            safe_snprintf(log_msg, sizeof(log_msg), "写入失败或关闭失败: %s -> %s (错误: %s)",
-                path, value, strerror(err));
-            log_message(log_msg);
-            if (err == EACCES || err == EPERM || err == EROFS || err == ENOENT) {
-                if (g_blacklist_count < MAX_BLACKLIST) {
-                    safe_strncpy(g_write_blacklist[g_blacklist_count], path, 256);
-                    g_blacklist_count++;
-                    safe_snprintf(log_msg, sizeof(log_msg), "文件写入失败(权限/不存在)，已加入黑名单: %s", path);
-                    log_message(log_msg);
-                }
-            }
-            return 0;
+    WriteFailureRecord* record = get_write_failure_record(path);
+    long long now_ms = get_current_time_ms();
+    if (record) {
+        record->verify_mismatch_count++;
+        if (record->last_verify_log_ms != 0 &&
+            now_ms - record->last_verify_log_ms < WRITE_VERIFY_LOG_INTERVAL_MS) {
+            return;
         }
+        record->last_verify_log_ms = now_ms;
+    }
+
+    char log_msg[384];
+    safe_snprintf(log_msg, sizeof(log_msg),
+        "写入未生效(被内核改写): %s -> 期望 [%s] 实际 [%s]",
+        path,
+        expected,
+        actual[0] ? actual : "<empty>");
+    log_message(log_msg);
+}
+
+int lock_val(const char* path, const char* value) {
+    if (!path || !path[0]) return 0;
+
+    char normalized[256];
+    normalize_config_value(value, normalized, sizeof(normalized));
+    if (normalized[0] == '\0') {
+        /*
+         * 配置里写空值表示"这一项不动"（例如某些档位下的 pl）。
+         * 继续写会变成 0 字节写入，部分节点会回 EINVAL，因此直接按成功跳过。
+         */
         return 1;
     }
 
-    struct stat st;
-    if (stat(path, &st) != 0) {
-        char log_msg[256];
-        safe_snprintf(log_msg, sizeof(log_msg), "读取文件权限失败: %s (错误: %s)",
-            path, strerror(errno));
-        log_message(log_msg);
+    const bool real_file =
+        (strncmp(path, "/sys/", 5) != 0 && strncmp(path, "/proc/", 6) != 0);
+
+    FILE* fp = fopen(path, "w");
+
+    mode_t old_mode = 0;
+    bool permission_changed = false;
+    if (!fp && real_file) {
+        /* 只对真实文件尝试临时授权；对 sysfs 调 chmod() 永远失败，只会刷日志。 */
+        struct stat st;
+        if (stat(path, &st) == 0 && S_ISREG(st.st_mode)) {
+            old_mode = st.st_mode & 07777;
+            if ((old_mode & S_IWUSR) == 0 && chmod(path, old_mode | S_IWUSR) == 0) {
+                permission_changed = true;
+                fp = fopen(path, "w");
+            }
+        }
+    }
+
+    if (!fp) {
+        int err = errno;
+        log_write_failure_throttled(get_write_failure_record(path), path, normalized, "open", err);
         return 0;
     }
 
-    mode_t old_mode = st.st_mode & 07777;
-    bool permission_changed = false;
-    if ((old_mode & S_IWUSR) == 0) {
-        if (chmod(path, old_mode | S_IWUSR) != 0) {
-            char log_msg[256];
-            safe_snprintf(log_msg, sizeof(log_msg), "临时增加所有者写权限失败: %s (错误: %s)",
-                path, strerror(errno));
-            log_message(log_msg);
-            return 0;
-        }
-        permission_changed = true;
-    }
-
-    int result = 0;
     int write_error = 0;
-    fp = fopen(path, "w");
-    if (fp) {
-        if (fprintf(fp, "%s", value) < 0) {
-            write_error = errno;
-        }
-        if (fclose(fp) != 0 && write_error == 0) {
-            write_error = errno;
-        }
-        if (write_error == 0) {
-            result = 1;
-        }
-    } else {
+    /* 带换行，和 shell 的 echo 语义保持一致。 */
+    if (fprintf(fp, "%s\n", normalized) < 0) {
+        write_error = errno;
+    }
+    if (fclose(fp) != 0 && write_error == 0) {
         write_error = errno;
     }
 
-    if (write_error != 0) {
-        char log_msg[256];
-        safe_snprintf(log_msg, sizeof(log_msg), "临时授权后写入失败: %s -> %s (错误: %s)",
-            path, value, strerror(write_error));
-        log_message(log_msg);
+    if (permission_changed) {
+        chmod(path, old_mode);
     }
 
-    if (permission_changed && chmod(path, old_mode) != 0) {
-        char log_msg[256];
-        safe_snprintf(log_msg, sizeof(log_msg), "恢复文件权限失败: %s (错误: %s)",
-            path, strerror(errno));
-        log_message(log_msg);
+    if (write_error != 0) {
+        log_write_failure_throttled(get_write_failure_record(path), path, normalized, "write", write_error);
         return 0;
     }
 
-    return result;
+    verify_written_value(path, normalized);
+    return 1;
 }

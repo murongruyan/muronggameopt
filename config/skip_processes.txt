@@ -1,0 +1,2 @@
+# 每行一个 Android 包名。命中“包名”或“包名:子进程”时暂停慕容调度。
+com.murong.agent

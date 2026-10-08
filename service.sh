@@ -9,8 +9,12 @@ wait_sys_boot_completed() {
 	done
 }
 wait_sys_boot_completed
-
 sh "$TeamS/vtools/init_vtools.sh" "$(realpath $TeamS/module.prop)"
+
+if [ -f "$TeamS/fengchi_cleanup.sh" ]; then
+    /system/bin/sh "$TeamS/fengchi_cleanup.sh" --once
+    /system/bin/sh "$TeamS/fengchi_cleanup.sh" >/dev/null 2>&1 &
+fi
 
 echo "1" > /proc/sys/walt/sched_conservative_pl
 echo "1000" > /proc/oplus-votable/GAUGE_UPDATE/force_val

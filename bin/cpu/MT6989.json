@@ -1,0 +1,193 @@
+{
+  "version": "5.8",
+  "powersave": {
+    "cpu_policies": [
+      {
+        "cluster": 0,
+        "governor": "sugov_ext",
+        "max_freq": 1600000,
+        "min_freq": 500000,
+        "params": {
+          "down_rate_limit_us": "1000",
+          "up_rate_limit_us": "1000"
+        }
+      },
+      {
+        "cluster": 1,
+        "governor": "sugov_ext",
+        "max_freq": 2300000,
+        "min_freq": 700000,
+        "params": {
+          "down_rate_limit_us": "1000",
+          "up_rate_limit_us": "1000"
+        }
+      },
+      {
+        "cluster": 2,
+        "governor": "sugov_ext",
+        "max_freq": 2200000,
+        "min_freq": 798000,
+        "params": {
+          "down_rate_limit_us": "1000",
+          "up_rate_limit_us": "1000"
+        }
+      }
+    ],
+    "cpuset": {
+      "background": "0-2",
+      "systembackground": "1-3",
+      "foreground": "0-5",
+      "topapp": "0-7"
+    },
+    "features": {
+      "scheduler_master": true,
+      "dynamic_thread_scheduler": true,
+      "scene_category": true,
+      "base_profile": true,
+      "dynamic_tuning": true,
+      "fas": true,
+      "custom_thread": true
+    }
+  },
+  "balance": {
+    "cpu_policies": [
+      {
+        "cluster": 0,
+        "governor": "sugov_ext",
+        "max_freq": 2100000,
+        "min_freq": 500000,
+        "params": {
+          "down_rate_limit_us": "1000",
+          "up_rate_limit_us": "1000"
+        }
+      },
+      {
+        "cluster": 1,
+        "governor": "sugov_ext",
+        "max_freq": 2900000,
+        "min_freq": 700000,
+        "params": {
+          "down_rate_limit_us": "1000",
+          "up_rate_limit_us": "1000"
+        }
+      },
+      {
+        "cluster": 2,
+        "governor": "sugov_ext",
+        "max_freq": 3300000,
+        "min_freq": 798000,
+        "params": {
+          "down_rate_limit_us": "1000",
+          "up_rate_limit_us": "1000"
+        }
+      }
+    ],
+    "cpuset": {
+      "background": "0-3",
+      "systembackground": "2-3",
+      "foreground": "0-6",
+      "topapp": "0-7"
+    },
+    "features": {
+      "scheduler_master": true,
+      "custom_thread": true,
+      "dynamic_thread_scheduler": true,
+      "scene_category": true,
+      "base_profile": true
+    }
+  },
+  "performance": {
+    "cpu_policies": [
+      {
+        "cluster": 0,
+        "governor": "sugov_ext",
+        "max_freq": 2400000,
+        "min_freq": 900000,
+        "params": {
+          "down_rate_limit_us": "1000",
+          "up_rate_limit_us": "1000"
+        }
+      },
+      {
+        "cluster": 1,
+        "governor": "sugov_ext",
+        "max_freq": 3300000,
+        "min_freq": 1400000,
+        "params": {
+          "down_rate_limit_us": "1000",
+          "up_rate_limit_us": "1000"
+        }
+      },
+      {
+        "cluster": 2,
+        "governor": "sugov_ext",
+        "max_freq": 3730000,
+        "min_freq": 1200000,
+        "params": {
+          "down_rate_limit_us": "1000",
+          "up_rate_limit_us": "1000"
+        }
+      }
+    ],
+    "cpuset": {
+      "background": "0-2",
+      "systembackground": "3-4",
+      "foreground": "0-6",
+      "topapp": "0-7"
+    },
+    "features": {
+      "scheduler_master": true,
+      "custom_thread": true,
+      "dynamic_thread_scheduler": true,
+      "scene_category": true,
+      "base_profile": true
+    }
+  },
+  "fast": {
+    "cpu_policies": [
+      {
+        "cluster": 0,
+        "governor": "sugov_ext",
+        "max_freq": 2400000,
+        "min_freq": 1200000,
+        "params": {
+          "down_rate_limit_us": "1000",
+          "up_rate_limit_us": "1000"
+        }
+      },
+      {
+        "cluster": 1,
+        "governor": "sugov_ext",
+        "max_freq": 3300000,
+        "min_freq": 1500000,
+        "params": {
+          "down_rate_limit_us": "1000",
+          "up_rate_limit_us": "1000"
+        }
+      },
+      {
+        "cluster": 2,
+        "governor": "sugov_ext",
+        "max_freq": 3730000,
+        "min_freq": 1500000,
+        "params": {
+          "down_rate_limit_us": "1000",
+          "up_rate_limit_us": "1000"
+        }
+      }
+    ],
+    "cpuset": {
+      "background": "0-1",
+      "systembackground": "2-3",
+      "foreground": "0-6",
+      "topapp": "0-7"
+    },
+    "features": {
+      "scheduler_master": true,
+      "custom_thread": true,
+      "dynamic_thread_scheduler": true,
+      "scene_category": true,
+      "base_profile": true
+    }
+  }
+}

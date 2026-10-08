@@ -12,26 +12,20 @@
         "match": [
           "UnityMain"
         ],
-        "cpus": "6",
-        "fifo": 1
+        "cpus": "7"
       },
       "gfx": {
         "match": [
           "UnityGfx*"
         ],
-        "cpus": "4-6",
-        "rr": 10
+        "cpus": "5"
       },
       "worker": {
         "match": [
           "*worker*"
         ],
         "limit": 3,
-        "cpus": "4-5",
-        "rr": 5
-      },
-      "other": {
-        "cpus": "1-5"
+        "cpus": "3-4"
       }
     },
     {
@@ -92,29 +86,20 @@
         "match": [
           "UnityMain"
         ],
-        "cpus": "6",
-        "fifo": 1
+        "cpus": "7"
       },
       "gfx": {
         "match": [
           "UnityGfx*"
         ],
-        "cpus": "4-6",
-        "rr": 10
+        "cpus": "5"
       },
       "worker": {
         "match": [
           "Job.worker*"
         ],
         "limit": 3,
-        "cpus": "4-5",
-        "rr": 5
-      },
-      "extra:[Thread 1x1xb411]": {
-        "cpus": "6"
-      },
-      "other": {
-        "cpus": "1-5"
+        "cpus": "3-4"
       }
     },
     {
@@ -129,18 +114,13 @@
         "match": [
           "GameThread"
         ],
-        "cpus": "6",
-        "rr": 10
+        "cpus": "7"
       },
       "render": {
         "match": [
           "*rthread*"
         ],
-        "cpus": "4-5",
-        "rr": 1
-      },
-      "other": {
-        "cpus": "1-5"
+        "cpus": "5"
       }
     },
     {
@@ -192,15 +172,14 @@
           "GameThread",
           "UnityMain"
         ],
-        "cpus": "6",
-        "fifo": 1
+        "cpus": "7"
       },
       "render": {
         "match": [
           "RenderThread*",
           "RHIThread*"
         ],
-        "cpus": "4-6"
+        "cpus": "5"
       },
       "worker": {
         "match": [
@@ -208,17 +187,7 @@
           "TaskGraphThread*",
           "AsyncLoading*"
         ],
-        "cpus": "6",
-        "rr": 10
-      },
-      "extra:[task*]": {
-        "cpus": "4-5"
-      },
-      "extra:[*loading]": {
-        "cpus": "0-4"
-      },
-      "other": {
-        "cpus": "1-5"
+        "cpus": "3-4"
       }
     },
     {
