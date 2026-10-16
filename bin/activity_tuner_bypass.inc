@@ -1,5 +1,5 @@
-// 第三方版不再根据风驰/SCX/HMBIRD governor 自避让。
-// 风驰冲突由 fengchi_cleanup.sh 通过 sqlite3 循环清空配置表解决。
+// 第三方版不再根据风驰/SCX/HMBIRD governor 自避让，也不再触碰 com.oplus.cosa
+// 的数据库。官方调度屏蔽交给专门模块（如 IMS_VAROS），本模块只做自己的调度。
 
 static void sync_official_tuner_for_game(const char* current_app) {
     (void)current_app;

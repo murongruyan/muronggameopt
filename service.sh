@@ -11,10 +11,8 @@ wait_sys_boot_completed() {
 wait_sys_boot_completed
 sh "$TeamS/vtools/init_vtools.sh" "$(realpath $TeamS/module.prop)"
 
-if [ -f "$TeamS/fengchi_cleanup.sh" ]; then
-    /system/bin/sh "$TeamS/fengchi_cleanup.sh" --once
-    /system/bin/sh "$TeamS/fengchi_cleanup.sh" >/dev/null 2>&1 &
-fi
+# 官方调度屏蔽不再由本模块负责：本模块不触碰 com.oplus.cosa 的数据库，
+# 需要屏蔽官方调度时，由用户另刷专门模块（如 IMS_VAROS）。
 
 echo "1" > /proc/sys/walt/sched_conservative_pl
 echo "1000" > /proc/oplus-votable/GAUGE_UPDATE/force_val

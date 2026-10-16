@@ -321,15 +321,12 @@ jobs:
           cp customize.sh dist/module/
           cp service.sh dist/module/
           cp activity_diaodu.rc dist/module/
-          cp fengchi_cleanup.sh dist/module/
-          cp hmbird_restore_once.sh dist/module/
           cp -a META-INF/. dist/module/META-INF/
           cp -a config/. dist/module/config/
           cp -a vtools/. dist/module/vtools/
           cp bin/activity_diaodu dist/module/bin/
           cp bin/libbpf.so dist/module/bin/
           cp bin/monitor.bpf.o dist/module/bin/
-          cp bin/sqlite3 dist/module/bin/
           cp bin/cpu/*.json dist/module/bin/cpu/
           # 带上按本机档位生成 fas.json 的脚本，否则 customize.sh 的 -f 判定会跳过生成
           cp bin/cpu/gen_fas.sh dist/module/bin/cpu/
@@ -345,15 +342,12 @@ jobs:
           cp customize.sh dist/module-thread/
           cp service.sh dist/module-thread/
           cp activity_diaodu.rc dist/module-thread/
-          cp fengchi_cleanup.sh dist/module-thread/
-          cp hmbird_restore_once.sh dist/module-thread/
           cp -a META-INF/. dist/module-thread/META-INF/
           cp -a config/. dist/module-thread/config/
           cp -a vtools/. dist/module-thread/vtools/
           cp bin/activity_diaodu.thread dist/module-thread/bin/activity_diaodu
           cp bin/libbpf.so dist/module-thread/bin/
           cp bin/monitor.bpf.o dist/module-thread/bin/
-          cp bin/sqlite3 dist/module-thread/bin/
           cp bin/cpu/*.json dist/module-thread/bin/cpu/
 
           # 纯线程版【不带任何 FAS / 动态调频配置文件】：
@@ -381,12 +375,10 @@ jobs:
 
           unzip -Z1 "dist/${ZIP_FILE_NAME}" > dist/free-files.txt
           grep -qx 'bin/activity_diaodu' dist/free-files.txt
-          grep -qx 'bin/sqlite3' dist/free-files.txt
           grep -qx 'bin/cpu/6+2.json' dist/free-files.txt
           grep -qx 'bin/cpu/gen_fas.sh' dist/free-files.txt
           grep -qx 'bin/cpu/dyn.json' dist/free-files.txt
           grep -qx 'bin/cpu/fas.default.json' dist/free-files.txt
-          grep -qx 'fengchi_cleanup.sh' dist/free-files.txt
           if grep -Eq '^(bin/cpu/fas\.json|bin/cpu/(fas|dyn)\.threads\.json|bin/activity_diaodu\.thread$)' dist/free-files.txt; then
             echo "Free package contains unexpected files."
             exit 1
@@ -398,9 +390,7 @@ jobs:
           # ---------- 纯线程版 ----------
           unzip -Z1 "dist/${THREAD_ZIP_FILE}" > dist/free-thread-files.txt
           grep -qx 'bin/activity_diaodu' dist/free-thread-files.txt
-          grep -qx 'bin/sqlite3' dist/free-thread-files.txt
           grep -qx 'bin/cpu/6+2.json' dist/free-thread-files.txt
-          grep -qx 'fengchi_cleanup.sh' dist/free-thread-files.txt
           # 纯线程版不带任何 FAS / 动态调频配置：源码层面已关闭（空桩写死 false），
           # 这些 json 就算放着也不会被读，所以直接不打包，保持包干净。
           if grep -Eq '^(bin/cpu/(fas\.json|fas\.default\.json|dyn\.json|gen_fas\.sh|fas\.threads\.json|dyn\.threads\.json)|bin/activity_diaodu\.thread$)' dist/free-thread-files.txt; then
