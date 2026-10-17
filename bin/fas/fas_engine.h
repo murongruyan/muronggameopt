@@ -42,24 +42,33 @@ typedef struct {
 
     int initialized;
 
-    /*
-     * ── 自动目标帧率（auto target）────────────────────────────
-     *
-     * 为什么不再只依赖 fas.json 的档位表：
-     *   档位表是【人工猜的】。一旦游戏实际帧率不在表里，就会判错方向：
-     *   实例（用户实测）：com.netease.lrs 稳跑 72fps，但它所在分组只有 60/120/165 三档，
-     *   resolve_instant_target_fps 把 72 【向上取档】判成 120 -> 预算 8333us，
-     *   实际每帧 13845us -> 帧债 5556us > 严重阈值 -> 永久 MAX_FREQ（band_min=band_max=fmax），
-     *   CPU 85% 空闲却在满频空转 ✗
-     *
-     * 现在的做法（用户提的方案）：
-     *   「不用自己写帧率，就在甜点频率等几秒看帧率落在哪，再慢慢降频，
-     *     哪里稳不住了（掉 1~2 帧）再拉上去」
-     *   即：目标 = 这个游戏【实际能跑到的帧率】= 观测到的峰值帧率（带缓慢衰减），
-     *   预算由它推出来，帧债机制（升/降频）完全复用，不需要人工档位表 ✓
+    /* ══════════════════════════════════════════════════════════
+     * 新控制器状态（v6.2）—— 三相位 + 帧率比例控制
+     * ══════════════════════════════════════════════════════════
      */
-    int auto_peak_fps;      /* 最近观测到的可达到帧率（峰值） */
-    long long auto_peak_ms; /* 上次刷新/维持峰值的时刻 */
+    int phase;                    /* FasPhase */
+    long long phase_since_ms;     /* 进入当前相位的时刻 */
+
+    /* 校准：在甜点频率下采集真实帧间隔，取中位数当基准 */
+    double calib_samples[256];
+    int calib_count;
+    long long calib_since_ms;
+
+    /* 基准（校准产物，也是唯一的帧率参考，取代 fas.json 的 target_fps） */
+    double base_interval_ms;      /* 基准帧间隔 */
+    int stable_fps;               /* 基准帧率 = 1000/base_interval */
+
+    /* 掉帧判定的连续计时（抗抖动） */
+    long long degrade_candidate_ms;
+    /* 升帧率检测：基准可能被游戏自己抬高 */
+    long long upshift_candidate_ms;
+    int upshift_candidate_fps;
+
+    /* 降频节流 */
+    long long last_drop_ms;
+
+    /* 重要线程占用（由 main_loop 每拍喂入；-1 = 未上报） */
+    int busy_thread_usage;
 } FasEngine;
 
 // ── 公开 API ────────────────────────────────────────────────
@@ -72,8 +81,15 @@ void fas_engine_push_frame(FasEngine* e, long long interval_ns);
 
 void fas_engine_on_app_change(FasEngine* e, const char* package, int pid);
 
-// 更新动作表参数（动态调频配置）
+// 更新动作表参数（动态调频配置）—— 兼容保留，新控制器不用它
 void fas_engine_set_ladder(FasEngine* e, const FasLadderConfig* ladder);
+
+/*
+ * 喂入「重要线程占用率」（game/render/rhi/taskgraph/worker 里最高的那个，百分比）。
+ * 只在 fas.json 的 defaults.report_thread_state = 1 时由 main_loop 调用；
+ * 传 -1 表示本拍没有上报（FAS 就只靠帧信号决策）。
+ */
+void fas_engine_set_thread_usage(FasEngine* e, int busy_pct);
 
 // 主 tick：把当前帧债换算成动作档位
 FasOutput fas_engine_tick(FasEngine* e);

@@ -379,6 +379,23 @@ static std::atomic<int> g_cached_fas_over_budget_streak(0);
 static std::atomic<int> g_cached_fas_buffer_usable(0);
 static std::atomic<int> g_cached_fas_guard_active(0);
 static std::atomic<int> g_cached_fas_guard_reason(0);
+/*
+ * v6.2 三相位控制器的输出缓存：
+ *   phase           当前相位（FasPhase）
+ *   stable_fps      校准得到的基准帧率
+ *   freq_scale      频率倍数（1.0=保持，>1 升频，<1 降频）
+ *   hold_sweetspot  1 = 校准期，频率固定在甜点
+ *   drop_to_floor   1 = 帧率稳定，直接降到底板（quick_drop）
+ *   occ_raise       1 = 本次升频由占用率触发
+ *   busy_usage      重要线程占用（-1 = 未上报）
+ */
+static std::atomic<int> g_cached_fas_phase(FAS_PHASE_UNKNOWN);
+static std::atomic<int> g_cached_fas_stable_fps(0);
+static std::atomic<int> g_cached_fas_freq_scale_milli(1000);   /* 倍数×1000，int 原子量 */
+static std::atomic<int> g_cached_fas_hold_sweetspot(0);
+static std::atomic<int> g_cached_fas_drop_to_floor(0);
+static std::atomic<int> g_cached_fas_occ_raise(0);
+static std::atomic<int> g_cached_fas_busy_usage(-1);
 static long long g_fas_last_good_sample_ms = 0;
 
 FasEngine g_fas_engine;
@@ -390,6 +407,13 @@ void reset_fas_prediction_cache() {
     g_cached_fas_budget_us.store(0); g_cached_fas_debt_us.store(0); g_cached_fas_severity_us.store(0);
     g_cached_fas_action_level.store(FAS_ACTION_INVALID); g_cached_fas_over_budget_streak.store(0);
     g_cached_fas_buffer_usable.store(0);
+    g_cached_fas_phase.store(FAS_PHASE_UNKNOWN);
+    g_cached_fas_stable_fps.store(0);
+    g_cached_fas_freq_scale_milli.store(1000);
+    g_cached_fas_hold_sweetspot.store(0);
+    g_cached_fas_drop_to_floor.store(0);
+    g_cached_fas_occ_raise.store(0);
+    g_cached_fas_busy_usage.store(-1);
     g_cached_fas_guard_active.store(0); g_cached_fas_guard_reason.store(0); g_fas_last_good_sample_ms = 0;
 }
 void reset_dynamic_tuning_state() {

@@ -19,9 +19,14 @@ static float normalize_sensitivity(float kp, float fallback) {
 
 void fas_config_reset_defaults(FasConfig* cfg) {
     if (!cfg) return;
+    /* 旧字段：保留只为 ABI 兼容，新控制器不读 */
     cfg->default_target_fps = 60;
     cfg->base_margin_fps = 1.0f;
     cfg->default_kp = 3.0f;
+    /* 新开关默认值（与用户确认）：quick_drop 关 / 报告线程状态 开 / 占用率升频 85% */
+    cfg->quick_drop = 0;
+    cfg->report_thread_state = 1;
+    cfg->upscale_occupancy = 85;
     cfg->app_count = 0;
     memset(cfg->apps, 0, sizeof(cfg->apps));
 }
@@ -138,6 +143,14 @@ bool fas_config_load(FasConfig* cfg, const char* json_str) {
             json_get_float(defaults, "kp", cfg->default_kp),
             cfg->default_kp);
 
+        /* v6.2 新开关 */
+        cfg->quick_drop = json_get_bool(defaults, "quick_drop", cfg->quick_drop != 0) ? 1 : 0;
+        cfg->report_thread_state =
+            json_get_bool(defaults, "report_thread_state", cfg->report_thread_state != 0) ? 1 : 0;
+        cfg->upscale_occupancy =
+            json_get_int(defaults, "upscale_occupancy", cfg->upscale_occupancy);
+        if (cfg->upscale_occupancy < 0) cfg->upscale_occupancy = 0;
+        if (cfg->upscale_occupancy > 100) cfg->upscale_occupancy = 100;
     }
 
     bool truncated = false;

@@ -201,14 +201,32 @@ void* fas_prediction_thread(void*) {
             }
 
             /*
-             * FAS 只吃帧信号：不为决策扫 /proc、不读 GPU/DDR/线程占用。
-             * 帧间隔由 queueBuffer uprobe 推入，tick 只把帧债换算成动作档位。
+             * FAS 主输入仍是帧信号（queueBuffer uprobe 推入的帧间隔）。
+             *
+             * v6.2：可选地把「重要线程占用率」也喂进去 —— 只在
+             * fas.json 的 defaults.report_thread_state = 1 时才采（那是用户开关），
+             * 用途是「占用率升频」这个附加触发（掉帧照常升频，不受它影响）。
              */
-            /* 动作表参数来自 dyn.json（动态调频配置），热重载后这里会同步给引擎 */
             fas_engine_set_ladder(&g_fas_engine, &g_dyn_control);
+            if (g_fas_engine.config.report_thread_state) {
+                FasThreadFeatureSnapshot th;
+                memset(&th, 0, sizeof(th));
+                UnifiedScheduler::collect_fas_thread_features(app, &th);
+                fas_engine_set_thread_usage(&g_fas_engine, (int)(th.busy_thread_usage + 0.5f));
+            } else {
+                fas_engine_set_thread_usage(&g_fas_engine, -1);
+            }
             sync_fas_engine_queuebuffer_samples(
                 &g_fas_engine, app, &last_queuebuffer_accepted_count, &last_fas_surface_key);
             FasOutput o = fas_engine_tick(&g_fas_engine);
+            /* v6.2 三相位控制器的输出 */
+            g_cached_fas_phase.store(o.phase);
+            g_cached_fas_stable_fps.store(o.stable_fps);
+            g_cached_fas_freq_scale_milli.store((int)(o.freq_scale * 1000.0f + 0.5f));
+            g_cached_fas_hold_sweetspot.store(o.hold_sweetspot);
+            g_cached_fas_drop_to_floor.store(o.drop_to_floor);
+            g_cached_fas_occ_raise.store(o.upscale_by_occupancy);
+            g_cached_fas_busy_usage.store(o.busy_thread_usage);
             g_cached_fas_guard_signal.store(o.guard_signal);
             g_cached_fas_target_fps.store(o.target_fps);
             g_cached_fas_current_fps.store(o.current_fps);

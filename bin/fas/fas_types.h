@@ -37,12 +37,35 @@ typedef enum {
  * FAS 动作档位：FAS 不再输出"目标频率"，而是输出"这一帧还欠多少时间"对应的动作。
  * 具体频率由执行器按档位查表（地板 / 甜点 / 档位上限），FAS 只负责判断该花多少。
  */
+/*
+ * FAS 三相位（v6.2 起）：这是新的控制骨架。
+ *
+ * 旧的四档动作（DEEP_SLEEP / SWEETSPOT / CEILING / MAX_FREQ）本质是
+ * 「帧债 → 查人工枚举的档位表 → 机械映射到频率区间」，
+ * 中间没有一处是「按帧率算出该给多少频率」，所以它不是真正的 FAS。
+ *
+ * 新骨架把控制拆成三个物理上可解释的相位：
+ *   CALIBRATING  在甜点频率下测这个游戏实际能跑多少帧（取中位数）
+ *   STABLE       帧率在基准 ±1.2fps 内 -> 可以降频（快降到底板 / 慢降 8%）
+ *   DEGRADED     掉出容差 -> 需要频率倍数 = 实际帧间隔 / 基准帧间隔
+ */
 typedef enum {
-    FAS_ACTION_INVALID = -1,          /* 没有帧信号：退到静态档位，不做帧感知决策 */
-    FAS_ACTION_DEEP_SLEEP = 0,        /* 帧债 <= 0        ：贴地板，能省就省 */
-    FAS_ACTION_SWEETSPOT = 1,         /* 0 < 债 <= 10%    ：抬到甜点频率 */
-    FAS_ACTION_SWEETSPOT_CEILING = 2, /* 10% < 债 <= 30%  ：甜点做底，上限放到档位上限 */
-    FAS_ACTION_MAX_FREQ = 3           /* 债 > 30% 或连续两帧严重超预算：顶格 */
+    FAS_PHASE_UNKNOWN = 0,      /* 没有帧信号 */
+    FAS_PHASE_CALIBRATING = 1,  /* 甜点频率下校准帧率 */
+    FAS_PHASE_STABLE = 2,       /* 帧率稳定，可降频 */
+    FAS_PHASE_DEGRADED = 3      /* 掉帧，按比例升频 */
+} FasPhase;
+
+/*
+ * action_level 仅作为【兼容字段】保留：
+ * 执行器的 GPU/DDR 侧与 trace 日志还在读它，内部按相位映射一次即可。
+ */
+typedef enum {
+    FAS_ACTION_INVALID = -1,
+    FAS_ACTION_DEEP_SLEEP = 0,
+    FAS_ACTION_SWEETSPOT = 1,
+    FAS_ACTION_SWEETSPOT_CEILING = 2,
+    FAS_ACTION_MAX_FREQ = 3
 } FasActionLevel;
 
 // ── 运行时快照结构 ──────────────────────────────────────────
@@ -99,9 +122,16 @@ typedef struct {
 } FasAppConfig;
 
 typedef struct {
+    /* ⚠️ 旧字段（target_fps / margin / kp）保留只为 ABI 兼容，新控制器不再读它们 */
     int default_target_fps;
     float base_margin_fps;
     float default_kp;
+
+    /* ── 新开关（fas.json 的 defaults）── */
+    int quick_drop;            /* 帧率稳定后直接降到底板（1=开） */
+    int report_thread_state;   /* 把重要线程占用报告给 FAS（1=开） */
+    int upscale_occupancy;     /* 占用率升频阈值（0=关闭） */
+
     int app_count;
     FasAppConfig apps[FAS_MAX_FAS_APPS];
 } FasConfig;
@@ -142,6 +172,21 @@ typedef struct {
     int debt_us;
     int severity_us;
     int over_budget_streak;    // 连续严重超预算的帧数（按帧事件计数，不是按 tick）
+
+    /* ── 新控制器（v6.2）：三相位 + 频率倍数 ─────────────────── */
+    int phase;                 /* FasPhase */
+    int stable_fps;            /* 校准得到的基准帧率（0 = 还没校准好） */
+    /*
+     * 频率倍数：执行器拿「当前目标频率 × freq_scale」得到本拍目标频率。
+     *   1.0  = 保持
+     *   >1   = 升频（掉帧时按 实际帧间隔/基准帧间隔 算出来，不是阶梯）
+     *   <1   = 降频（稳定时按固定比例慢降）
+     */
+    float freq_scale;
+    int hold_sweetspot;        /* 1 = 校准期：频率固定在甜点 */
+    int drop_to_floor;         /* 1 = 帧率稳定：直接降到底板（quick_drop） */
+    int upscale_by_occupancy;  /* 1 = 因重要线程占用率触发的升频 */
+    int busy_thread_usage;     /* 重要线程占用（百分比；-1 = 未上报） */
 } FasOutput;
 
 /*

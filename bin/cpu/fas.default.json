@@ -1,9 +1,9 @@
 {
   "defaults": {
     "enabled": 1,
-    "default_target_fps": 60,
-    "base_margin_fps": 0,
-    "kp": 3
+    "quick_drop": 0,
+    "report_thread_state": 1,
+    "upscale_occupancy": 85
   },
   "sweetspot_freq": {
     "__MURONG_GENERATED_SWEETSPOT__": true
@@ -22,34 +22,6 @@
         "com.tencent.lolm",
         "com.ztgame.bob",
         "com.tencent.jkchess"
-      ],
-      "fps_profiles": [
-        {
-          "target_fps": 60,
-          "margin_fps": 3,
-          "kp": 1.5
-        },
-        {
-          "target_fps": 90,
-          "margin_fps": 2.5,
-          "kp": 2
-        },
-        {
-          "target_fps": 120,
-          "margin_fps": 2,
-          "kp": 2.5,
-          "fallback": true
-        },
-        {
-          "target_fps": 144,
-          "margin_fps": 1.5,
-          "kp": 3
-        },
-        {
-          "target_fps": 165,
-          "margin_fps": 1.0,
-          "kp": 3.5
-        }
       ]
     },
     {
@@ -68,34 +40,6 @@
         "com.tencent.nfsonline",
         "com.netease.aceracer.aligames",
         "com.tencent.tmgp.dnf"
-      ],
-      "fps_profiles": [
-        {
-          "target_fps": 60,
-          "margin_fps": 1,
-          "kp": 2.5
-        },
-        {
-          "target_fps": 90,
-          "margin_fps": 1.5,
-          "kp": 2.8
-        },
-        {
-          "target_fps": 120,
-          "margin_fps": 2,
-          "kp": 3
-        },
-        {
-          "target_fps": 144,
-          "margin_fps": 2.5,
-          "kp": 3.2
-        },
-        {
-          "target_fps": 165,
-          "margin_fps": 3,
-          "kp": 3.5,
-          "fallback": true
-        }
       ]
     },
     {
@@ -140,24 +84,6 @@
         "com.miHoYo.bh3.uc",
         "com.netease.onmyoji",
         "com.hearthstone"
-      ],
-      "fps_profiles": [
-        {
-          "target_fps": 60,
-          "margin_fps": 2,
-          "kp": 1.5,
-          "fallback": true
-        },
-        {
-          "target_fps": 120,
-          "margin_fps": 3,
-          "kp": 2
-        },
-        {
-          "target_fps": 165,
-          "margin_fps": 3.5,
-          "kp": 2.8
-        }
       ]
     }
   ],

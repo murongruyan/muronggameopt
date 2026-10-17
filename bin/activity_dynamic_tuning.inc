@@ -633,6 +633,9 @@ void handle_dynamic_tuning(const char* current_app) {
     }
     int fas_buf = g_cached_fas_buffer_usable.load();
     int fas_action = g_cached_fas_action_level.load();
+    /* v6.2：三相位 + 每簇上拍目标频率（执行降频/升频累加用） */
+    int fas_phase = g_cached_fas_phase.load();
+    static int last_fas_target[MAX_CLUSTERS] = {0};
     int fas_debt_us = g_cached_fas_debt_us.load();
     int fas_severity_us = g_cached_fas_severity_us.load();
     int fas_streak = g_cached_fas_over_budget_streak.load();
@@ -736,7 +739,7 @@ void handle_dynamic_tuning(const char* current_app) {
          * 8 核平均占用 82%、功耗 7.15W，而官方（只写区间、运行时保底给最低档）只有 4.77W。
          * 只有"顶格"保留满频：那是连续严重超预算的兜底，出现时间极短。
          */
-        if (fas_on && fas_buf > 0 && fas_action >= FAS_ACTION_DEEP_SLEEP) {
+        if (fas_on && fas_buf > 0 && fas_phase != FAS_PHASE_UNKNOWN) {
             int sweet = sweetspot_freq_for_policy(pi);
             /* 甜点必须落在本簇可用区间里，否则区间会退化 */
             if (sweet > 0) {
@@ -766,32 +769,41 @@ void handle_dynamic_tuning(const char* current_app) {
             int fas_mid = sweet_floor + (fmax - sweet_floor) / 2;
             if (fas_mid < sweet_floor) fas_mid = sweet_floor;
             if (fas_mid > fmax) fas_mid = fmax;
-            int band_min = fas_low;
             /*
-             * 上限按档位给（与 4.65W 那局一致），不做"整局放开"：
-             * 放开上限那局（5.45W）帧最稳（min137/jitter0.4%）但功耗高 0.8W；
-             * 用户要的是"功耗低于官方"这条基线，所以上限照旧压住。
+             * ══ v6.2 执行器：三相位 + 频率倍数 ══
+             *
+             * 旧实现是「四档动作 -> 查表取区间」，帧债只用来选档位，
+             * 完全不体现「这一拍该给多少频率」。现在改成：
+             *   CALIBRATING -> 频率固定在甜点（测这个游戏实际能跑多少帧）
+             *   STABLE      -> 降频：quick_drop 直接到底板 / 否则按 8% 慢降
+             *   DEGRADED    -> 目标频率 = 上拍目标 × freq_scale（比例由帧率算出来）
+             *
+             * 天花板仍然交还给档位/走廊上限（历史结论：压天花板只会损帧）。
              */
-            int band_max = sweet > 0 ? sweet : fmin;
-            switch (fas_action) {
-                case FAS_ACTION_SWEETSPOT:
-                    band_min = sweet_floor;
-                    band_max = sweet_ceil;
-                    break;
-                case FAS_ACTION_SWEETSPOT_CEILING:
-                    band_min = fas_mid;
-                    band_max = fmax;
-                    break;
-                case FAS_ACTION_MAX_FREQ:
-                    band_min = fmax;
-                    band_max = fmax;
-                    g_control_trace.ceil_events++;
-                    break;
-                default:
-                    band_min = fas_low;
-                    band_max = sweet > 0 ? sweet : fmin;
-                    break;
+            const float freq_scale = g_cached_fas_freq_scale_milli.load() / 1000.0f;
+            const bool hold_sweet = g_cached_fas_hold_sweetspot.load() != 0;
+            const bool drop_to_floor = g_cached_fas_drop_to_floor.load() != 0;
+            const int cap = fmax;
+            int band_min;
+            int band_max = cap;
+            if (hold_sweet) {
+                /* 校准期：地板抬到甜点，上限放开给 governor（不钉死，避免损帧） */
+                band_min = (sweet > 0) ? sweet : fas_low;
+                last_fas_target[i] = band_min;
+            } else if (drop_to_floor) {
+                /* quick_drop：帧率稳定 -> 毫不犹豫直接降到底板 */
+                band_min = fas_low;
+                last_fas_target[i] = fas_low;
+            } else {
+                /* 按倍数算本拍目标：target = 上拍目标 × freq_scale */
+                int base = last_fas_target[i] > 0 ? last_fas_target[i] : (sweet > 0 ? sweet : fas_low);
+                int target = (int)((double)base * (double)freq_scale + 0.5);
+                if (target < fas_low) target = fas_low;
+                if (target > cap) target = cap;
+                last_fas_target[i] = target;
+                band_min = target;
             }
+            if (band_min > band_max) band_min = band_max;
             apply_render_band(i, pi, band_min, band_max, fmin, fmax, &last_f[i], now, fas_low);
             control_trace_note(trace_budget_us, trace_frame_us, trace_last_frame_us, trace_debt_us,
                                fas_action, last_f[i], fmin, fmax, true);
