@@ -117,6 +117,9 @@ bool fas_engine_init(FasEngine* e, const char* config_path) {
     if (!e || !config_path) return false;
     memset(e, 0, sizeof(*e));
 
+    /* 老用户升级：fas.json 会被原样继承，这里先做一次性归一化（带备份） */
+    fas_config_migrate_file(config_path);
+
     if (!fas_config_load_file(&e->config, config_path)) {
         char msg[256];
         snprintf(msg, sizeof(msg), "fas_engine: config load failed %s", config_path);

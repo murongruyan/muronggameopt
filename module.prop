@@ -1,7 +1,7 @@
 id=muronggameopt
-name=慕容调度6.3
-version=6.3
-versionCode=63
+name=慕容调度6.4
+version=6.4
+versionCode=64
 author=慕容茹艳（酷安慕容雪绒）
 description=第三方用户态调度版，集成 eBPF 动态调频、动态/自定义线程分配与 FAS 帧感知调度，并自动清理风驰配置以避免冲突。
 variant=third_party

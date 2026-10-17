@@ -3,7 +3,8 @@
     "enabled": 1,
     "quick_drop": 0,
     "report_thread_state": 1,
-    "upscale_occupancy": 85
+    "upscale_occupancy": 85,
+    "stable_headroom_permille": 1250
   },
   "sweetspot_freq": {
     "__MURONG_GENERATED_SWEETSPOT__": true

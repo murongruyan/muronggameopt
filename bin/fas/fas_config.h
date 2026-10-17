@@ -17,6 +17,13 @@ bool fas_config_load(FasConfig* cfg, const char* json_str);
 // 从文件加载配置
 bool fas_config_load_file(FasConfig* cfg, const char* path);
 
+/*
+ * 一次性迁移旧版 fas.json：删除已废弃的 apps[].fps_profiles、
+ * 补齐 defaults 里缺失的新开关（已有值不覆盖），原文件备份为 .bak。
+ * 返回 true 表示文件被改动过。
+ */
+bool fas_config_migrate_file(const char* path);
+
 // 查找 package 的 FAS 配置
 const FasAppConfig* fas_config_find_app(const FasConfig* cfg, const char* package);
 

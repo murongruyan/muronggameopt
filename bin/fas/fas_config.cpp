@@ -232,6 +232,103 @@ bool fas_config_load(FasConfig* cfg, const char* json_str) {
     return true;
 }
 
+/*
+ * ═══════════════════════════════════════════════════════════════
+ * 配置归一化（升级迁移）
+ * ═══════════════════════════════════════════════════════════════
+ *
+ * 为什么需要：fas.json 是【装机时生成、之后原样继承】的。
+ * customize.sh 的规则是：已有 fas.json 就不覆盖（用户可能在 App 里手改过），
+ * 所以老用户升级后拿到的仍是旧配置 ——
+ *   · 残留 apps[].fps_profiles（target_fps/margin_fps/kp，新引擎已不读）
+ *   · 缺少新版本 defaults 里的开关（靠 C++ 默认值兜底，但配置不完整）
+ *
+ * 这里在引擎初始化时做一次性迁移（只增不删用户已有值）：
+ *   1. 备份 fas.json -> fas.json.bak
+ *   2. 删除所有 apps[].fps_profiles
+ *   3. 补齐 defaults 里缺失的新开关
+ * 只有在确实需要改动时才写回，避免无谓的 mtime 变化触发配置重载。
+ */
+bool fas_config_migrate_file(const char* path) {
+    if (!path) return false;
+    FILE* fp = fopen(path, "r");
+    if (!fp) return false;
+    fseek(fp, 0, SEEK_END);
+    long len = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    if (len <= 0) { fclose(fp); return false; }
+    char* buf = (char*)malloc((size_t)len + 1);
+    if (!buf) { fclose(fp); return false; }
+    size_t n = fread(buf, 1, (size_t)len, fp);
+    fclose(fp);
+    buf[n] = '\0';
+
+    cJSON* root = cJSON_Parse(buf);
+    free(buf);
+    if (!root) return false;
+
+    bool changed = false;
+
+    cJSON* apps = cJSON_GetObjectItem(root, "apps");
+    if (apps && cJSON_IsArray(apps)) {
+        cJSON* app = NULL;
+        cJSON_ArrayForEach(app, apps) {
+            if (!cJSON_IsObject(app)) continue;
+            if (cJSON_GetObjectItem(app, "fps_profiles")) {
+                cJSON_DeleteItemFromObject(app, "fps_profiles");
+                changed = true;
+            }
+        }
+    }
+
+    cJSON* defaults = cJSON_GetObjectItem(root, "defaults");
+    if (!defaults || !cJSON_IsObject(defaults)) {
+        defaults = cJSON_AddObjectToObject(root, "defaults");
+        changed = true;
+    }
+    if (defaults) {
+        static const char* kNewKeys[] = {
+            "quick_drop", "report_thread_state",
+            "upscale_occupancy", "stable_headroom_permille"
+        };
+        static const int kNewVals[] = {0, 1, 85, 1250};
+        for (int i = 0; i < 4; i++) {
+            if (!cJSON_GetObjectItem(defaults, kNewKeys[i])) {
+                cJSON_AddNumberToObject(defaults, kNewKeys[i], kNewVals[i]);
+                changed = true;
+            }
+        }
+    }
+
+    if (!changed) { cJSON_Delete(root); return false; }
+
+    char* out = cJSON_Print(root);
+    cJSON_Delete(root);
+    if (!out) return false;
+
+    /* 先备份，再原子覆盖 */
+    char bak_path[320];
+    snprintf(bak_path, sizeof(bak_path), "%s.bak", path);
+    FILE* src = fopen(path, "r");
+    FILE* dst = fopen(bak_path, "w");
+    if (src && dst) {
+        char tmp[4096];
+        size_t r;
+        while ((r = fread(tmp, 1, sizeof(tmp), src)) > 0) fwrite(tmp, 1, r, dst);
+    }
+    if (src) fclose(src);
+    if (dst) fclose(dst);
+
+    FILE* wf = fopen(path, "w");
+    if (!wf) { free(out); return false; }
+    fwrite(out, 1, strlen(out), wf);
+    fclose(wf);
+    free(out);
+
+    log_message("fas.json 已迁移：删除 fps_profiles、补齐新开关（原文件备份为 fas.json.bak）");
+    return true;
+}
+
 bool fas_config_load_file(FasConfig* cfg, const char* path) {
     if (!cfg || !path) return false;
 

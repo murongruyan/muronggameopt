@@ -1,3 +1,26 @@
+6.4 | 2026-10-18 02:45 UTC
+配置升级修复：解决「老用户升级后 fas.json 永远不更新」的问题。
+
+【问题】fas.json 是装机时生成、之后原样继承的（customize.sh 规则：已有 fas.json 就不覆盖），
+所以老用户升级到新版本后拿到的仍是旧配置：
+  · 残留已废弃的 apps[].fps_profiles（target_fps / margin_fps / kp）
+  · 缺少新版本 defaults 里的开关（C++ 侧有默认值兜底，但配置文件本身不完整）
+在模块目录里能看到 fas.json 一直没变，就是这个原因。
+
+【修复】守护进程加载配置前做一次性归一化：
+  1. 备份 fas.json -> fas.json.bak
+  2. 删除所有 apps[].fps_profiles
+  3. 补齐 defaults 缺失的新开关（已有值绝不覆盖）
+  只有确实需要改动时才写回，避免无谓的 mtime 变化触发配置重载。
+
+【实测】把旧格式 fas.json（含 fps_profiles、旧 defaults）放进模块目录后重启：
+  fps_profiles 1 -> 0；自动补上 quick_drop / report_thread_state /
+  upscale_occupancy / stable_headroom_permille；生成 fas.json.bak；
+  日志：「fas.json 已迁移：删除 fps_profiles、补齐新开关（原文件备份为 fas.json.bak）」
+
+【模板同步】bin/cpu/fas.default.json 的 defaults 补上 stable_headroom_permille = 1250，
+全新安装生成的 fas.json 从此包含完整开关。
+
 6.3 | 2026-10-17 18:34 UTC
 稳定态天花板跟随目标 + 校准健壮性
 
