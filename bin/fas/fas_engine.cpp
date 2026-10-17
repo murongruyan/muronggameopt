@@ -22,6 +22,34 @@ extern long long get_current_time_ms();
  */
 static const int kBaseSensitivity = 3;         /* 灵敏度基准：配置 kp=3.0 对应 1.0 倍 */
 
+/*
+ * ── 自动目标帧率（auto target）参数 ────────────────────────────
+ *
+ * 背景：原来的目标帧率完全来自 fas.json 的档位表（60/90/120/144/165 …）。
+ * 档位表是人工枚举的，一旦游戏实际帧率不在表里就会判错方向 ——
+ * 实测 com.netease.lrs 稳跑 72fps，被【向上取档】判成 120fps，
+ * 于是每帧都「严重超预算」→ 永久 MAX_FREQ，CPU 85% 空闲却锁满频空转 ✗
+ *
+ * 新口径（用户方案）：目标 = 观测到的【可达到帧率】。
+ *   · 立即上抬：画面能跑更快就更新峰值（游戏改设置/开高刷立刻跟上）
+ *   · 维持：基本达到峰值时刷新计时，目标不衰减（避免把「降频导致掉帧」误判成场景变重）
+ *   · 缓慢衰减：持续达不到峰值 kAutoHoldMs + k 步 之后，每步降 1fps
+ *     （跟场景变重/加载，避免目标永久卡在高帧率）
+ */
+static const int kAutoTargetFloorFps = 24;      /* 低于此视为加载/菜单，不做帧感知决策 */
+static const int kAutoTargetCeilFps = 240;      /* 上限保护 */
+static const long long kAutoHoldMs = 8000;      /* 达不到峰值时，先保持这么久不衰减 */
+static const long long kAutoDecayStepMs = 8000; /* 之后每 8 秒允许降 1fps */
+/*
+ * 已经顶格（MAX_FREQ）却还是达不到峰值时的加速衰减参数。
+ *
+ * 场景确实变重（GPU 瓶颈、特效拉满）时，顶格也拉不回帧率 ——
+ * 如果还用 8s/帧的慢衰减，就会一直满频空转。
+ * 这时用更快的衰减把目标降到当前真实水平，让控制器回到省电档 ✓
+ */
+static const long long kAutoMaxHoldMs = 2000;
+static const long long kAutoMaxDecayStepMs = 2000;
+
 /* 动作表默认值（和以前写死的常量一致），dyn.json 的 control 可以覆盖。 */
 static const FasLadderConfig kDefaultLadder = {
     30,     /* deadband_permille    3% 预算：稳态帧债在 ±150us 抖，算噪声 */
@@ -225,6 +253,55 @@ void fas_engine_set_ladder(FasEngine* e, const FasLadderConfig* ladder) {
 // 主 Tick
 // ═══════════════════════════════════════════════════════════════
 
+/*
+ * 更新自动目标帧率，返回当前目标（0 = 还不可用，交给上层退到静态档位）。
+ *
+ * 只做「观测 + 慢衰减」，不做任何频率决策 —— 频率仍由帧债分档驱动，
+ * 这样升/降频逻辑完全复用原有那套，风险最小 ✓
+ */
+static int update_auto_target(FasEngine* e, int instant_fps, long long now_ms) {
+    if (!e) return 0;
+    if (instant_fps < 0) instant_fps = 0;
+
+    if (instant_fps > e->auto_peak_fps) {
+        /* 画面能跑更快：立即上抬（游戏改设置、开高刷、进战斗都能跟上） */
+        e->auto_peak_fps = instant_fps;
+        e->auto_peak_ms = now_ms;
+    } else if (instant_fps >= e->auto_peak_fps - 1) {
+        /*
+         * 基本达到峰值：维持。
+         * ⚠️ 这一步是关键：如果这里不刷新，那么「我们主动降频导致掉帧」
+         *    会被当成场景变重，目标一路衰减，控制器就再也拉不回去了 ✗
+         */
+        if (e->auto_peak_ms > 0) e->auto_peak_ms = now_ms;
+    } else {
+        /* 明显低于峰值：只有【持续达不到】才让目标缓慢下移（场景确实变重/加载） */
+        /* 已经顶格还是达不到 -> 说明不是 CPU 不够，加快下移，避免满频空转 ✗ */
+        bool at_max = (e->last_action_level >= FAS_ACTION_MAX_FREQ);
+        long long hold_ms = at_max ? kAutoMaxHoldMs : kAutoHoldMs;
+        long long step_ms = at_max ? kAutoMaxDecayStepMs : kAutoDecayStepMs;
+        long long behind_ms = now_ms - e->auto_peak_ms;
+        if (e->auto_peak_ms > 0 && behind_ms >= hold_ms + step_ms) {
+            long long steps = (behind_ms - hold_ms) / step_ms;
+            int decayed = e->auto_peak_fps - (int)steps;
+            if (decayed < kAutoTargetFloorFps) decayed = kAutoTargetFloorFps;
+            if (decayed != e->auto_peak_fps) {
+                char msg[192];
+                snprintf(msg, sizeof(msg),
+                    "fas_auto | peak down %d -> %d (inst:%d behind:%lldms)",
+                    e->auto_peak_fps, decayed, instant_fps, behind_ms);
+                log_fas_message(msg);
+                e->auto_peak_fps = decayed;
+            }
+            e->auto_peak_ms = now_ms;
+        }
+    }
+
+    if (e->auto_peak_fps < kAutoTargetFloorFps) return 0;
+    if (e->auto_peak_fps > kAutoTargetCeilFps) return kAutoTargetCeilFps;
+    return e->auto_peak_fps;
+}
+
 FasOutput fas_engine_tick(FasEngine* e) {
     FasOutput out;
     memset(&out, 0, sizeof(out));
@@ -242,11 +319,29 @@ FasOutput fas_engine_tick(FasEngine* e) {
 
     int target_fps = 0;
     bool target_changed = false;
-    fas_resolve_target_fps(
-        &e->buffer_state, &e->config,
-        e->buffer_state.package,
-        base_snap.current_fps_long, base_snap.current_fps_short, now_ms, false,
-        &target_fps, &target_changed);
+
+    /*
+     * 自动定档（优先）：目标 = 实测能跑到的帧率。
+     * 只观测/维护/慢衰减，不在这里做频率决策 —— 升/降频仍由帧债分档驱动 ✓
+     */
+    int auto_target_fps = update_auto_target(e, base_snap.current_fps_long, now_ms);
+
+    if (auto_target_fps > 0) {
+        target_fps = auto_target_fps;
+        if (e->buffer_state.stable_target_fps != target_fps) {
+            e->buffer_state.stable_target_fps = target_fps;
+            e->buffer_state.pending_target_fps = 0;
+            e->buffer_state.pending_target_since_ms = 0;
+            target_changed = true;
+        }
+    } else {
+        /* 还观测不到（刚切 app / 加载 / 画面静止）：退回 fas.json 的配置档位 */
+        fas_resolve_target_fps(
+            &e->buffer_state, &e->config,
+            e->buffer_state.package,
+            base_snap.current_fps_long, base_snap.current_fps_short, now_ms, false,
+            &target_fps, &target_changed);
+    }
 
     out.current_fps = base_snap.current_fps_long;
     out.target_fps = target_fps;
@@ -294,14 +389,14 @@ FasOutput fas_engine_tick(FasEngine* e) {
         e->last_log_ms = now_ms;
         char msg[288];
         snprintf(msg, sizeof(msg),
-            "fas_debt | app:%s | tfps:%d(%.1f) | cfps:%d | frame:%.1fms avg:%.1fms | "
+            "fas_debt | app:%s | tfps:%d(%.1f)[peak:%d] | cfps:%d | frame:%.1fms avg:%.1fms | "
             "budget:%dus debt:%dus sev:%dus | action:%d | streak:%d",
             e->buffer_state.package,
-            target_fps, (double)out.effective_target_fps,
+            target_fps, (double)out.effective_target_fps, e->auto_peak_fps,
             snap.current_fps_long,
             snap.last_frame_ms, snap.avg_short_ms,
             out.budget_us, out.debt_us, out.severity_us,
-            out.action_level, out.over_budget_streak);
+            out.action_level, e->over_budget_streak);
         log_fas_message(msg);
     }
 

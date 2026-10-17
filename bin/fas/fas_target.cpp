@@ -53,16 +53,31 @@ static int dedup_sorted_targets(int* targets, int count) {
     return write;
 }
 
+/*
+ * 从档位表里挑「当前帧率能达到的最接近档位」。
+ *
+ * ⚠️ 必须【向下取档】，不能向上：
+ *   旧实现是 `if (current_fps <= targets[i] + 3) 取 targets[i]`，即向上取。
+ *   实测 com.netease.lrs 稳跑 72fps，档位表只有 60/120/165 ——
+ *   72 被向上取成 120，预算 8333us，实际每帧 13845us，
+ *   于是每帧都「严重超预算」→ 永久 MAX_FREQ（满频空转）✗
+ *
+ *   向下取档后同一个例子会取 60：预算 16667us，实际 13845us -> 有富余，
+ *   控制器会自然把频率降到刚好够用的位置 ✓
+ *   （正常情况下自动目标帧率优先，这里只是自动目标不可用时的兜底）
+ */
 static int resolve_instant_target_fps(const int* targets, int target_count, int current_fps_long) {
     if (!targets || target_count <= 0) return 0;
 
     int resolved_target_fps = 0;
     int min_required_fps = std::max(targets[0] - 10, 10);
     if (current_fps_long >= min_required_fps) {
-        resolved_target_fps = targets[target_count - 1];
+        /* 默认最低档；再逐档往上找「不超过当前帧率+3」的最高档 */
+        resolved_target_fps = targets[0];
         for (int i = 0; i < target_count; i++) {
-            if (current_fps_long <= targets[i] + 3) {
+            if (targets[i] <= current_fps_long + 3) {
                 resolved_target_fps = targets[i];
+            } else {
                 break;
             }
         }
