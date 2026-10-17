@@ -396,6 +396,7 @@ static std::atomic<int> g_cached_fas_hold_sweetspot(0);
 static std::atomic<int> g_cached_fas_drop_to_floor(0);
 static std::atomic<int> g_cached_fas_occ_raise(0);
 static std::atomic<int> g_cached_fas_busy_usage(-1);
+static std::atomic<int> g_cached_fas_headroom_permille(1250);
 static long long g_fas_last_good_sample_ms = 0;
 
 FasEngine g_fas_engine;
@@ -414,6 +415,7 @@ void reset_fas_prediction_cache() {
     g_cached_fas_drop_to_floor.store(0);
     g_cached_fas_occ_raise.store(0);
     g_cached_fas_busy_usage.store(-1);
+    g_cached_fas_headroom_permille.store(1250);
     g_cached_fas_guard_active.store(0); g_cached_fas_guard_reason.store(0); g_fas_last_good_sample_ms = 0;
 }
 void reset_dynamic_tuning_state() {

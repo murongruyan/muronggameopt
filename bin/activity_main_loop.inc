@@ -227,6 +227,7 @@ void* fas_prediction_thread(void*) {
             g_cached_fas_drop_to_floor.store(o.drop_to_floor);
             g_cached_fas_occ_raise.store(o.upscale_by_occupancy);
             g_cached_fas_busy_usage.store(o.busy_thread_usage);
+            g_cached_fas_headroom_permille.store(o.stable_headroom_permille > 0 ? o.stable_headroom_permille : 1250);
             g_cached_fas_guard_signal.store(o.guard_signal);
             g_cached_fas_target_fps.store(o.target_fps);
             g_cached_fas_current_fps.store(o.current_fps);

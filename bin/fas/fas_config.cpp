@@ -27,6 +27,7 @@ void fas_config_reset_defaults(FasConfig* cfg) {
     cfg->quick_drop = 0;
     cfg->report_thread_state = 1;
     cfg->upscale_occupancy = 85;
+    cfg->stable_headroom_permille = 1250;
     cfg->app_count = 0;
     memset(cfg->apps, 0, sizeof(cfg->apps));
 }
@@ -151,6 +152,10 @@ bool fas_config_load(FasConfig* cfg, const char* json_str) {
             json_get_int(defaults, "upscale_occupancy", cfg->upscale_occupancy);
         if (cfg->upscale_occupancy < 0) cfg->upscale_occupancy = 0;
         if (cfg->upscale_occupancy > 100) cfg->upscale_occupancy = 100;
+        cfg->stable_headroom_permille =
+            json_get_int(defaults, "stable_headroom_permille", cfg->stable_headroom_permille);
+        if (cfg->stable_headroom_permille < 1000) cfg->stable_headroom_permille = 1000;
+        if (cfg->stable_headroom_permille > 4000) cfg->stable_headroom_permille = 4000;
     }
 
     bool truncated = false;

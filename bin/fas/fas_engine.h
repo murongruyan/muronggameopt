@@ -67,6 +67,11 @@ typedef struct {
     /* 降频节流 */
     long long last_drop_ms;
 
+    /* 画面暂时不出帧（加载/暂停）的起始时刻：短暂静默不丢基准，长时间静默才重置 */
+    long long unusable_since_ms;
+    /* 校准已耗时（用于超时兜底） */
+    long long calib_elapsed_ms;
+
     /* 重要线程占用（由 main_loop 每拍喂入；-1 = 未上报） */
     int busy_thread_usage;
 } FasEngine;

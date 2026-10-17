@@ -803,6 +803,22 @@ void handle_dynamic_tuning(const char* current_app) {
                 last_fas_target[i] = target;
                 band_min = target;
             }
+            /*
+             * v6.3 天花板跟随目标（实测：抬频率对掉帧毫无帮助，纯烧电）：
+             *   王者荣耀 165fps 实测 —— CPU0-5 在 ≤787 / 788-998 / 999-1228 / 1229-1670 /
+             *   1671-1785 / >1785 六个频段的掉帧率是 28.7 / 22.4 / 26.9 / 25.4 / 28.0 / 36.1%，
+             *   频率最高反而掉得最多；CPU6-7 与 GPU 侧同样持平。
+             *   所以【稳定态】把 band_max 收在 band_min 的 headroom 倍，不再直接放到模式上限；
+             *   只有【掉帧态】和【校准期】才把上限全放开（保帧 / 测真实帧率）。
+             */
+            const bool tighten_ceiling =
+                (!hold_sweet) && (fas_phase != FAS_PHASE_DEGRADED);
+            if (tighten_ceiling) {
+                const int headroom = g_cached_fas_headroom_permille.load();
+                long long hr = (long long)band_min * (headroom > 0 ? headroom : 1250) / 1000;
+                if (hr < band_min) hr = band_min;
+                if (hr < cap) band_max = (int)hr;
+            }
             if (band_min > band_max) band_min = band_max;
             apply_render_band(i, pi, band_min, band_max, fmin, fmax, &last_f[i], now, fas_low);
             control_trace_note(trace_budget_us, trace_frame_us, trace_last_frame_us, trace_debt_us,

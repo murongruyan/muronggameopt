@@ -131,6 +131,15 @@ typedef struct {
     int quick_drop;            /* 帧率稳定后直接降到底板（1=开） */
     int report_thread_state;   /* 把重要线程占用报告给 FAS（1=开） */
     int upscale_occupancy;     /* 占用率升频阈值（0=关闭） */
+    /*
+     * 稳定态的「天花板余量」千分比：
+     *   STABLE 时 band_max = band_min * 该值 / 1000（不再直接放到模式上限）
+     * 实测（王者荣耀 165fps）：CPU0-5 冲到 1785/2227 对掉帧毫无帮助
+     * （掉帧率在 ≤787MHz 到 >1785MHz 全频段都是 22%~36%，与频率无关），
+     * 所以稳定时把天花板收在目标附近，省电且不损帧 ✓
+     * 1250 = 比目标高 25%；掉帧态仍然全放开到模式上限。
+     */
+    int stable_headroom_permille;
 
     int app_count;
     FasAppConfig apps[FAS_MAX_FAS_APPS];
@@ -187,6 +196,7 @@ typedef struct {
     int drop_to_floor;         /* 1 = 帧率稳定：直接降到底板（quick_drop） */
     int upscale_by_occupancy;  /* 1 = 因重要线程占用率触发的升频 */
     int busy_thread_usage;     /* 重要线程占用（百分比；-1 = 未上报） */
+    int stable_headroom_permille; /* 稳定态天花板余量（透传给执行器） */
 } FasOutput;
 
 /*

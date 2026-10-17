@@ -57,6 +57,11 @@ static FasLadderConfig sanitize_ladder(const FasLadderConfig* in) {
 
 /* ── 新控制器参数 ─────────────────────────────────────────── */
 static const long long kCalibMs = 2500;        /* 校准时长：在甜点频率下观察 2.5 秒 */
+/* 校准最低帧率：低于 20fps 视为还在加载（实测加载期会测出 13fps，把基准拖坏） */
+static const double kCalibMinIntervalMs = 50.0;
+static const long long kCalibMaxWaitMs = 20000; /* 兜底：最多等 20s 就接受 */
+/* 画面静默超过这么久才丢弃基准重新校准（短暂静默保留基准） */
+static const long long kUnusableResetMs = 2000;
 static const int kCalibMinFrames = 20;         /* 至少这么多帧才算校准有效 */
 static const int kCalibMaxSamples = 256;
 static const float kFpsTolerance = 1.2f;       /* 用户口径：±1.2fps 内算稳定 */
@@ -182,6 +187,8 @@ void fas_engine_on_app_change(FasEngine* e, const char* package, int pid) {
     e->upshift_candidate_fps = 0;
     e->last_drop_ms = 0;
     e->busy_thread_usage = -1;
+    e->unusable_since_ms = 0;
+    e->calib_elapsed_ms = 0;
 
     char msg[256];
     snprintf(msg, sizeof(msg), "fas_engine: switch app pkg=%s pid=%d -> recalibrate", package, pid);
@@ -239,8 +246,14 @@ FasOutput fas_engine_tick(FasEngine* e) {
             e->buffer_state.working_state_since_ms = now_ms;
         }
         if (snap.working_state != FAS_BUFFER_USABLE) {
-            /* 画面没在稳定出帧（加载/暂停）：退到静态档位，不猜 */
-            if (e->phase != FAS_PHASE_UNKNOWN) {
+            /*
+             * 画面没在稳定出帧（加载/暂停/切场景）：退到静态档位，不猜。
+             * ⚠️ 但【短暂静默不要丢基准】：切场景/加载一两秒就重新校准，
+             * 会正好在校准期抓到加载画面（实测测出 13fps），把基准拖坏 ✗
+             */
+            if (e->unusable_since_ms <= 0) e->unusable_since_ms = now_ms;
+            if (e->phase != FAS_PHASE_UNKNOWN &&
+                now_ms - e->unusable_since_ms >= kUnusableResetMs) {
                 e->phase = FAS_PHASE_UNKNOWN;
                 e->calib_count = 0;
                 e->base_interval_ms = 0.0;
@@ -248,6 +261,7 @@ FasOutput fas_engine_tick(FasEngine* e) {
             }
             return out;
         }
+        e->unusable_since_ms = 0;
     } else {
         return out;
     }
@@ -275,7 +289,12 @@ FasOutput fas_engine_tick(FasEngine* e) {
         long long elapsed = now_ms - e->calib_since_ms;
         if (elapsed >= kCalibMs && e->calib_count >= kCalibMinFrames) {
             double med = median_of(e->calib_samples, e->calib_count);
-            if (med > 0.5) {
+            /* 低于 20fps 视为还在加载：继续校准，直到真的跑起来或超时兜底 */
+            bool still_loading = (med > kCalibMinIntervalMs) && (elapsed < kCalibMaxWaitMs);
+            if (still_loading) {
+                e->calib_since_ms = now_ms;
+                e->calib_count = 0;
+            } else if (med > 0.5) {
                 e->base_interval_ms = med;
                 e->stable_fps = fps_from_interval(med);
                 enter_phase(e, FAS_PHASE_STABLE, now_ms);
@@ -429,6 +448,8 @@ FasOutput fas_engine_tick(FasEngine* e) {
     out.severity_us = (int)(slope * 1000.0);
     out.over_budget_streak = (out.phase == FAS_PHASE_DEGRADED) ? 1 : 0;
     out.busy_thread_usage = busy;
+    out.stable_headroom_permille = e->config.stable_headroom_permille > 0
+        ? e->config.stable_headroom_permille : 1250;
     out.guard_signal = (out.phase == FAS_PHASE_DEGRADED) ? FAS_GUARD_TAIL_FRAME : FAS_GUARD_NONE;
 
     if (now_ms - e->last_log_ms >= 2000) {
