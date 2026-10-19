@@ -1,3 +1,28 @@
+6.5 | 2026-10-19 16:20 UTC
+恢复 sched.txt 的四个全局功能开关（自定义线程 / 动态线程 / 场景分类 / 模式基础）
+
+【问题】App「功能开关」里这四项关闭并确认后，重新打开又自动变回开启。
+根因是 6.0 起 sched.txt 精简为只保留 main=，模块把 custom_thread / dynamic_thread_scheduler /
+scene_category / base_profile 四个全局开关在代码里写死为 true，于是 App 写进来的状态没有落盘、
+读取时又恒为开启。
+
+【修复】apply_runtime_feature_overrides_from_shared_config 重新解析 sched.txt：
+  main / scheduler_master   调度总控
+  cth  / custom_thread      自定义线程
+  dth  / dynamic_thread_scheduler  动态线程（兼容历史别名 bpf / bpf_thread）
+  cat  / scene_category     场景分类
+  base / base_profile       模式基础
+缺省（没有对应行）时保持上一轮的值，首次加载默认全开。
+每应用 / 场景分类规则仍然只能"收窄"（clamp），不能把这里关掉的功能重新打开。
+
+【实测】王者荣耀前台时关闭「自定义线程 + 动态线程」：
+  · 模块日志：custom_thread:0 | dynamic_thread:0
+  · UnityMain 绑核 6-7 立即恢复为 0-7，亲和性日志 6 秒内不再新增（线程调度停止）
+重新开启后 UnityMain 重新绑回 6-7，亲和性日志恢复输出。
+动态调频 / FAS 仍走各自配置（dyn.json / fas.json），不受影响。
+
+【注意】需配合 App 2.1.9+ 使用；旧版 App 不会写这四行开关。
+
 6.4 | 2026-10-17 18:44 UTC
 fas.json 自动迁移 + 模板补全
 

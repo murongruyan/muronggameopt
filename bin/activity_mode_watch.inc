@@ -140,26 +140,36 @@ static bool apply_runtime_feature_overrides_from_shared_config(const char* mode)
         return false;
     }
     /*
-     * sched.txt 里只保留总开关。
-     *
-     * 其余功能开关全部下沉到各自的配置文件：
-     *   动态调频 -> bin/cpu/dyn.json 的 enabled
-     *   FAS      -> bin/cpu/fas.json 的 defaults.enabled
-     *   自定义线程 / 动态线程 -> 各自的应用规则（6+2.json / *.threads.json）
-     *   场景分类 / 基础档 -> 默认跟随总开关（配置存在即生效）
-     * 每应用与场景分类规则只能"收窄"，不能把总开关关掉的功能重新打开
+     * sched.txt 承载全局"总闸"开关：
+     *   main / scheduler_master            调度总控
+     *   cth  / custom_thread               自定义线程
+     *   dth  / dynamic_thread_scheduler    动态线程（历史别名 bpf / bpf_thread）
+     *   cat  / scene_category              场景分类
+     *   base / base_profile                模式基础
+     * 动态调频 / FAS 仍读各自配置（dyn.json 的 enabled / fas.json 的 defaults.enabled）。
+     * 每应用与场景分类规则只能"收窄"，不能把这里关掉的功能重新打开
      * （见 resolve_runtime_feature_switches_for_app 的 clamp）。
+     * 缺省（sched.txt 没有对应行）时保持上一轮的值，首次加载默认全开。
      */
     bool value = false;
     if (parse_runtime_feature_flag_alias_from_text(data, "main", "scheduler_master", &value)) {
         g_mode_runtime_features.scheduler_master_enabled = value;
     }
+    if (parse_runtime_feature_flag_alias_from_text(data, "cth", "custom_thread", &value)) {
+        g_mode_runtime_features.custom_thread_enabled = value;
+    }
+    if (parse_runtime_feature_flag_alias_from_text(data, "dth", "dynamic_thread_scheduler", &value) ||
+        parse_runtime_feature_flag_alias_from_text(data, "bpf", "bpf_thread", &value)) {
+        g_mode_runtime_features.dynamic_thread_scheduler_enabled = value;
+    }
+    if (parse_runtime_feature_flag_alias_from_text(data, "cat", "scene_category", &value)) {
+        g_mode_runtime_features.scene_category_enabled = value;
+    }
+    if (parse_runtime_feature_flag_alias_from_text(data, "base", "base_profile", &value)) {
+        g_mode_runtime_features.base_profile_enabled = value;
+    }
     g_mode_runtime_features.dynamic_tuning_enabled = g_dyn_params.enabled;
     g_mode_runtime_features.fas_enabled = g_fas_enabled_config;
-    g_mode_runtime_features.custom_thread_enabled = true;
-    g_mode_runtime_features.dynamic_thread_scheduler_enabled = true;
-    g_mode_runtime_features.scene_category_enabled = true;
-    g_mode_runtime_features.base_profile_enabled = true;
     invalidate_runtime_feature_switch_cache();
     free(data);
     return true;
