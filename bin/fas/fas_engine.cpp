@@ -248,6 +248,16 @@ FasOutput fas_engine_tick(FasEngine* e) {
             e->buffer_state.working_state = snap.working_state;
             e->buffer_state.working_state_since_ms = now_ms;
         }
+        /*
+         * 把帧缓冲状态带出引擎！
+         *
+         * 执行器（activity_dynamic_tuning.inc）用 g_cached_fas_buffer_usable
+         * 判断“能不能走 FAS 路径”，它的唯一来源就是 output.buffer_state。
+         * v6.2 三相位重写时这一行丢失了 → buffer_state 永远是 0 →
+         * 执行器全程走日用负载表，FAS 的甜点/深睡地板/headroom/quick_drop
+         * 全部不生效（表现为“FAS 相位在变，但频率不跟 FAS 走”）。
+         */
+        out.buffer_state = (int)snap.working_state;
         if (snap.working_state != FAS_BUFFER_USABLE) {
             /*
              * 画面没在稳定出帧（加载/暂停/切场景）：退到静态档位，不猜。

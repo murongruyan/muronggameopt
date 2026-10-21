@@ -1,3 +1,25 @@
+6.6 | 2026-10-21 23:55 UTC
+修复：FAS 执行链从 6.2 起从未真正生效（帧缓冲状态没带出引擎）
+
+【现象】用户反馈"FAS 的深睡地板不生效"。6.5 真机日志：
+  dyn_detail | app:... | fas:1 | fas_buf:0 | ...
+  执行器始终走日用负载表 → FAS 的甜点频率、深睡地板、稳定态 headroom、quick_drop
+  全部不参与调频；但 FAS 相位本身还在算（fas_log 有 STABLE/DEGRADE、帧数据正常）。
+
+【根因】6.2 三相位重写 fas_engine.cpp 时丢失了
+  out.buffer_state = (int)snap.working_state;
+  执行器用 g_cached_fas_buffer_usable（唯一来源就是 output.buffer_state）判断能不能走 FAS，
+  该值恒为 0 → FAS 路径永远进不去，等于 FAS 只"看帧"不"调频"。
+
+【修复】补回该赋值（bin/fas/fas_engine.cpp）。真机复测（王者荣耀 165fps / balance）：
+  修复前：fas_buf:0，p0 min=1440000、p6 min=1132800（日用负载表）
+  修复后：fas_buf:1，p0 min=1113600 max=1324800、p6 min=1267200 max=1497600
+          （= fas.json balance 深睡地板 + 1.25×headroom），
+          日志 c0:fas band:1113600-1392000 真正生效
+
+【影响】6.2~6.5 的 FAS 实际都没接管过调频；升级 6.6 后 FAS 会真正接管，
+  功耗/频率表现会发生变化，属于预期修复而非新问题。
+
 6.5 | 2026-10-19 16:30 UTC
 恢复 sched.txt 全局功能开关（cth/dth/cat/base），修复「功能开关关闭确认后又自动打开」；动态调频/FAS 仍走各自配置；需配合 App 2.1.9+。
 
