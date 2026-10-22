@@ -3,4 +3,8 @@ MODDIR=${0%/*}
 export LD_LIBRARY_PATH="$MODDIR/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 cd "$MODDIR"
 
+# 6.11：先复刻官方环境（禁用官方增强包/OIFace/game_opt 限频），再拉起调度。
+# 脚本幂等，配置在 config/official_env.conf，enabled=0 可关闭。
+[ -x "$MODDIR/vtools/official_env.sh" ] && /system/bin/sh "$MODDIR/vtools/official_env.sh"
+
 nohup "$MODDIR/bin/activity_diaodu" >/dev/null 2>&1 &

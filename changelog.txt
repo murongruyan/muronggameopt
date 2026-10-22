@@ -1,3 +1,17 @@
+6.11 | 2026-10-22 02:40 UTC
+修正：从"只检测"改为"复刻官方环境"——把开发者环境的官方禁用项写进模块并自动应用
+
+- 新增 config/official_env.conf + vtools/official_env.sh：模块启动时按配置复刻环境：
+  · 禁用官方增强/定制类包（默认 com.oplus.ohome、com.oplus.customize.coreapp，可配置；
+    已禁用则跳过，未安装则跳过）；
+  · OIFace：persist.sys.oiface.enable/control 置 0，并 stop oiface；
+  · game_opt：/proc/game_opt/disable_cpufreq_limit 置 1（解除官方游戏调频限制），
+    debug_enable 可选；
+- activity_diaodu.rc 在拉起 daemon 前执行该脚本；脚本幂等，enabled=0 可整体关闭；
+  日志写 config/official_env.log；
+- 保留 6.10 的只读检测（config/official_state.txt）用于核对复刻结果。
+- 注意：这是可配置的"环境复刻"，不是只报告状态；默认复刻项与开发者验证机一致。
+
 6.10 | 2026-10-22 02:22 UTC
 6.10：Binder 前台探测（子进程隔离+回退）、累计CPU时间选择策略（默认 hot）、官方组件状态检测（OIFace/game_opt/cosa/禁用包/禁用模块）。
 
