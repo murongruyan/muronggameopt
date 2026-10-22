@@ -27,6 +27,7 @@
     "enabled": 0,
     "scope": "games",
     "apply_fas": 1,
+    "write_walt": 0,
     "load_mode": 1,
     "stage_hysteresis": 5,
     "stage_load": { "idle": 20, "inactive": 35, "p1": 55, "p2": 75, "p3": 90 },
@@ -43,6 +44,12 @@
     "policy": "rr",
     "priority": 1,
     "write_sysctls": 1
+  },
+  "vendor_hints": {
+    "enabled": 0,
+    "fpsgo": 1,
+    "walt": 1,
+    "pipeline": 0
   },
   "modes": {
     "powersave": {

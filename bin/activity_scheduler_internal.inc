@@ -5483,6 +5483,139 @@ static bool write_tid_to_cpuset_tasks(const char* group_name, pid_t tid) {
     return ok > 0 && close_ok == 0;
 }
 
+/* ── 6.9：专用 cpuset 子目录（cpuset + affinity 双写）────────────────────
+ * 解决问题：设备把线程放在 background/restricted 等窄 cpuset 里时，
+ * sched_setaffinity 会 EINVAL 或写不进去；旧实现只能把线程挪到 top-app，
+ * 而 top-app 允许全核，等于顺带扩权。这里改为按目标掩码建一个专用子 cpuset
+ * （cpus 精确等于目标掩码），线程搬进去后再 setaffinity，既满足写掩码又
+ * 不扩大允许集；释放时再由 restore_thread_cpuset_membership_locked 搬回原组。
+ */
+static const char* kMurongCpusetBase = "/dev/cpuset/murong_sched";
+
+static bool ensure_dir_if_missing(const char* path) {
+    if (file_exists(path)) return true;
+    return mkdir(path, 0755) == 0 || (errno == EEXIST);
+}
+
+static bool write_text_path_direct(const char* path, const char* text) {
+    if (!path || !text) return false;
+    FILE* fp = fopen(path, "w");
+    if (!fp) return false;
+    int ok = fprintf(fp, "%s", text);
+    int close_ok = fclose(fp);
+    return ok > 0 && close_ok == 0;
+}
+
+static bool format_cpu_mask_list(const cpu_set_t* mask, char* out, size_t out_size) {
+    if (!mask || !out || out_size == 0) return false;
+    out[0] = '\0';
+    size_t pos = 0;
+    int range_start = -1;
+    int prev = -1;
+    for (int cpu = 0; cpu <= CPU_SETSIZE; cpu++) {
+        bool set = (cpu < CPU_SETSIZE) && CPU_ISSET(cpu, mask);
+        if (set) {
+            if (range_start < 0) range_start = cpu;
+            prev = cpu;
+        } else if (range_start >= 0) {
+            char part[24];
+            if (range_start == prev) {
+                safe_snprintf(part, sizeof(part), "%s%d", pos > 0 ? "," : "", range_start);
+            } else {
+                safe_snprintf(part, sizeof(part), "%s%d-%d", pos > 0 ? "," : "",
+                              range_start, prev);
+            }
+            size_t part_len = strlen(part);
+            if (pos + part_len + 1 >= out_size) return false;
+            memcpy(out + pos, part, part_len + 1);
+            pos += part_len;
+            range_start = -1;
+            prev = -1;
+        }
+    }
+    return pos > 0;
+}
+
+static bool ensure_dedicated_cpuset_for_mask(const cpu_set_t* mask,
+                                             char* out_tasks_path,
+                                             size_t out_size) {
+    if (!mask || !out_tasks_path || out_size == 0) return false;
+    if (access("/dev/cpuset", F_OK) != 0) return false;
+
+    int cpu_count = 0;
+    for (int cpu = 0; cpu < CPU_SETSIZE; cpu++) if (CPU_ISSET(cpu, mask)) cpu_count++;
+    if (cpu_count <= 0) return false;
+
+    if (!ensure_dir_if_missing(kMurongCpusetBase)) return false;
+
+    /* 父目录先给全核 + mems，子目录才能收紧到目标掩码。 */
+    char all_cpus[256] = {0};
+    size_t pos = 0;
+    for (int c = 0; c < cluster_count; c++) {
+        for (int i = 0; i < cpu_clusters[c].cpu_count; i++) {
+            int cpu = cpu_clusters[c].cpu_ids[i];
+            if (cpu < 0) continue;
+            char part[16];
+            safe_snprintf(part, sizeof(part), "%s%d", pos > 0 ? "," : "", cpu);
+            size_t part_len = strlen(part);
+            if (pos + part_len + 1 >= sizeof(all_cpus)) break;
+            memcpy(all_cpus + pos, part, part_len + 1);
+            pos += part_len;
+        }
+    }
+    if (pos > 0) {
+        write_text_path_direct("/dev/cpuset/murong_sched/cpus", all_cpus);
+    }
+
+    char mems[64] = {0};
+    if (!read_text_file("/dev/cpuset/mems", mems, sizeof(mems)) || !mems[0]) {
+        safe_strncpy(mems, "0", sizeof(mems));
+    }
+    size_t mems_len = strlen(mems);
+    while (mems_len > 0 &&
+           (mems[mems_len - 1] == '\n' || mems[mems_len - 1] == '\r' ||
+            mems[mems_len - 1] == ' ' || mems[mems_len - 1] == '\t')) {
+        mems[--mems_len] = '\0';
+    }
+    write_text_path_direct("/dev/cpuset/murong_sched/mems", mems);
+
+    char cpus[256] = {0};
+    if (!format_cpu_mask_list(mask, cpus, sizeof(cpus))) return false;
+
+    /* 掩码做名字：同掩码复用同目录，避免每次绑核都新建 cgroup。 */
+    unsigned long hash = 2166136261u;
+    for (int cpu = 0; cpu < CPU_SETSIZE; cpu++) {
+        if (CPU_ISSET(cpu, mask)) {
+            hash ^= (unsigned long)cpu + 1u;
+            hash *= 16777619u;
+        }
+    }
+    char dir[160];
+    safe_snprintf(dir, sizeof(dir), "%s/m%08lx", kMurongCpusetBase, hash & 0xfffffffful);
+    if (!ensure_dir_if_missing(dir)) return false;
+
+    char path[192];
+    safe_snprintf(path, sizeof(path), "%s/cpus", dir);
+    write_text_path_direct(path, cpus);
+    safe_snprintf(path, sizeof(path), "%s/mems", dir);
+    write_text_path_direct(path, mems);
+
+    safe_snprintf(out_tasks_path, out_size, "%s/tasks", dir);
+    return file_exists(out_tasks_path);
+}
+
+static bool write_tid_to_cpuset_path(const char* tasks_path, pid_t tid) {
+    if (!tasks_path || !tasks_path[0] || tid <= 0) return false;
+    record_cpuset_membership_baseline_locked(tid);
+    char tid_str[32];
+    safe_snprintf(tid_str, sizeof(tid_str), "%d", tid);
+    FILE* fp = fopen(tasks_path, "w");
+    if (!fp) return false;
+    int ok = fprintf(fp, "%s", tid_str);
+    int close_ok = fclose(fp);
+    return ok > 0 && close_ok == 0;
+}
+
 static bool recover_cpuset_and_retry_affinity(pid_t tid, cpu_set_t* mask, const char* mask_desc) {
     if (tid <= 0 || !mask || !mask_desc) return false;
 
@@ -5490,7 +5623,15 @@ static bool recover_cpuset_and_retry_affinity(pid_t tid, cpu_set_t* mask, const 
     char allowed_after[128] = {0};
     read_tid_allowed_cpu_list(tid, allowed_before, sizeof(allowed_before));
 
-    bool moved = write_tid_to_cpuset_tasks("top-app", tid);
+    /* 优先：按目标掩码建专用 cpuset 子目录，不扩大允许集。 */
+    char dedicated_tasks[192] = {0};
+    bool moved = ensure_dedicated_cpuset_for_mask(
+                     mask, dedicated_tasks, sizeof(dedicated_tasks)) &&
+                 write_tid_to_cpuset_path(dedicated_tasks, tid);
+    if (!moved) {
+        /* 回退：没有 cpuset v1 的机型，仍走原来的 top-app/foreground 通道。 */
+        moved = write_tid_to_cpuset_tasks("top-app", tid);
+    }
     if (!moved) {
         moved = write_tid_to_cpuset_tasks("foreground", tid);
     }
@@ -5501,14 +5642,15 @@ static bool recover_cpuset_and_retry_affinity(pid_t tid, cpu_set_t* mask, const 
     bool ok = sched_setaffinity(tid, sizeof(*mask), mask) == 0;
     read_tid_allowed_cpu_list(tid, allowed_after, sizeof(allowed_after));
 
-    char msg[384];
+    char msg[448];
     safe_snprintf(
         msg,
         sizeof(msg),
-        "tid:%d | mask:%s | cpuset_recover:%s | allowed_before:%s | allowed_after:%s",
+        "tid:%d | mask:%s | cpuset_recover:%s | dedicated:%d | allowed_before:%s | allowed_after:%s",
         tid,
         mask_desc,
         ok ? "ok" : strerror(errno),
+        dedicated_tasks[0] ? 1 : 0,
         allowed_before[0] ? allowed_before : "unknown",
         allowed_after[0] ? allowed_after : "unknown");
     log_affinity_message(msg);

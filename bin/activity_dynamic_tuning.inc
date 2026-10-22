@@ -298,6 +298,7 @@ static void update_daily_stats_snapshot(const AllCpuStats& stats) {
 static int g_dyn_limiter_stage = -1;
 static int g_dyn_limiter_load = -1;
 static long long g_dyn_limiter_last_log_ms = 0;
+static void dyn_limiter_write_walt_curve(int stage);
 
 static void dyn_limiter_update_stage(const AllCpuStats& stats, bool cpu_stats_ready) {
     g_dyn_limiter_stage = -1;
@@ -321,6 +322,14 @@ static void dyn_limiter_update_stage(const AllCpuStats& stats, bool cpu_stats_re
     prev_stage = stage;
     g_dyn_limiter_stage = stage;
     g_dyn_limiter_load = load;
+
+    if (g_dyn_limiter.write_walt) {
+        static int last_written_stage = -1;
+        if (stage != last_written_stage) {
+            last_written_stage = stage;
+            dyn_limiter_write_walt_curve(stage);
+        }
+    }
 }
 
 static bool dyn_limiter_applies_to_app(const char* app, bool fas_path) {
@@ -426,6 +435,74 @@ static void dyn_rt_apply_if_needed() {
         safe_snprintf(msg, sizeof(msg), "RT模式应用失败 | app:%s | pid:%d | errno:%d",
                       g_current_foreground_app, (int)fg_pid, errno);
         log_affinity_message(msg);
+    }
+}
+
+/*
+ * 厂商接口提示（6.9，默认关闭）：只对前台游戏主线程写一次
+ * FPSGO boost_affinity / WALT per-task hint / pipeline，节点不存在就跳过。
+ * 这些是厂商私有接口，不同机型语义可能不同，所以必须显式开启（dyn.json vendor_hints）。
+ */
+static void dyn_vendor_hints_apply_if_needed() {
+    if (!g_dyn_vendor_hints.enabled) return;
+
+    pid_t fg_pid = UnifiedScheduler::get_foreground_pid_snapshot();
+    if (fg_pid <= 0 || !g_current_foreground_app[0] ||
+        strcmp(g_current_foreground_app, "unknown") == 0 ||
+        !is_game_package_name(g_current_foreground_app)) {
+        return;
+    }
+    static pid_t last_pid = 0;
+    if (last_pid == fg_pid) return;
+    last_pid = fg_pid;
+
+    char value[96];
+    if (g_dyn_vendor_hints.fpsgo) {
+        const char* path = "/sys/kernel/fpsgo/fbt/fbt_attr_by_pid";
+        if (file_exists(path)) {
+            safe_snprintf(value, sizeof(value), "boost_affinity s %d 2", (int)fg_pid);
+            UnifiedScheduler::write_text_path_direct(path, value);
+        }
+    }
+    if (g_dyn_vendor_hints.walt) {
+        const char* path = "/proc/sys/walt/sched_per_task_boost";
+        if (file_exists(path)) {
+            safe_snprintf(value, sizeof(value), "%d 2", (int)fg_pid);
+            UnifiedScheduler::write_text_path_direct(path, value);
+        }
+    }
+    if (g_dyn_vendor_hints.pipeline) {
+        const char* path = "/proc/sys/walt/sched_pipeline_special";
+        if (file_exists(path)) UnifiedScheduler::write_text_path_direct(path, "0");
+    }
+
+    char msg[256];
+    safe_snprintf(msg, sizeof(msg),
+                  "厂商接口提示 | app:%s | pid:%d | fpsgo:%d walt:%d pipeline:%d",
+                  g_current_foreground_app, (int)fg_pid,
+                  g_dyn_vendor_hints.fpsgo ? 1 : 0,
+                  g_dyn_vendor_hints.walt ? 1 : 0,
+                  g_dyn_vendor_hints.pipeline ? 1 : 0);
+    log_affinity_message(msg);
+}
+
+/* limiter 的 margins → WALT target_loads（6.9，默认关闭；按 stage 变化时写一次）。 */
+static void dyn_limiter_write_walt_curve(int stage) {
+    if (stage < 0 || stage >= DYN_LIMITER_STAGE_COUNT) return;
+    for (int i = 0; i < cluster_count; i++) {
+        const DynLimiterCluster& lc = g_dyn_limiter.clusters[stage][i];
+        if (lc.margins.empty()) continue;
+        int pi = -1, pn = cpu_clusters[i].policies[0];
+        for (int k = 0; k < policy_count; k++) {
+            if (cpu_policies[k].policy_num == pn) { pi = k; break; }
+        }
+        if (pi < 0) continue;
+        char path[160];
+        safe_snprintf(path, sizeof(path),
+                      "/sys/devices/system/cpu/cpufreq/policy%d/walt/target_loads",
+                      cpu_policies[pi].policy_num);
+        if (!file_exists(path)) continue;
+        UnifiedScheduler::write_text_path_direct(path, lc.margins.c_str());
     }
 }
 
@@ -729,6 +806,7 @@ void handle_dynamic_tuning(const char* current_app) {
     last_t = now;
     g_runtime_stats.dynamic_tuning_ticks.fetch_add(1);
     dyn_rt_apply_if_needed();
+    dyn_vendor_hints_apply_if_needed();
 
     /*
      * control_trace：只观测。

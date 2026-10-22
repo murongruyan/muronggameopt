@@ -1,3 +1,21 @@
+6.9 | 2026-10-22 02:10 UTC
+新增：cpuset+affinity 双写、FPSGO/WALT 厂商接口、limiter 写 WALT 曲线；App 2.1.10 同步
+
+- 【cpuset + affinity 双写】绑核失败时不再简单把线程挪到 top-app 扩权，而是按目标掩码
+  创建/复用 `/dev/cpuset/murong_sched/<hash>` 专用子 cpuset（cpus=目标掩码、mems 继承），
+  把 tid 搬进去后重试 sched_setaffinity；释放时由 cpuset 成员账本迁回原分组。
+- 【厂商接口 dyn.json → vendor_hints，默认关】可对前台游戏主线程写
+  FPSGO `fbt_attr_by_pid`（boost_affinity）、WALT `sched_per_task_boost`、
+  `/proc/sys/walt/sched_pipeline_special`；只写设备上真实存在的节点，失败自动跳过。
+- 【limiter 写 WALT 曲线】dyn.json → limiter.write_walt（默认关）：
+  当 limiter 阶段变化时，把该阶段每簇的 `margins` 写到对应 policy 的
+  `walt/target_loads`（节点不存在则跳过）。
+- 【App 2.1.10】动态调频页新增「限流曲线 / RT 模式 / 厂商接口」三组 UI；
+  FAS 页新增 conservative / target_fps_offset_permille / fast_down 控件；
+  缺字段读默认、保存保留未知键。
+- 【兼容】所有新功能默认关闭；旧配置、旧 App 不受影响。需 App 2.1.10 才能图形化配置
+  limiter / RT / vendor_hints，也仍可直接编辑 dyn.json / fas.json。
+
 6.8 | 2026-10-22 01:34 UTC
 6.8：新增负载限流曲线 limiter（默认关）、FAS 参数 conservative/fps_offset/fast_down、语义核名 e-core/p-core/hp-core/all-core、可选 RT 模式（默认关）；支持热重载。
 
