@@ -24,6 +24,9 @@
 
 static FasLadderConfig g_dyn_control = {30, 100, 300, 2, 250, 60};
 
+/* 6.10：线程选择策略符号（纯线程版固定 hot，不参与动态调度） */
+static int g_dyn_thread_select_strategy = 0;
+
 /* 模式切换时的负载入口：纯线程版为空操作 */
 static void load_dyn_config_json(const char* mode) {
     (void)mode;
