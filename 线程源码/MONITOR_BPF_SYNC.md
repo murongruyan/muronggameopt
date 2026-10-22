@@ -40,3 +40,20 @@ struct queuebuffer_frame_signal、frame_signal_rb ringbuf map、sched_process_ex
 本次发布用的是**已经过真机 A/B 验证的预编译 .o**（830696 字节）；
 CI 重编输出会在下次发版时自然替换掉它。若日后发现 sha256 对不上，先看是不是这个原因，
 不要当成故障。
+
+## 2026-10-22（6.7）：新增 raw_tracepoint/task_rename
+
+- `monitor.bpf.c` 新增 `handle_task_rename`：args[0]=task、args[1]=newcomm，
+  事件类型 5（`PROCESS_EVENT_RENAME`）。
+- 原因：Android 游戏线程普遍创建后才 `pthread_setname_np` 改成 UnityMain /
+  RenderThread 这类真正参与规则匹配的名字；只看 fork/exec + 周期扫描会晚一拍。
+- 本地重编命令（WSL，libbpf 头文件取自 慕容调度-zip\bin\bpf-include）：
+  ```
+  clang -target bpf -g -O2 -D__TARGET_ARCH_arm64 \
+    -I<repo>/慕容调度-zip/bin/bpf-include -I. -c monitor.bpf.c -o monitor.bpf.o
+  ```
+  本次产物 833296 字节，已同步到 `bin/monitor.bpf.o`。
+- 用户态兼容：task_rename 程序是可选程序，挂不上（旧内核/旧对象）只降级为周期扫描。
+- 真机验证：日志出现「eBPF: 线程改名事件已挂载（事件驱动重匹配）」；
+  王者冷启动改名事件约 1900 次，按"新掩码是否变化"短路后实际重绑定仅个位数。
+

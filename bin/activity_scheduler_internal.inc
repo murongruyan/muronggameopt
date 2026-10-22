@@ -92,7 +92,8 @@ enum ProcessEventType {
     PROCESS_EVENT_FORK = 1,
     PROCESS_EVENT_EXEC = 2,
     PROCESS_EVENT_SET_AFFINITY = 3,
-    PROCESS_EVENT_EXIT = 4
+    PROCESS_EVENT_EXIT = 4,
+    PROCESS_EVENT_RENAME = 5
 };
 
 struct ProcessEventSignal {
@@ -204,16 +205,22 @@ static struct bpf_program* g_bpf_process_exec_prog = nullptr;
 static struct bpf_program* g_bpf_process_affinity_prog = nullptr;
 /* 退出事件：新版 BPF 才有，允许缺失（缺失时退化为低频 /proc 自愈校验）。 */
 static struct bpf_program* g_bpf_process_exit_prog = nullptr;
+/* 线程改名事件：同上，可缺失（缺失时退化为周期扫描重匹配）。 */
+static struct bpf_program* g_bpf_process_rename_prog = nullptr;
 static struct bpf_link* g_bpf_switch_link = nullptr;
 static struct bpf_link* g_bpf_wakeup_link = nullptr;
 static struct bpf_link* g_bpf_process_fork_link = nullptr;
 static struct bpf_link* g_bpf_process_exec_link = nullptr;
 static struct bpf_link* g_bpf_process_affinity_link = nullptr;
 static struct bpf_link* g_bpf_process_exit_link = nullptr;
+static struct bpf_link* g_bpf_process_rename_link = nullptr;
 static struct bpf_link* g_bpf_queuebuffer_link_v1 = nullptr;
 static struct bpf_link* g_bpf_queuebuffer_link_v2 = nullptr;
 static struct bpf_link* g_bpf_queuebuffer_link_v3 = nullptr;
 static struct bpf_link* g_bpf_queuebuffer_link_v4 = nullptr;
+
+/* 定义在本文件后部（锁会话用），改名事件在事件回调里要复用。 */
+static ThreadClass classify_thread_role_for_lock(pid_t tid, const char* comm, float cpu_usage_pct);
 
 /* 四个 queueBuffer 符号候选（老系统 V1/V2、Android 13+ V3/V4）。 */
 static struct bpf_link** queuebuffer_links[] = {
@@ -3727,6 +3734,72 @@ static void apply_rule_based_binding_for_new_thread_locked(
     }
 }
 
+/*
+ * 线程改名后的重匹配：只在"新名字确实会改变绑定"时才做 release + rebind。
+ *
+ * 游戏启动阶段改名事件非常密（实测王者一局启动 ~1900 次 rename）：线程创建时
+ * 继承父线程 comm（一堆 UnityMain -> Thread-xxxx、UnityMain -> 1），随后才改成
+ * 真正名字。如果每次改名都先 release 再 apply，会产生大量无意义的
+ * sched_setaffinity；这里先算新名字命中的规则/掩码，与当前状态相同就直接跳过。
+ *
+ * 返回 true 表示发生了实际重绑定（用于日志，避免刷屏）。
+ */
+static bool rebind_renamed_thread_locked(pid_t pid,
+                                         const char* package,
+                                         pid_t tid,
+                                         const char* new_comm,
+                                         long long now_ms) {
+    if (pid <= 0 || tid <= 0 || !package || !package[0] || !new_comm) return false;
+    if (!is_custom_thread_enabled_for_app(package)) return false;
+    if (should_pause_our_game_scheduler()) return false;
+
+    auto it = g_threads.find(tid);
+    if (it == g_threads.end()) return false;
+    ThreadRuntimeState& state = it->second;
+
+    ThreadJsonResolvedRule resolved_rule = {};
+    const ThreadJsonResolvedRule* rule = resolve_thread_json_rule_locked(
+        package, tid, new_comm, state.cpu_usage_pct, state.cls, &resolved_rule);
+    const bool new_has_any_action =
+        rule && rule->action &&
+        (rule->action->has_clusters || rule->action->has_cpus ||
+         rule->action->has_nice || rule->action->has_scheduler);
+
+    std::vector<int> new_cpus;
+    if (new_has_any_action &&
+        (rule->action->has_clusters || rule->action->has_cpus)) {
+        resolve_thread_json_action_cpus_locked(*rule->action, new_cpus);
+        normalize_cpu_mask(new_cpus);
+    }
+
+    /*
+     * 快速路径 1：新名字不产生任何显式掩码，且当前也没有挂过绑定 → 只更新 comm。
+     */
+    if (new_cpus.empty() && state.assigned_cpus.empty()) return false;
+
+    /*
+     * 快速路径 2：新旧名字落到同一套掩码 → 不用重绑。
+     *
+     * 注意不能只看 has_explicit_affinity_rule：默认/场景兜底规则（other 组）
+     * 也会写 assigned_cpus，只是不标记成"显式规则"。改名事件里大量线程
+     * 在 Thread-xxxx / AsyncTask 这类名字之间来回变，落点都是 other 的同一套掩码，
+     * 如果每次都 release+apply，会把启动阶段拖成上千次 sched_setaffinity。
+     */
+    if (!new_cpus.empty() &&
+        cpu_mask_equals(state.assigned_cpus, new_cpus) &&
+        state.assigned_cluster == highest_cluster_for_mask(new_cpus)) {
+        return false;
+    }
+
+    /*
+     * 旧名字套上的绑定先撤回，再按新名字重新匹配；否则线程会保留"按旧名字绑错"的掩码，
+     * 等下一次全量枚举才纠正。
+     */
+    release_thread_runtime_locked(state, "thread_renamed", false, false);
+    apply_rule_based_binding_for_new_thread_locked(pid, package, tid, new_comm, now_ms);
+    return true;
+}
+
 static int handle_process_event_signal(void* ctx, void* data, size_t size) {
     (void)ctx;
     if (!data || size < sizeof(ProcessEventSignal)) return 0;
@@ -3775,6 +3848,48 @@ static int handle_process_event_signal(void* ctx, void* data, size_t size) {
     if (is_foreground_pid) {
         safe_strncpy(package, g_foreground_package, sizeof(package));
     } else if (!read_process_package_name(signal->pid, package, sizeof(package))) {
+        return 0;
+    }
+
+    /*
+     * 线程改名（pthread_setname_np / prctl）。
+     *
+     * Android 游戏/运行库普遍"线程先创建、后命名"：出生时 comm 是
+     * Thread-12 / pool-2-thread-1，真正参与规则匹配的名字是后改的。
+     * 只看 fork 事件 + 周期扫描，这些线程要等下一轮扫描才命中规则，
+     * 期间可能一直跑在错误核上。改名事件（type 5）让规则当场重新匹配。
+     */
+    if (signal->type == PROCESS_EVENT_RENAME) {
+        auto rename_it = g_threads.find(signal->tid);
+        if (rename_it == g_threads.end()) {
+            /* 非前台进程的改名且未入册：交给周期扫描，不在事件里扫 /proc。 */
+            if (!is_foreground_pid) return 0;
+            ensure_thread_state_for_tid_locked(signal->pid, package, signal->tid, event_comm);
+            rename_it = g_threads.find(signal->tid);
+            if (rename_it == g_threads.end()) return 0;
+            rename_it->second.pid = signal->pid;
+            rename_it->second.package = package;
+        }
+
+        std::string old_comm = rename_it->second.comm;
+        rename_it->second.comm = event_comm;
+        rename_it->second.cls = classify_thread_role_for_lock(
+            signal->tid, event_comm, rename_it->second.cpu_usage_pct);
+
+        if (is_foreground_pid) {
+            bool rebound = rebind_renamed_thread_locked(
+                signal->pid, package, signal->tid, event_comm, g_last_process_event_ms);
+            g_dynamic_affinity_recheck_pending = true;
+            g_foreground_pid_refresh_pending = true;
+            /* 只记录真正改变了绑定的改名，避免启动期上千条重名刷屏。 */
+            if (rebound && !old_comm.empty() && old_comm != event_comm) {
+                char msg[256];
+                safe_snprintf(msg, sizeof(msg),
+                              "线程改名重绑定 | app:%s | tid:%d | %s -> %s",
+                              package, (int)signal->tid, old_comm.c_str(), event_comm);
+                log_affinity_message(msg);
+            }
+        }
         return 0;
     }
 
@@ -3844,9 +3959,9 @@ static int handle_process_event_signal(void* ctx, void* data, size_t size) {
         memcpy(comm_buf, signal->comm, sizeof(signal->comm));
         comm_buf[sizeof(signal->comm)] = '\0';
         
-        const char* event_names[] = { "unknown", "fork", "exec", "setaffinity", "exit" };
+        const char* event_names[] = { "unknown", "fork", "exec", "setaffinity", "exit", "rename" };
         const char* event_name =
-            (signal->type >= 1 && signal->type <= 4) ? event_names[signal->type] : "unknown";
+            (signal->type >= 1 && signal->type <= 5) ? event_names[signal->type] : "unknown";
 
         char msg[384];
         safe_snprintf(
@@ -3908,6 +4023,9 @@ bool init_bpf() {
     /* 可选：新版 BPF 提供退出事件；旧对象没有这个程序时继续跑，只是回退到低频扫描。 */
     g_bpf_process_exit_prog =
         find_bpf_program_compat("handle_process_exit", "raw_tracepoint/sched_process_exit");
+    /* 可选：线程改名事件；旧对象没有时继续跑，只是改名要等周期扫描才重匹配。 */
+    g_bpf_process_rename_prog =
+        find_bpf_program_compat("handle_task_rename", "raw_tracepoint/task_rename");
     if (!g_bpf_switch_prog || !g_bpf_wakeup_prog || !g_bpf_queuebuffer_prog ||
         !g_bpf_process_fork_prog || !g_bpf_process_exec_prog || !g_bpf_process_affinity_prog) {
         char msg[320];
@@ -4009,6 +4127,19 @@ bool init_bpf() {
             log_config_message("eBPF: sched_process_exit 事件不可用，线程清册回退为低频扫描");
         } else {
             log_config_message("eBPF: 线程退出事件已挂载（事件驱动清册）");
+        }
+    }
+    /*
+     * 线程改名事件同样是可选程序：挂上后 UnityMain / RenderThread 这类
+     * "后置命名"的线程能在改名瞬间重新匹配规则，不用等周期扫描。
+     */
+    if (g_bpf_process_rename_prog) {
+        g_bpf_process_rename_link = bpf_program__attach(g_bpf_process_rename_prog);
+        if (libbpf_get_error(g_bpf_process_rename_link)) {
+            g_bpf_process_rename_link = nullptr;
+            log_config_message("eBPF: task_rename 事件不可用，线程改名回退为周期扫描");
+        } else {
+            log_config_message("eBPF: 线程改名事件已挂载（事件驱动重匹配）");
         }
     }
     struct bpf_map* runtime_map = bpf_object__find_map_by_name(g_bpf_obj, "thread_runtime_map");
@@ -4122,6 +4253,10 @@ void cleanup_bpf() {
         bpf_link__destroy(g_bpf_process_exit_link);
         g_bpf_process_exit_link = nullptr;
     }
+    if (g_bpf_process_rename_link) {
+        bpf_link__destroy(g_bpf_process_rename_link);
+        g_bpf_process_rename_link = nullptr;
+    }
     if (g_bpf_process_exec_link) {
         bpf_link__destroy(g_bpf_process_exec_link);
         g_bpf_process_exec_link = nullptr;
@@ -4148,6 +4283,8 @@ void cleanup_bpf() {
     g_bpf_process_fork_prog = nullptr;
     g_bpf_process_exec_prog = nullptr;
     g_bpf_process_affinity_prog = nullptr;
+    g_bpf_process_exit_prog = nullptr;
+    g_bpf_process_rename_prog = nullptr;
     g_target_tgid_map_fd = -1;
     g_thread_runtime_map_fd = -1;
     g_cpu_last_ts_map_fd = -1;

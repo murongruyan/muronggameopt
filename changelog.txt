@@ -1,3 +1,25 @@
+6.7 | 2026-10-22 00:20 UTC
+新增：线程改名事件驱动重匹配（task_rename）
+
+【问题】Android 游戏线程普遍"先创建、后命名"：出生时 comm 是
+Thread-3374 / AsyncTask / cent.tmgp.sgame 这类通用名，真正参与线程规则匹配的
+UnityMain / RenderThread 是几百毫秒后才改的。以前只有 fork/exec 事件 + 周期扫描，
+这些线程要等下一轮枚举才命中规则，期间可能一直跑在错误的核上。
+
+【实现】
+- eBPF 新增 raw_tracepoint/task_rename 程序（事件类型 5，带 newcomm）。
+- 用户态：改名事件到达时立即更新线程 comm/角色并重跑规则匹配；
+  旧名字套上的绑定先撤回，再按新名字重新落位。
+- 性能保护：先算新名字命中的规则/掩码，与当前绑定相同就只更新 comm，
+  不重复 release+apply。实测王者冷启动改名事件约 1900 次，
+  实际重绑定从 1900 次降到个位数，避免启动期 sched_setaffinity 风暴。
+- 兼容：task_rename 挂不上（旧内核/旧 BPF 对象）自动降级为周期扫描，不影响启动。
+
+【实测】RMX5200 / 王者荣耀 165fps：
+- 日志「eBPF: 线程改名事件已挂载（事件驱动重匹配）」
+- 改名后 UnityMain / UnityGfxDeviceW 正确落 6-7，继承父线程名字的线程回退 1-4
+- FAS 仍正常（fas_buf:1）；无新增崩溃或掉帧异常
+
 6.6 | 2026-10-21 23:54 UTC
 FAS 修复：补回 buffer_state 输出，恢复 6.2 起从未生效的 FAS 调频链（甜点/深睡地板/headroom/quick_drop 真正参与调频）；需配合 App 2.1.9+。
 

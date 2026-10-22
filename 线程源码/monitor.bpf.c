@@ -181,6 +181,33 @@ int handle_process_exit(struct bpf_raw_tracepoint_args *ctx) {
     return 0;
 }
 
+/*
+ * 线程改名（pthread_setname_np / prctl(PR_SET_NAME)）。
+ *
+ * Android 游戏/运行库普遍是"线程先创建、几百毫秒后才命名"：
+ * 创建时 comm 是 Thread-12 / pool-2-thread-1 这类通用名，真正参与线程规则
+ * 匹配的 UnityMain / RenderThread 等名字是后改的。只看 fork 事件 + 周期扫描，
+ * 这些线程会晚一拍才命中规则，甚至在错误核上跑一段时间。
+ *
+ * tracepoint 定义（include/trace/events/task.h）：
+ *   TP_PROTO(struct task_struct *task, const char *newcomm)
+ * raw tracepoint 的 args[0]=task、args[1]=newcomm；事件类型 5。
+ */
+SEC("raw_tracepoint/task_rename")
+int handle_task_rename(struct bpf_raw_tracepoint_args *ctx) {
+    struct task_struct *task = (struct task_struct *)ctx->args[0];
+    const char *newcomm = (const char *)ctx->args[1];
+    __u32 pid = BPF_CORE_READ(task, tgid);
+    __u32 tid = BPF_CORE_READ(task, pid);
+    char comm[16];
+
+    if (!newcomm || bpf_probe_read_kernel_str(comm, sizeof(comm), newcomm) <= 0) {
+        __builtin_memset(comm, 0, sizeof(comm));
+    }
+    emit_process_event(pid, tid, comm, 5);
+    return 0;
+}
+
 SEC("raw_tracepoint/sys_enter")
 int handle_sched_setaffinity(struct bpf_raw_tracepoint_args *ctx) {
     __u64 syscall_nr = ctx->args[0];
