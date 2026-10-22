@@ -28,6 +28,9 @@ void fas_config_reset_defaults(FasConfig* cfg) {
     cfg->report_thread_state = 1;
     cfg->upscale_occupancy = 85;
     cfg->stable_headroom_permille = 1250;
+    cfg->conservative = 1;
+    cfg->target_fps_offset_permille = 0;
+    cfg->fast_down = 0;
     cfg->app_count = 0;
     memset(cfg->apps, 0, sizeof(cfg->apps));
 }
@@ -156,6 +159,14 @@ bool fas_config_load(FasConfig* cfg, const char* json_str) {
             json_get_int(defaults, "stable_headroom_permille", cfg->stable_headroom_permille);
         if (cfg->stable_headroom_permille < 1000) cfg->stable_headroom_permille = 1000;
         if (cfg->stable_headroom_permille > 4000) cfg->stable_headroom_permille = 4000;
+        cfg->conservative = json_get_int(defaults, "conservative", cfg->conservative);
+        if (cfg->conservative < 1) cfg->conservative = 1;
+        if (cfg->conservative > 4) cfg->conservative = 4;
+        cfg->target_fps_offset_permille =
+            json_get_int(defaults, "target_fps_offset_permille", cfg->target_fps_offset_permille);
+        if (cfg->target_fps_offset_permille < 0) cfg->target_fps_offset_permille = 0;
+        if (cfg->target_fps_offset_permille > 300) cfg->target_fps_offset_permille = 300;
+        cfg->fast_down = json_get_bool(defaults, "fast_down", cfg->fast_down != 0) ? 1 : 0;
     }
 
     bool truncated = false;

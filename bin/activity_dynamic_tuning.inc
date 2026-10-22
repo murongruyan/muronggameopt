@@ -291,6 +291,145 @@ static void update_daily_stats_snapshot(const AllCpuStats& stats) {
 }
 
 /*
+ * 限流曲线执行（6.8，借鉴 Scene LP 辅助调速器）：
+ * 用集群 0 的负载选 idle/inactive/p1/p2/p3 阶段，再给每簇一个 [min,max] 钳制，
+ * 叠在 FAS 或日用调频的结果之上。默认关闭（dyn.json limiter.enabled=0）。
+ */
+static int g_dyn_limiter_stage = -1;
+static int g_dyn_limiter_load = -1;
+static long long g_dyn_limiter_last_log_ms = 0;
+
+static void dyn_limiter_update_stage(const AllCpuStats& stats, bool cpu_stats_ready) {
+    g_dyn_limiter_stage = -1;
+    g_dyn_limiter_load = -1;
+    if (!g_dyn_limiter.enabled || !cpu_stats_ready) return;
+
+    int load = calc_cluster_load_percent_for_daily(0, stats, g_dyn_limiter.load_mode);
+    if (load < 0) return;
+
+    int stage = DYN_LIMITER_STAGE_COUNT - 1;
+    for (int i = 0; i < DYN_LIMITER_STAGE_COUNT; i++) {
+        if (load <= g_dyn_limiter.stage_upper[i]) { stage = i; break; }
+    }
+
+    static int prev_stage = -1;
+    if (prev_stage >= 0 && prev_stage < DYN_LIMITER_STAGE_COUNT &&
+        g_dyn_limiter.stage_hysteresis > 0 && stage != prev_stage) {
+        int prev_upper = g_dyn_limiter.stage_upper[prev_stage];
+        if (abs(load - prev_upper) <= g_dyn_limiter.stage_hysteresis) stage = prev_stage;
+    }
+    prev_stage = stage;
+    g_dyn_limiter_stage = stage;
+    g_dyn_limiter_load = load;
+}
+
+static bool dyn_limiter_applies_to_app(const char* app, bool fas_path) {
+    if (g_dyn_limiter_stage < 0 || g_dyn_limiter_stage >= DYN_LIMITER_STAGE_COUNT) return false;
+    if (!app || !app[0]) return false;
+    if (fas_path && !g_dyn_limiter.apply_fas) return false;
+    if (g_dyn_limiter.scope == "games") return is_game_package_name(app);
+    if (g_dyn_limiter.scope == "apps") return !is_game_package_name(app);
+    return true;
+}
+
+static void dyn_limiter_clamp_band(int cluster, int* pmin, int* pmax, int fmin, int fmax) {
+    if (!pmin || !pmax) return;
+    if (g_dyn_limiter_stage < 0 || g_dyn_limiter_stage >= DYN_LIMITER_STAGE_COUNT) return;
+    if (cluster < 0 || cluster >= MAX_CLUSTERS) return;
+    const DynLimiterCluster& lc = g_dyn_limiter.clusters[g_dyn_limiter_stage][cluster];
+    int lo = *pmin, hi = *pmax;
+    if (lc.min_khz > 0 && lo < lc.min_khz) lo = lc.min_khz;
+    if (lc.max_khz > 0 && hi > lc.max_khz) hi = lc.max_khz;
+    if (lo < fmin) lo = fmin;
+    if (hi > fmax) hi = fmax;
+    if (hi < fmin) hi = fmin;
+    if (lo > fmax) lo = fmax;
+    if (lo > hi) lo = hi;
+    *pmin = lo;
+    *pmax = hi;
+}
+
+static void dyn_limiter_log(int cluster, const char* app, int fmin, int fmax, int out_min, int out_max) {
+    if (g_dyn_limiter_stage < 0) return;
+    long long now = get_current_time_ms();
+    if (now - g_dyn_limiter_last_log_ms < 5000) return;
+    g_dyn_limiter_last_log_ms = now;
+    const char* stage_name = kDynLimiterStageNames[g_dyn_limiter_stage];
+    char msg[320];
+    safe_snprintf(msg, sizeof(msg),
+                  "limiter | app:%s | c%d | 负载:%d%% 阶段:%s | 档位区间:%d-%d | 钳制后:%d-%d",
+                  app && app[0] ? app : "unknown", cluster,
+                  g_dyn_limiter_load, stage_name, fmin, fmax, out_min, out_max);
+    log_stats_message(msg);
+}
+
+/*
+ * 全局 RT 模式（6.8，默认关闭）：只给前台游戏主线程切 SCHED_RR/FIFO，
+ * 可选写 RT 带宽 sysctl；游戏切后台/退出时恢复 SCHED_OTHER。
+ * 这是显式用户开关（dyn.json → rt.enabled=1），不替用户默认开启。
+ */
+static bool g_dyn_rt_sysctl_done = false;
+static pid_t g_dyn_rt_applied_pid = 0;
+
+static bool dyn_rt_write_text(const char* path, const char* value) {
+    FILE* fp = fopen(path, "w");
+    if (!fp) return false;
+    bool ok = fputs(value, fp) >= 0;
+    fclose(fp);
+    return ok;
+}
+
+static void dyn_rt_restore() {
+    if (g_dyn_rt_applied_pid > 0) {
+        struct sched_param sp = {};
+        if (sched_setscheduler(g_dyn_rt_applied_pid, SCHED_OTHER, &sp) == 0) {
+            char msg[160];
+            safe_snprintf(msg, sizeof(msg), "RT模式恢复 | pid:%d -> SCHED_OTHER",
+                          (int)g_dyn_rt_applied_pid);
+            log_affinity_message(msg);
+        }
+        g_dyn_rt_applied_pid = 0;
+    }
+}
+
+static void dyn_rt_apply_if_needed() {
+    if (!g_dyn_rt.enabled) { dyn_rt_restore(); return; }
+
+    pid_t fg_pid = UnifiedScheduler::get_foreground_pid_snapshot();
+    const bool game_foreground =
+        fg_pid > 0 && g_current_foreground_app[0] &&
+        strcmp(g_current_foreground_app, "unknown") != 0 &&
+        is_game_package_name(g_current_foreground_app);
+    if (!game_foreground) { dyn_rt_restore(); return; }
+    if (g_dyn_rt_applied_pid == fg_pid) return;
+
+    dyn_rt_restore();
+    if (g_dyn_rt.write_sysctls && !g_dyn_rt_sysctl_done) {
+        g_dyn_rt_sysctl_done = true;
+        dyn_rt_write_text("/proc/sys/kernel/sched_rr_timeslice_ms", "3");
+        dyn_rt_write_text("/proc/sys/kernel/sched_rt_period_us", "30000");
+        dyn_rt_write_text("/proc/sys/kernel/sched_rt_runtime_us", "29500");
+    }
+
+    int policy = (g_dyn_rt.policy == "fifo") ? SCHED_FIFO : SCHED_RR;
+    struct sched_param sp = {};
+    sp.sched_priority = g_dyn_rt.priority;
+    if (sched_setscheduler(fg_pid, policy, &sp) == 0) {
+        g_dyn_rt_applied_pid = fg_pid;
+        char msg[192];
+        safe_snprintf(msg, sizeof(msg), "RT模式已应用 | app:%s | pid:%d | %s prio:%d",
+                      g_current_foreground_app, (int)fg_pid,
+                      g_dyn_rt.policy.c_str(), g_dyn_rt.priority);
+        log_affinity_message(msg);
+    } else {
+        char msg[192];
+        safe_snprintf(msg, sizeof(msg), "RT模式应用失败 | app:%s | pid:%d | errno:%d",
+                      g_current_foreground_app, (int)fg_pid, errno);
+        log_affinity_message(msg);
+    }
+}
+
+/*
  * control_trace：按 FAS 理念重构前的观测层（只记录，不参与控制）。
  *
  * 记录的是"这一帧还差多少时间"的派生量：
@@ -589,6 +728,7 @@ void handle_dynamic_tuning(const char* current_app) {
     if (now - last_t < min_interval_ms) return;
     last_t = now;
     g_runtime_stats.dynamic_tuning_ticks.fetch_add(1);
+    dyn_rt_apply_if_needed();
 
     /*
      * control_trace：只观测。
@@ -671,6 +811,9 @@ void handle_dynamic_tuning(const char* current_app) {
     /* 日用动态调频要用的 CPU 占用（/proc/stat 一次读） */
     AllCpuStats stats = {};
     bool cpu_stats_ready = read_all_cpu_stats(&stats) && stats.valid;
+    dyn_limiter_update_stage(stats, cpu_stats_ready);
+    const bool limiter_for_fas = dyn_limiter_applies_to_app(current_app, true);
+    const bool limiter_for_daily = dyn_limiter_applies_to_app(current_app, false);
 
     for (int i = 0; i < cluster_count; i++) {
         int pi = -1, pn = cpu_clusters[i].policies[0];
@@ -820,6 +963,13 @@ void handle_dynamic_tuning(const char* current_app) {
                 if (hr < cap) band_max = (int)hr;
             }
             if (band_min > band_max) band_min = band_max;
+            if (limiter_for_fas) {
+                int lim_min = band_min, lim_max = band_max;
+                dyn_limiter_clamp_band(i, &lim_min, &lim_max, fmin, fmax);
+                band_min = lim_min;
+                band_max = lim_max;
+                dyn_limiter_log(i, current_app, fmin, fmax, band_min, band_max);
+            }
             apply_render_band(i, pi, band_min, band_max, fmin, fmax, &last_f[i], now, fas_low);
             control_trace_note(trace_budget_us, trace_frame_us, trace_last_frame_us, trace_debt_us,
                                fas_action, last_f[i], fmin, fmax, true);
@@ -934,6 +1084,16 @@ void handle_dynamic_tuning(const char* current_app) {
                 daily_floor = cur_floor;
                 daily_target = cur_ceil;
             }
+        }
+
+        /* 限流曲线：对日用调频结果再做一次负载阶段钳制（默认关闭）。 */
+        if (limiter_for_daily) {
+            int lim_floor = daily_floor;
+            int lim_ceil = daily_target;
+            dyn_limiter_clamp_band(i, &lim_floor, &lim_ceil, fmin, fmax);
+            daily_floor = lim_floor;
+            daily_target = lim_ceil;
+            dyn_limiter_log(i, current_app, fmin, fmax, daily_floor, daily_target);
         }
 
         /*

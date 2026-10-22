@@ -4,7 +4,10 @@
     "quick_drop": 0,
     "report_thread_state": 1,
     "upscale_occupancy": 85,
-    "stable_headroom_permille": 1250
+    "stable_headroom_permille": 1250,
+    "conservative": 1,
+    "target_fps_offset_permille": 0,
+    "fast_down": 0
   },
   "sweetspot_freq": {
     "__MURONG_GENERATED_SWEETSPOT__": true

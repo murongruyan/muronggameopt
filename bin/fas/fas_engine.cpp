@@ -137,10 +137,12 @@ bool fas_engine_init(FasEngine* e, const char* config_path) {
     e->busy_thread_usage = -1;
     e->initialized = 1;
 
-    char msg[220];
+    char msg[280];
     snprintf(msg, sizeof(msg),
-        "fas_engine: v6.2 三相位控制器 | quick_drop=%d report_thread=%d upscale_occ=%d%%",
-        e->config.quick_drop, e->config.report_thread_state, e->config.upscale_occupancy);
+        "fas_engine: v6.2 三相位控制器 | quick_drop=%d fast_down=%d conservative=%d fps_offset=%d‰ report_thread=%d upscale_occ=%d%%",
+        e->config.quick_drop, e->config.fast_down, e->config.conservative,
+        e->config.target_fps_offset_permille, e->config.report_thread_state,
+        e->config.upscale_occupancy);
     log_message(msg);
     log_message("fas_engine: init ok");
     return true;
@@ -349,7 +351,10 @@ FasOutput fas_engine_tick(FasEngine* e) {
 
         if (under) {
             if (e->degrade_candidate_ms <= 0) e->degrade_candidate_ms = now_ms;
-            if (now_ms - e->degrade_candidate_ms >= kDegradeHoldMs) {
+            /* conservative=2/3/4：连续更多采样才判掉帧（Scene 的 conservative 语义） */
+            long long degrade_hold_ms = kDegradeHoldMs *
+                (e->config.conservative > 1 ? e->config.conservative : 1);
+            if (now_ms - e->degrade_candidate_ms >= degrade_hold_ms) {
                 enter_phase(e, FAS_PHASE_DEGRADED, now_ms);
                 e->degrade_candidate_ms = 0;
             }
@@ -391,8 +396,8 @@ FasOutput fas_engine_tick(FasEngine* e) {
             out.phase = FAS_PHASE_STABLE;
             out.stable_fps = e->stable_fps;
 
-            if (e->config.quick_drop) {
-                /* 快速降频：稳定就毫不犹豫直接降到底板 */
+            if (e->config.quick_drop || e->config.fast_down) {
+                /* 快速降频：稳定就毫不犹豫直接降到底板（fast_down 是 quick_drop 的新别名） */
                 out.drop_to_floor = 1;
             } else if (now_ms - e->last_drop_ms >= kSlowDropIntervalMs) {
                 out.freq_scale = kSlowDropScale;
@@ -452,11 +457,23 @@ FasOutput fas_engine_tick(FasEngine* e) {
     }
 
     /* ── 诊断字段（日志 / App 状态页用）── */
-    out.target_fps = e->stable_fps;
-    out.effective_target_fps = e->stable_fps;
+    /*
+     * target_fps_offset_permille：把「预算目标帧率」下调一点（例如 20 = 降 2%）。
+     * 基准帧率 stable_fps 不变（掉帧判定仍按真实基准），只影响预算/目标帧率，
+     * 用于高温/省电场景下给 FAS 留一点余量。
+     */
+    int effective_target_fps = e->stable_fps;
+    if (effective_target_fps > 0 && e->config.target_fps_offset_permille > 0) {
+        int adjusted = effective_target_fps *
+            (1000 - e->config.target_fps_offset_permille) / 1000;
+        if (adjusted < 1) adjusted = 1;
+        if (adjusted < effective_target_fps) effective_target_fps = adjusted;
+    }
+    out.target_fps = effective_target_fps;
+    out.effective_target_fps = effective_target_fps;
     out.frame_us = (int)(last_ms * 1000.0 + 0.5);
     out.avg_frame_us = (int)(avg_short_ms * 1000.0 + 0.5);
-    out.budget_us = frame_budget_us_for_fps(e->stable_fps);
+    out.budget_us = frame_budget_us_for_fps(effective_target_fps);
     out.debt_us = out.avg_frame_us - out.budget_us;
     out.severity_us = (int)(slope * 1000.0);
     out.over_budget_streak = (out.phase == FAS_PHASE_DEGRADED) ? 1 : 0;

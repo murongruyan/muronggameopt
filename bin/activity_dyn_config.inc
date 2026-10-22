@@ -96,10 +96,155 @@ static DynDailyParams make_default_daily_params() {
 static DynDailyParams g_dyn_daily = make_default_daily_params();
 static DynDailyParams g_cluster_dyn_daily[MAX_CLUSTERS];
 
+/*
+ * 限流曲线（6.8，借鉴 Scene LP「辅助调速器」的分阶段负载→频率约束思路）：
+ *
+ * 输入：集群负载（/proc/stat jiffies 增量，口径可配 avg/top2/peak）；
+ * 阶段：idle / inactive / p1 / p2 / p3，按负载上界选择；
+ * 输出：每簇允许的 scaling_min/max 钳制（kHz），作为 FAS/日用调频之外的
+ *       一层"负载上限"。默认关闭，不影响现有行为。
+ *
+ * 说明：这里只做通用机制，不内置任何机型/游戏的预设数值；margins 字段
+ * 先原样保存（供后续接 WALT target_loads 曲线用），batch1 只用 min/max。
+ */
+enum DynLimiterStageId {
+    DYN_LIMITER_STAGE_IDLE = 0,
+    DYN_LIMITER_STAGE_INACTIVE = 1,
+    DYN_LIMITER_STAGE_P1 = 2,
+    DYN_LIMITER_STAGE_P2 = 3,
+    DYN_LIMITER_STAGE_P3 = 4,
+    DYN_LIMITER_STAGE_COUNT = 5
+};
+
+struct DynLimiterCluster {
+    int min_khz;
+    int max_khz;
+    std::string margins;
+    DynLimiterCluster() : min_khz(0), max_khz(0) {}
+};
+
+struct DynLimiterParams {
+    bool enabled;
+    std::string scope;      /* all | apps | games */
+    bool apply_fas;         /* FAS 路径是否也套限流 */
+    int load_mode;          /* 0=平均 1=前二核 2=峰值 */
+    int stage_hysteresis;   /* 负载在阶段边界附近保持上一阶段 */
+    int stage_upper[DYN_LIMITER_STAGE_COUNT];
+    DynLimiterCluster clusters[DYN_LIMITER_STAGE_COUNT][MAX_CLUSTERS];
+};
+
+static const char* kDynLimiterStageNames[DYN_LIMITER_STAGE_COUNT] = {
+    "idle", "inactive", "p1", "p2", "p3"
+};
+
+static DynLimiterParams make_default_limiter_params() {
+    DynLimiterParams p = {};
+    p.enabled = false;
+    p.scope = "all";
+    p.apply_fas = false;
+    p.load_mode = 1;
+    p.stage_hysteresis = 5;
+    const int upper[DYN_LIMITER_STAGE_COUNT] = {20, 35, 55, 75, 90};
+    for (int i = 0; i < DYN_LIMITER_STAGE_COUNT; i++) p.stage_upper[i] = upper[i];
+    return p;
+}
+
+static DynLimiterParams g_dyn_limiter = make_default_limiter_params();
+
 static int dyn_json_int(cJSON* obj, const char* key, int fallback) {
     cJSON* item = cJSON_GetObjectItem(obj, key);
     if (item && cJSON_IsNumber(item)) return item->valueint;
     return fallback;
+}
+
+/* 解析 dyn.json 的 limiter 块；同名字段覆盖默认值，stages 只覆盖给出的簇。 */
+static void apply_dyn_limiter_json(cJSON* obj, DynLimiterParams* out) {
+    if (!obj || !out || !cJSON_IsObject(obj)) return;
+
+    cJSON* enabled = cJSON_GetObjectItem(obj, "enabled");
+    if (enabled && (cJSON_IsBool(enabled) || cJSON_IsNumber(enabled))) {
+        out->enabled = enabled->valueint != 0;
+    }
+    cJSON* scope = cJSON_GetObjectItem(obj, "scope");
+    if (scope && cJSON_IsString(scope) && scope->valuestring) {
+        std::string s = scheduler_to_lower_copy(scope->valuestring);
+        if (s == "all" || s == "apps" || s == "games") out->scope = s;
+    }
+    cJSON* apply_fas = cJSON_GetObjectItem(obj, "apply_fas");
+    if (apply_fas && (cJSON_IsBool(apply_fas) || cJSON_IsNumber(apply_fas))) {
+        out->apply_fas = apply_fas->valueint != 0;
+    }
+    int v = dyn_json_int(obj, "load_mode", -1);
+    if (v >= 0 && v <= 2) out->load_mode = v;
+    v = dyn_json_int(obj, "stage_hysteresis", -1);
+    if (v >= 0) out->stage_hysteresis = v;
+
+    cJSON* stage_load = cJSON_GetObjectItem(obj, "stage_load");
+    if (stage_load && cJSON_IsObject(stage_load)) {
+        for (int i = 0; i < DYN_LIMITER_STAGE_COUNT; i++) {
+            int t = dyn_json_int(stage_load, kDynLimiterStageNames[i], -1);
+            if (t >= 0 && t <= 100) out->stage_upper[i] = t;
+        }
+    }
+
+    cJSON* stages = cJSON_GetObjectItem(obj, "stages");
+    if (stages && cJSON_IsObject(stages)) {
+        for (int i = 0; i < DYN_LIMITER_STAGE_COUNT; i++) {
+            cJSON* stage = cJSON_GetObjectItem(stages, kDynLimiterStageNames[i]);
+            if (!stage || !cJSON_IsObject(stage)) continue;
+            for (int ci = 0; ci < MAX_CLUSTERS; ci++) {
+                char key[8];
+                snprintf(key, sizeof(key), "%d", ci);
+                cJSON* cl = cJSON_GetObjectItem(stage, key);
+                if (!cl || !cJSON_IsObject(cl)) continue;
+                DynLimiterCluster cc;
+                cc.min_khz = dyn_json_int(cl, "min", 0);
+                cc.max_khz = dyn_json_int(cl, "max", 0);
+                cJSON* margins = cJSON_GetObjectItem(cl, "margins");
+                if (margins && cJSON_IsString(margins) && margins->valuestring) {
+                    cc.margins = margins->valuestring;
+                }
+                out->clusters[i][ci] = cc;
+            }
+        }
+    }
+}
+
+
+/* 全局 RT 模式（6.8，可选，默认关闭）：给游戏主线程切 SCHED_RR/FIFO，并可选写 RT 带宽 sysctl。 */
+struct DynRtParams {
+    bool enabled;
+    std::string policy;    /* rr | fifo */
+    int priority;          /* 1..99 */
+    bool write_sysctls;    /* 是否写 sched_rt_* sysctl */
+};
+
+static DynRtParams make_default_rt_params() {
+    DynRtParams p = {};
+    p.enabled = false;
+    p.policy = "rr";
+    p.priority = 1;
+    p.write_sysctls = true;
+    return p;
+}
+
+static DynRtParams g_dyn_rt = make_default_rt_params();
+
+static void apply_dyn_rt_json(cJSON* obj, DynRtParams* out) {
+    if (!obj || !out || !cJSON_IsObject(obj)) return;
+    cJSON* enabled = cJSON_GetObjectItem(obj, "enabled");
+    if (enabled && (cJSON_IsBool(enabled) || cJSON_IsNumber(enabled))) {
+        out->enabled = enabled->valueint != 0;
+    }
+    cJSON* policy = cJSON_GetObjectItem(obj, "policy");
+    if (policy && cJSON_IsString(policy) && policy->valuestring) {
+        std::string s = scheduler_to_lower_copy(policy->valuestring);
+        if (s == "rr" || s == "fifo") out->policy = s;
+    }
+    int v = dyn_json_int(obj, "priority", -1);
+    if (v >= 1 && v <= 99) out->priority = v;
+    cJSON* ws = cJSON_GetObjectItem(obj, "write_sysctls");
+    if (ws && (cJSON_IsBool(ws) || cJSON_IsNumber(ws))) out->write_sysctls = ws->valueint != 0;
 }
 
 /* 解析 daily 块；stages 一旦给出就整表替换（不做新旧混合）。 */
@@ -272,6 +417,8 @@ static void load_dyn_config_json(const char* mode) {
     g_corridor_owner = CORRIDOR_OWNER_DYN;
     g_dyn_control = kDynControlDefaults;
     g_dyn_daily = make_default_daily_params();
+    g_dyn_limiter = make_default_limiter_params();
+    g_dyn_rt = make_default_rt_params();
     for (int i = 0; i < MAX_CLUSTERS; i++) {
         g_dyn_corridor_min_khz[i] = 0;
         g_dyn_corridor_max_khz[i] = 0;
@@ -306,6 +453,8 @@ static void load_dyn_config_json(const char* mode) {
                     apply_dyn_corridor_json(root, false);
                     apply_dyn_control_json(root, &g_dyn_control);
                     apply_dyn_daily_json(root, &g_dyn_daily);
+                    apply_dyn_limiter_json(cJSON_GetObjectItem(root, "limiter"), &g_dyn_limiter);
+                    apply_dyn_rt_json(cJSON_GetObjectItem(root, "rt"), &g_dyn_rt);
 
                     /* 档位覆盖：modes.<mode> 是同一份 dyn.json 里的按档位微调，
                        取代原来散落在 cpu.json 每个 mode 里的 dynamic_tuning。 */
@@ -317,6 +466,8 @@ static void load_dyn_config_json(const char* mode) {
                             apply_dyn_params_json(&g_dyn_params, mode_overlay);
                             apply_dyn_control_json(mode_overlay, &g_dyn_control);
                             apply_dyn_daily_json(mode_overlay, &g_dyn_daily);
+                            apply_dyn_limiter_json(cJSON_GetObjectItem(mode_overlay, "limiter"), &g_dyn_limiter);
+                            apply_dyn_rt_json(cJSON_GetObjectItem(mode_overlay, "rt"), &g_dyn_rt);
                             /* 档位可以覆盖走廊上下限（未写则沿用全局） */
                             cJSON* mode_corridor = cJSON_GetObjectItem(mode_overlay, "corridor");
                             cJSON* mode_corridor_min = cJSON_GetObjectItem(mode_overlay, "corridor_min");

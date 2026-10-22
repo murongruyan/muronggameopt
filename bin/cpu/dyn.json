@@ -23,6 +23,27 @@
       { "load": 100, "floor": 550, "ceiling": 1000 }
     ]
   },
+  "limiter": {
+    "enabled": 0,
+    "scope": "games",
+    "apply_fas": 1,
+    "load_mode": 1,
+    "stage_hysteresis": 5,
+    "stage_load": { "idle": 20, "inactive": 35, "p1": 55, "p2": 75, "p3": 90 },
+    "stages": {
+      "idle":     { "0": { "min": 556800,  "max": 1555200 }, "1": { "min": 768000,  "max": 1689600 } },
+      "inactive": { "0": { "min": 556800,  "max": 1785600 }, "1": { "min": 768000,  "max": 1958400 } },
+      "p1":       { "0": { "min": 748800,  "max": 1996800 }, "1": { "min": 768000,  "max": 1958400 } },
+      "p2":       { "0": { "min": 960000,  "max": 2400000 }, "1": { "min": 1017600, "max": 2438400 } },
+      "p3":       { "0": { "min": 1152000, "max": 2745600 }, "1": { "min": 1209600, "max": 2841600 } }
+    }
+  },
+  "rt": {
+    "enabled": 0,
+    "policy": "rr",
+    "priority": 1,
+    "write_sysctls": 1
+  },
   "modes": {
     "powersave": {
       "enabled": 1,

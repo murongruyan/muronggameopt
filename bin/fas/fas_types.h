@@ -141,6 +141,11 @@ typedef struct {
      */
     int stable_headroom_permille;
 
+    /* ── 6.8 新增（借鉴 Scene FAS 的可调策略，默认保持旧行为）── */
+    int conservative;              /* 1=默认；2/3=连续 N 个采样才判掉帧（升频更保守） */
+    int target_fps_offset_permille;/* 目标帧率下调千分比（如 20 = 目标降 2%），0=关 */
+    int fast_down;                 /* 等价 quick_drop 的别名，任一开即快速降到底板 */
+
     int app_count;
     FasAppConfig apps[FAS_MAX_FAS_APPS];
 } FasConfig;

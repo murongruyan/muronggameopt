@@ -1294,16 +1294,19 @@ static int get_prime_cluster_id() {
 
 static int parse_cluster_tag_to_id(const std::string& tag) {
     if (tag.empty()) return -1;
-    if (tag == "little" || tag == "small") {
+    if (tag == "little" || tag == "small" ||
+        tag == "e-core" || tag == "ecore" || tag == "e_core" || tag == "efficiency") {
         return cluster_count > 0 ? 0 : -1;
     }
-    if (tag == "mid" || tag == "middle" || tag == "medium") {
+    if (tag == "mid" || tag == "middle" || tag == "medium" ||
+        tag == "p-core" || tag == "pcore" || tag == "p_core") {
         if (cluster_count <= 1) return 0;
         if (cluster_count >= 4) return 1;
         if (cluster_count == 3) return 1;
         return 0;
     }
-    if (tag == "big") {
+    if (tag == "big" || tag == "hp-core" || tag == "hp_core" ||
+        tag == "performance-core" || tag == "perf-core") {
         if (cluster_count <= 1) return 0;
         int prime_cluster = get_prime_cluster_id();
         if (prime_cluster > 0) {
@@ -1342,7 +1345,7 @@ static int parse_cluster_tag_to_id(const std::string& tag) {
 
 static void append_named_cluster_mask(std::vector<int>& cpus, const std::string& tag) {
     if (tag.empty() || cluster_count <= 0) return;
-    if (tag == "all") {
+    if (tag == "all" || tag == "all-core" || tag == "all_core" || tag == "allcore") {
         for (int cluster = 0; cluster < cluster_count; cluster++) {
             append_cluster_mask(cpus, cluster, false, false);
         }

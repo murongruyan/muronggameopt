@@ -1,3 +1,24 @@
+6.8 | 2026-10-22 01:35 UTC
+新增：负载限流曲线（limiter）、FAS 可调参数、语义核名、可选 RT 模式
+
+- 【dyn.json → limiter】参考 Scene「辅助调速器」的分阶段负载→频率约束思路，
+  新增通用限流曲线层（不内置机型/游戏预设）：
+  按 cluster0 负载选 idle / inactive / p1 / p2 / p3 阶段，给每簇 min/max 钳制，
+  叠加在 FAS 与日用调频结果之上；支持 scope(all/apps/games)、apply_fas、
+  load_mode(平均/前二核/峰值)、stage_hysteresis 与热重载。默认关闭。
+  真机验证（王者）：负载 63%→p2、100%→p3，日志
+  「limiter | app:... | c0 | 负载:63% 阶段:p2 | ... | 钳制后:1271193-2028057」。
+- 【fas.json → defaults】新增 conservative（连续 N 个采样才判掉帧）、
+  target_fps_offset_permille（目标帧率下调千分比）、fast_down（quick_drop 别名）。
+  默认值保持旧行为（conservative=1 / offset=0 / fast_down=0）。
+- 【线程规则】clusters / cpus 支持语义核名：e-core / p-core / hp-core / all-core
+  （映射到 little / middle / big / prime / all）。
+- 【dyn.json → rt】可选 RT 模式，默认关闭：开启后给前台游戏主线程切
+  SCHED_RR/FIFO、可选写 sched_rt_* sysctl；切后台/退出恢复 SCHED_OTHER。
+  属于显式用户开关，带风险提示；真机验证过 apply/restore 日志。
+- 其它：limiter/RT 均支持 dyn.json 热重载；调试日志新增 limiter 与 RT 记录。
+  备注：App 2.1.10 将补对应 UI；当前可先编辑 dyn.json / fas.json 使用。
+
 6.7 | 2026-10-22 00:16 UTC
 新增 task_rename 事件驱动线程改名重匹配：后置命名的关键线程改名瞬间即按新规则落位；性能短路避免启动期绑核风暴；task_rename 不可用自动降级周期扫描。
 
