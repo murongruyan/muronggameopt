@@ -1,3 +1,6 @@
+6.9 | 2026-10-22 02:01 UTC
+6.9：cpuset+affinity 双写、FPSGO/WALT 厂商接口（默认关）、limiter 写 WALT 曲线（默认关）；配套 App 2.1.10。
+
 6.9 | 2026-10-22 02:10 UTC
 新增：cpuset+affinity 双写、FPSGO/WALT 厂商接口、limiter 写 WALT 曲线；App 2.1.10 同步
 
