@@ -372,120 +372,6 @@ static void dyn_limiter_log(int cluster, const char* app, int fmin, int fmax, in
     log_stats_message(msg);
 }
 
-/*
- * 全局 RT 模式（6.8，默认关闭）：只给前台游戏主线程切 SCHED_RR/FIFO，
- * 可选写 RT 带宽 sysctl；游戏切后台/退出时恢复 SCHED_OTHER。
- * 这是显式用户开关（dyn.json → rt.enabled=1），不替用户默认开启。
- */
-static bool g_dyn_rt_sysctl_done = false;
-static pid_t g_dyn_rt_applied_pid = 0;
-
-static bool dyn_rt_write_text(const char* path, const char* value) {
-    FILE* fp = fopen(path, "w");
-    if (!fp) return false;
-    bool ok = fputs(value, fp) >= 0;
-    fclose(fp);
-    return ok;
-}
-
-static void dyn_rt_restore() {
-    if (g_dyn_rt_applied_pid > 0) {
-        struct sched_param sp = {};
-        if (sched_setscheduler(g_dyn_rt_applied_pid, SCHED_OTHER, &sp) == 0) {
-            char msg[160];
-            safe_snprintf(msg, sizeof(msg), "RT模式恢复 | pid:%d -> SCHED_OTHER",
-                          (int)g_dyn_rt_applied_pid);
-            log_affinity_message(msg);
-        }
-        g_dyn_rt_applied_pid = 0;
-    }
-}
-
-static void dyn_rt_apply_if_needed() {
-    if (!g_dyn_rt.enabled) { dyn_rt_restore(); return; }
-
-    pid_t fg_pid = UnifiedScheduler::get_foreground_pid_snapshot();
-    const bool game_foreground =
-        fg_pid > 0 && g_current_foreground_app[0] &&
-        strcmp(g_current_foreground_app, "unknown") != 0 &&
-        is_game_package_name(g_current_foreground_app);
-    if (!game_foreground) { dyn_rt_restore(); return; }
-    if (g_dyn_rt_applied_pid == fg_pid) return;
-
-    dyn_rt_restore();
-    if (g_dyn_rt.write_sysctls && !g_dyn_rt_sysctl_done) {
-        g_dyn_rt_sysctl_done = true;
-        dyn_rt_write_text("/proc/sys/kernel/sched_rr_timeslice_ms", "3");
-        dyn_rt_write_text("/proc/sys/kernel/sched_rt_period_us", "30000");
-        dyn_rt_write_text("/proc/sys/kernel/sched_rt_runtime_us", "29500");
-    }
-
-    int policy = (g_dyn_rt.policy == "fifo") ? SCHED_FIFO : SCHED_RR;
-    struct sched_param sp = {};
-    sp.sched_priority = g_dyn_rt.priority;
-    if (sched_setscheduler(fg_pid, policy, &sp) == 0) {
-        g_dyn_rt_applied_pid = fg_pid;
-        char msg[192];
-        safe_snprintf(msg, sizeof(msg), "RT模式已应用 | app:%s | pid:%d | %s prio:%d",
-                      g_current_foreground_app, (int)fg_pid,
-                      g_dyn_rt.policy.c_str(), g_dyn_rt.priority);
-        log_affinity_message(msg);
-    } else {
-        char msg[192];
-        safe_snprintf(msg, sizeof(msg), "RT模式应用失败 | app:%s | pid:%d | errno:%d",
-                      g_current_foreground_app, (int)fg_pid, errno);
-        log_affinity_message(msg);
-    }
-}
-
-/*
- * 厂商接口提示（6.9，默认关闭）：只对前台游戏主线程写一次
- * FPSGO boost_affinity / WALT per-task hint / pipeline，节点不存在就跳过。
- * 这些是厂商私有接口，不同机型语义可能不同，所以必须显式开启（dyn.json vendor_hints）。
- */
-static void dyn_vendor_hints_apply_if_needed() {
-    if (!g_dyn_vendor_hints.enabled) return;
-
-    pid_t fg_pid = UnifiedScheduler::get_foreground_pid_snapshot();
-    if (fg_pid <= 0 || !g_current_foreground_app[0] ||
-        strcmp(g_current_foreground_app, "unknown") == 0 ||
-        !is_game_package_name(g_current_foreground_app)) {
-        return;
-    }
-    static pid_t last_pid = 0;
-    if (last_pid == fg_pid) return;
-    last_pid = fg_pid;
-
-    char value[96];
-    if (g_dyn_vendor_hints.fpsgo) {
-        const char* path = "/sys/kernel/fpsgo/fbt/fbt_attr_by_pid";
-        if (file_exists(path)) {
-            safe_snprintf(value, sizeof(value), "boost_affinity s %d 2", (int)fg_pid);
-            UnifiedScheduler::write_text_path_direct(path, value);
-        }
-    }
-    if (g_dyn_vendor_hints.walt) {
-        const char* path = "/proc/sys/walt/sched_per_task_boost";
-        if (file_exists(path)) {
-            safe_snprintf(value, sizeof(value), "%d 2", (int)fg_pid);
-            UnifiedScheduler::write_text_path_direct(path, value);
-        }
-    }
-    if (g_dyn_vendor_hints.pipeline) {
-        const char* path = "/proc/sys/walt/sched_pipeline_special";
-        if (file_exists(path)) UnifiedScheduler::write_text_path_direct(path, "0");
-    }
-
-    char msg[256];
-    safe_snprintf(msg, sizeof(msg),
-                  "厂商接口提示 | app:%s | pid:%d | fpsgo:%d walt:%d pipeline:%d",
-                  g_current_foreground_app, (int)fg_pid,
-                  g_dyn_vendor_hints.fpsgo ? 1 : 0,
-                  g_dyn_vendor_hints.walt ? 1 : 0,
-                  g_dyn_vendor_hints.pipeline ? 1 : 0);
-    log_affinity_message(msg);
-}
-
 /* limiter 的 margins → WALT target_loads（6.9，默认关闭；按 stage 变化时写一次）。 */
 static void dyn_limiter_write_walt_curve(int stage) {
     if (stage < 0 || stage >= DYN_LIMITER_STAGE_COUNT) return;
@@ -805,8 +691,6 @@ void handle_dynamic_tuning(const char* current_app) {
     if (now - last_t < min_interval_ms) return;
     last_t = now;
     g_runtime_stats.dynamic_tuning_ticks.fetch_add(1);
-    dyn_rt_apply_if_needed();
-    dyn_vendor_hints_apply_if_needed();
 
     /*
      * control_trace：只观测。

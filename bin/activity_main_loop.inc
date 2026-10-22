@@ -296,6 +296,7 @@ void run_main_loop() {
         }
         process_pending_config_reloads();
         refresh_official_state(false);
+        thread_hints_tick();
 
         long long now_ms = get_current_time_ms();
         if (now_ms - last_app_check_ms >= APP_CHECK_INTERVAL_MS) {

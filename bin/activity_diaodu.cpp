@@ -1708,6 +1708,13 @@ namespace UnifiedScheduler {
 }  // namespace UnifiedScheduler
 
 /*
+ * 6.12：线程级厂商接口 + 可选全局 RT 模式（完整版 / 纯线程版共用）。
+ * 放在调度器之后、动态调频之前，两边都能用；配置仍读 dyn.json 的
+ * vendor_hints / rt 块。
+ */
+#include "activity_thread_hints.inc"
+
+/*
  * 频率档位工具 + 场景策略刷新：两个版本共用。
  * 这些函数原先住在 activity_dynamic_tuning.inc 里，但调用者（scheduler_runtime /
  * scene_policy / main_loop）在纯线程版依然存在，故抽出来共用。

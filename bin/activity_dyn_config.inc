@@ -217,77 +217,6 @@ static void apply_dyn_limiter_json(cJSON* obj, DynLimiterParams* out) {
 }
 
 
-/* 全局 RT 模式（6.8，可选，默认关闭）：给游戏主线程切 SCHED_RR/FIFO，并可选写 RT 带宽 sysctl。 */
-struct DynRtParams {
-    bool enabled;
-    std::string policy;    /* rr | fifo */
-    int priority;          /* 1..99 */
-    bool write_sysctls;    /* 是否写 sched_rt_* sysctl */
-};
-
-static DynRtParams make_default_rt_params() {
-    DynRtParams p = {};
-    p.enabled = false;
-    p.policy = "rr";
-    p.priority = 1;
-    p.write_sysctls = true;
-    return p;
-}
-
-static DynRtParams g_dyn_rt = make_default_rt_params();
-
-static void apply_dyn_rt_json(cJSON* obj, DynRtParams* out) {
-    if (!obj || !out || !cJSON_IsObject(obj)) return;
-    cJSON* enabled = cJSON_GetObjectItem(obj, "enabled");
-    if (enabled && (cJSON_IsBool(enabled) || cJSON_IsNumber(enabled))) {
-        out->enabled = enabled->valueint != 0;
-    }
-    cJSON* policy = cJSON_GetObjectItem(obj, "policy");
-    if (policy && cJSON_IsString(policy) && policy->valuestring) {
-        std::string s = scheduler_to_lower_copy(policy->valuestring);
-        if (s == "rr" || s == "fifo") out->policy = s;
-    }
-    int v = dyn_json_int(obj, "priority", -1);
-    if (v >= 1 && v <= 99) out->priority = v;
-    cJSON* ws = cJSON_GetObjectItem(obj, "write_sysctls");
-    if (ws && (cJSON_IsBool(ws) || cJSON_IsNumber(ws))) out->write_sysctls = ws->valueint != 0;
-}
-
-/* 厂商接口（6.9，可选，默认关闭）：FPSGO/WALT/pipeline 提示，只写存在的节点。 */
-struct DynVendorHintsParams {
-    bool enabled;
-    bool fpsgo;
-    bool walt;
-    bool pipeline;
-};
-
-static DynVendorHintsParams make_default_vendor_hints_params() {
-    DynVendorHintsParams p = {};
-    p.enabled = false;
-    p.fpsgo = true;
-    p.walt = true;
-    p.pipeline = false;
-    return p;
-}
-
-static DynVendorHintsParams g_dyn_vendor_hints = make_default_vendor_hints_params();
-
-static void apply_dyn_vendor_hints_json(cJSON* obj, DynVendorHintsParams* out) {
-    if (!obj || !out || !cJSON_IsObject(obj)) return;
-    cJSON* enabled = cJSON_GetObjectItem(obj, "enabled");
-    if (enabled && (cJSON_IsBool(enabled) || cJSON_IsNumber(enabled))) {
-        out->enabled = enabled->valueint != 0;
-    }
-    cJSON* fpsgo = cJSON_GetObjectItem(obj, "fpsgo");
-    if (fpsgo && (cJSON_IsBool(fpsgo) || cJSON_IsNumber(fpsgo))) out->fpsgo = fpsgo->valueint != 0;
-    cJSON* walt = cJSON_GetObjectItem(obj, "walt");
-    if (walt && (cJSON_IsBool(walt) || cJSON_IsNumber(walt))) out->walt = walt->valueint != 0;
-    cJSON* pipeline = cJSON_GetObjectItem(obj, "pipeline");
-    if (pipeline && (cJSON_IsBool(pipeline) || cJSON_IsNumber(pipeline))) {
-        out->pipeline = pipeline->valueint != 0;
-    }
-}
-
 /* 线程选择策略（6.9）：0=按占用热度（默认，旧行为）；1=按累计 CPU 时间最小（AsoulOpt 思路）。 */
 static int g_dyn_thread_select_strategy = 0;
 
@@ -475,8 +404,6 @@ static void load_dyn_config_json(const char* mode) {
     g_dyn_control = kDynControlDefaults;
     g_dyn_daily = make_default_daily_params();
     g_dyn_limiter = make_default_limiter_params();
-    g_dyn_rt = make_default_rt_params();
-    g_dyn_vendor_hints = make_default_vendor_hints_params();
     g_dyn_thread_select_strategy = 0;
     for (int i = 0; i < MAX_CLUSTERS; i++) {
         g_dyn_corridor_min_khz[i] = 0;
@@ -513,9 +440,6 @@ static void load_dyn_config_json(const char* mode) {
                     apply_dyn_control_json(root, &g_dyn_control);
                     apply_dyn_daily_json(root, &g_dyn_daily);
                     apply_dyn_limiter_json(cJSON_GetObjectItem(root, "limiter"), &g_dyn_limiter);
-                    apply_dyn_rt_json(cJSON_GetObjectItem(root, "rt"), &g_dyn_rt);
-                    apply_dyn_vendor_hints_json(
-                        cJSON_GetObjectItem(root, "vendor_hints"), &g_dyn_vendor_hints);
                     apply_dyn_thread_select_json(cJSON_GetObjectItem(root, "thread_select"));
 
                     /* 档位覆盖：modes.<mode> 是同一份 dyn.json 里的按档位微调，
@@ -529,10 +453,6 @@ static void load_dyn_config_json(const char* mode) {
                             apply_dyn_control_json(mode_overlay, &g_dyn_control);
                             apply_dyn_daily_json(mode_overlay, &g_dyn_daily);
                             apply_dyn_limiter_json(cJSON_GetObjectItem(mode_overlay, "limiter"), &g_dyn_limiter);
-                            apply_dyn_rt_json(cJSON_GetObjectItem(mode_overlay, "rt"), &g_dyn_rt);
-                            apply_dyn_vendor_hints_json(
-                                cJSON_GetObjectItem(mode_overlay, "vendor_hints"),
-                                &g_dyn_vendor_hints);
                             apply_dyn_thread_select_json(
                                 cJSON_GetObjectItem(mode_overlay, "thread_select"));
                             /* 档位可以覆盖走廊上下限（未写则沿用全局） */
