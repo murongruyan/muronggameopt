@@ -53,7 +53,7 @@
 | **cpuset + affinity 双写** | 绑核失败时按目标掩码创建 `/dev/cpuset/murong_sched/<hash>` 专用子 cpuset，再重试 `sched_setaffinity`，释放时迁回原组（6.9+） |
 | **厂商接口（可选）** | FPSGO `fbt_attr_by_pid`、WALT `sched_per_task_boost`、`sched_pipeline_special`；默认关闭，只写真实存在的节点 |
 | **RT 模式（可选）** | 前台游戏主线程 `SCHED_RR / SCHED_FIFO` + 可选 `sched_rt_*` sysctl；默认关闭，切后台/退出恢复 |
-| **前台识别** | dumpsys 前台组件解析；可选 Binder 探测（`AIBinder_dump`，fork 子进程隔离，异常自动回退 dumpsys） |
+| **前台识别** | Binder `AIBinder_dump`（官方 4 参 ABI，API 29+；fork 子进程隔离，异常自动回退 dumpsys）+ dumpsys 前台组件解析；忽略桌面/输入法/SystemUI |
 | **场景策略** | `config/categories.json` 场景分类与场景默认策略、按应用模式覆盖（`config/mode.txt`） |
 | **官方环境复刻** | 按 `config/official_env.conf` 复刻开发者验证环境：禁用官方增强/定制包、关闭 OIFace、解除 `game_opt` 官方调频限制（可配置关闭） |
 | **状态自检** | 只读检测写入 `config/official_state.txt`：被禁用包、OIFace、`/proc/game_opt`、`com.oplus.cosa`、带 `disable` 的 Magisk 模块 |

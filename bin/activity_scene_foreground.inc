@@ -278,7 +278,14 @@ static bool binder_probe_impl(char* out_pkg, size_t out_size) {
     if (!out_pkg || out_size == 0) return false;
     typedef struct AIBinder AIBinder;
     typedef AIBinder* (*get_service_fn)(const char*);
-    typedef void (*dump_fn)(AIBinder*, int);
+    /*
+     * 注意 ABI：Android 10（API 29）起官方 libbinder_ndk 的 AIBinder_dump 就是
+     *   4 参：binder_status_t AIBinder_dump(AIBinder*, int fd, const char** args, uint32_t numArgs)
+     * 之前这里按 2 参声明/调用（参考项目给的是旧 ABI），在 Android 17 的
+     * libbinder_ndk 上会多读两个垃圾参数，导致子进程 SIGSEGV。
+     * 现在按官方 4 参调用，args=nullptr/numArgs=0。
+     */
+    typedef int32_t (*dump_fn)(AIBinder*, int, const char**, uint32_t);
     typedef void (*dec_strong_fn)(AIBinder*);
 
     static get_service_fn get_service = nullptr;
@@ -339,7 +346,8 @@ static bool binder_probe_impl(char* out_pkg, size_t out_size) {
         close(fds[0]);
     });
 
-    do_dump(service, fds[1]);
+    int32_t dump_status = do_dump(service, fds[1], nullptr, 0);
+    (void)dump_status;
     close(fds[1]);
     reader.join();
     dec_strong(service);
