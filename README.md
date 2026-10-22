@@ -6,6 +6,12 @@
 它是**设备侧模块仓库**，不是 APK 工程；配套 App（`慕容调度` 2.1.10+）用于图形化配置，
 模块本身可以直接用 JSON 配置文件工作。
 
+> **在线教程/文档**：
+> - 调度教程（安装、刷入、模式切换、常见问题）：<https://murongdiaodu.rl1.cc/docs.html?doc=app_tutorial.md>
+> - 文档中心（快速开始 / 动态调频 / FAS / 线程 / 场景分类）：<https://murongdiaodu.rl1.cc/docs.html>
+>
+> 仓库内对应文档见 `调度整体使用说明.md`，更新记录见 `changelog.txt` / `CHANGELOG.md`。
+
 ---
 
 ## 一、这是什么
