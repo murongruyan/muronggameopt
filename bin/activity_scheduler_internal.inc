@@ -345,6 +345,18 @@ static struct bpf_program* find_bpf_program_compat(const char* program_name, con
 static bool is_render_thread_name(const char* comm);
 static bool is_main_thread_name_for_package(const char* package, const char* comm, pid_t tid);
 
+static unsigned long long read_thread_total_cpu_ms(pid_t tid) {
+    if (tid <= 0) return 0;
+    char path[128];
+    safe_snprintf(path, sizeof(path), "/proc/%d/schedstat", (int)tid);
+    FILE* fp = fopen(path, "r");
+    if (!fp) return 0;
+    unsigned long long ns = 0;
+    if (fscanf(fp, "%llu", &ns) != 1) ns = 0;
+    fclose(fp);
+    return ns / 1000000ULL;
+}
+
 static bool is_hot_priority_thread_locked(pid_t tid, const char* comm, float cpu_usage_pct) {
     if (!comm || !comm[0]) return false;
     std::string name = scheduler_to_lower_copy(comm);
@@ -358,6 +370,29 @@ static bool is_hot_priority_thread_locked(pid_t tid, const char* comm, float cpu
         return false;
     }
 
+    int keep_top_n = 1;
+    if (!main_like && (name.find("renderthread") != std::string::npos || name.find("glthread") != std::string::npos)) {
+        keep_top_n = 2;
+    }
+
+    /*
+     * 6.9：可选「累计 CPU 时间最小」策略（AsoulOpt 思路）。
+     * 同类线程里保留累计运行时间最少的 N 条，而不是占用最高的 N 条。
+     * dyn.json → thread_select.strategy = "least_cpu" 开启；默认 hot 旧行为。
+     */
+    if (g_dyn_thread_select_strategy == 1) {
+        unsigned long long my_total = read_thread_total_cpu_ms(tid);
+        int smaller_or_equal = 0;
+        for (auto& kv : g_threads) {
+            const ThreadRuntimeState& other = kv.second;
+            if (other.tid == tid) continue;
+            if (scheduler_to_lower_copy(other.comm.c_str()) != name) continue;
+            unsigned long long other_total = read_thread_total_cpu_ms(other.tid);
+            if (other_total < my_total) smaller_or_equal++;
+        }
+        return smaller_or_equal < keep_top_n;
+    }
+
     int hotter_same_name = 0;
     for (auto& kv : g_threads) {
         const ThreadRuntimeState& other = kv.second;
@@ -368,10 +403,6 @@ static bool is_hot_priority_thread_locked(pid_t tid, const char* comm, float cpu
         }
     }
 
-    int keep_top_n = 1;
-    if (!main_like && (name.find("renderthread") != std::string::npos || name.find("glthread") != std::string::npos)) {
-        keep_top_n = 2;
-    }
     return hotter_same_name < keep_top_n;
 }
 

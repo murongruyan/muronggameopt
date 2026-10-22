@@ -51,6 +51,9 @@
     "walt": 1,
     "pipeline": 0
   },
+  "thread_select": {
+    "strategy": "hot"
+  },
   "modes": {
     "powersave": {
       "enabled": 1,

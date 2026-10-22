@@ -1,3 +1,22 @@
+6.10 | 2026-10-22 02:30 UTC
+新增：Binder 前台探测（子进程隔离+回退）、累计 CPU 时间选择策略、官方组件状态检测
+
+- 【Binder 前台探测】dlopen libbinder_ndk + AIBinder_dump，从 AMS dump 的 " TOP " 行解析前台包名；
+  放在 fork 子进程里执行，子进程崩溃/超时只回退 dumpsys，不会带走守护进程树；
+  成功后 5s 缓存，减少 dumpsys 子进程拉起次数。
+- 【线程选择策略】dyn.json → thread_select.strategy = "hot" | "least_cpu"：
+  least_cpu 按 /proc/<tid>/schedstat 的累计 CPU 时间，在同类线程里保留累计时间最小的
+  keep_top_n 条（AsoulOpt 思路）；默认 hot 保持旧行为。
+- 【官方组件状态检测】启动及每 5 分钟只读检查，写 config/official_state.txt 并留一行日志：
+  · pm list packages -d 中官方/OPLUS/游戏增强相关禁用包；
+  · OIFace（persist.sys.oiface.enable/control、init.svc.oiface）；
+  · game_opt（/proc/game_opt 的 disable_cpufreq_limit / debug_enable）；
+  · com.oplus.cosa 启用状态；
+  · Magisk/KernelSU 模块里带 disable 标记的模块。
+  真机示例：禁用包 com.oplus.ohome/com.oplus.customize.coreapp；OIFace enable=0 control=0 svc=stopped；
+  game_opt=present(disable_cpufreq_limit=1)；cosa=enabled；禁用模块 TA_utl。
+- 【兼容】Binder 自动回退；thread_select 默认 hot；状态检测只读，不修改系统。
+
 6.9 | 2026-10-22 02:01 UTC
 6.9：cpuset+affinity 双写、FPSGO/WALT 厂商接口（默认关）、limiter 写 WALT 曲线（默认关）；配套 App 2.1.10。
 

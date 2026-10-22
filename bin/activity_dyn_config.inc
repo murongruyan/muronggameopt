@@ -288,6 +288,22 @@ static void apply_dyn_vendor_hints_json(cJSON* obj, DynVendorHintsParams* out) {
     }
 }
 
+/* 线程选择策略（6.9）：0=按占用热度（默认，旧行为）；1=按累计 CPU 时间最小（AsoulOpt 思路）。 */
+static int g_dyn_thread_select_strategy = 0;
+
+static void apply_dyn_thread_select_json(cJSON* obj) {
+    if (!obj || !cJSON_IsObject(obj)) return;
+    cJSON* strategy = cJSON_GetObjectItem(obj, "strategy");
+    if (strategy && cJSON_IsString(strategy) && strategy->valuestring) {
+        std::string s = scheduler_to_lower_copy(strategy->valuestring);
+        if (s == "least_cpu" || s == "least-cpu" || s == "min_cpu") {
+            g_dyn_thread_select_strategy = 1;
+        } else if (s == "hot" || s == "usage" || s == "default") {
+            g_dyn_thread_select_strategy = 0;
+        }
+    }
+}
+
 /* 解析 daily 块；stages 一旦给出就整表替换（不做新旧混合）。 */
 static void apply_dyn_daily_json(cJSON* obj, DynDailyParams* out) {
     if (!obj || !out || !cJSON_IsObject(obj)) return;
@@ -461,6 +477,7 @@ static void load_dyn_config_json(const char* mode) {
     g_dyn_limiter = make_default_limiter_params();
     g_dyn_rt = make_default_rt_params();
     g_dyn_vendor_hints = make_default_vendor_hints_params();
+    g_dyn_thread_select_strategy = 0;
     for (int i = 0; i < MAX_CLUSTERS; i++) {
         g_dyn_corridor_min_khz[i] = 0;
         g_dyn_corridor_max_khz[i] = 0;
@@ -499,6 +516,7 @@ static void load_dyn_config_json(const char* mode) {
                     apply_dyn_rt_json(cJSON_GetObjectItem(root, "rt"), &g_dyn_rt);
                     apply_dyn_vendor_hints_json(
                         cJSON_GetObjectItem(root, "vendor_hints"), &g_dyn_vendor_hints);
+                    apply_dyn_thread_select_json(cJSON_GetObjectItem(root, "thread_select"));
 
                     /* 档位覆盖：modes.<mode> 是同一份 dyn.json 里的按档位微调，
                        取代原来散落在 cpu.json 每个 mode 里的 dynamic_tuning。 */
@@ -515,6 +533,8 @@ static void load_dyn_config_json(const char* mode) {
                             apply_dyn_vendor_hints_json(
                                 cJSON_GetObjectItem(mode_overlay, "vendor_hints"),
                                 &g_dyn_vendor_hints);
+                            apply_dyn_thread_select_json(
+                                cJSON_GetObjectItem(mode_overlay, "thread_select"));
                             /* 档位可以覆盖走廊上下限（未写则沿用全局） */
                             cJSON* mode_corridor = cJSON_GetObjectItem(mode_overlay, "corridor");
                             cJSON* mode_corridor_min = cJSON_GetObjectItem(mode_overlay, "corridor_min");
@@ -577,8 +597,7 @@ static void load_dyn_config_json(const char* mode) {
                     char log_msg[256];
                     int written = safe_snprintf(
                         log_msg, sizeof(log_msg),
-                        "已加载动态调频配置: %s | enabled:%d | 边界所有者:%s | 边界",
-                        DYN_CONFIG_FILE,
+                        "已加载动态调频配置: %s | enabled:%d | 边界所有者:%s | 边界",                        DYN_CONFIG_FILE,
                         g_dyn_params.enabled ? 1 : 0,
                         corridor_owner_name(g_corridor_owner));
                     for (int i = 0; i < cluster_count && i < MAX_CLUSTERS &&
@@ -597,6 +616,9 @@ static void load_dyn_config_json(const char* mode) {
                         written += w;
                     }
                     log_config_message(log_msg);
+                    if (g_dyn_thread_select_strategy == 1) {
+                        log_config_message("线程选择策略: 累计CPU时间最小 (least_cpu)");
+                    }
 
                     char control_msg[224];
                     safe_snprintf(control_msg, sizeof(control_msg),

@@ -1,5 +1,12 @@
 static char g_cached_foreground_activity[192] = "";
 
+#include <dlfcn.h>
+#include <thread>
+#include <mutex>
+#include <atomic>
+#include <poll.h>
+#include <sys/wait.h>
+
 static void trim_process_suffix(char* package) {
     if (!package || !package[0]) return;
     char* colon = strchr(package, ':');
@@ -220,6 +227,194 @@ static bool read_foreground_component_from_command(const char* command,
     return found;
 }
 
+/*
+ * 6.9：Binder 前台探测（对应 AsoulOpt 的 AIBinder_dump 方案）。
+ * 从 AMS dump 文本里找 " TOP " 行，解析出 "pid:package/activity" 的 package。
+ * libbinder_ndk 不存在（Android <9 或裁剪系统）时返回 false，调用方回退 dumpsys。
+ */
+static bool foreground_parse_top_line(const char* data, size_t len,
+                                      char* out_pkg, size_t out_size) {
+    if (!data || !out_pkg || out_size == 0) return false;
+    static const char kToken[] = " TOP ";
+    const char* p = data;
+    const char* end = data + len;
+    while (p < end) {
+        const char* hit = std::search(p, end, kToken, kToken + 5);
+        if (hit == end) return false;
+        const char* q = hit + 5;
+        const char* limit = end;
+        if ((size_t)(limit - q) > 192) limit = q + 192;
+        const char* colon = (const char*)memchr(q, ':', (size_t)(limit - q));
+        if (colon) {
+            const char* digits_begin = colon;
+            while (digits_begin > q && isdigit((unsigned char)digits_begin[-1])) {
+                digits_begin--;
+            }
+            if (digits_begin < colon) {
+                const char* pkg_begin = colon + 1;
+                const char* pkg_end = pkg_begin;
+                while (pkg_end < limit &&
+                       (isalnum((unsigned char)*pkg_end) || *pkg_end == '.' ||
+                        *pkg_end == '_' || *pkg_end == '-')) {
+                    pkg_end++;
+                }
+                size_t n = (size_t)(pkg_end - pkg_begin);
+                if (n > 0 && n < out_size) {
+                    std::string candidate(pkg_begin, n);
+                    if (token_looks_like_process_name(candidate)) {
+                        memcpy(out_pkg, pkg_begin, n);
+                        out_pkg[n] = '\0';
+                        return true;
+                    }
+                }
+            }
+        }
+        p = hit + 1;
+    }
+    return false;
+}
+
+static bool binder_probe_impl(char* out_pkg, size_t out_size) {
+    if (!out_pkg || out_size == 0) return false;
+    typedef struct AIBinder AIBinder;
+    typedef AIBinder* (*get_service_fn)(const char*);
+    typedef void (*dump_fn)(AIBinder*, int);
+    typedef void (*dec_strong_fn)(AIBinder*);
+
+    static get_service_fn get_service = nullptr;
+    static dump_fn do_dump = nullptr;
+    static dec_strong_fn dec_strong = nullptr;
+    static bool tried = false;
+    if (!tried) {
+        tried = true;
+        void* handle = dlopen("libbinder_ndk.so", RTLD_NOW);
+        if (handle) {
+            get_service = (get_service_fn)dlsym(handle, "AServiceManager_getService");
+            do_dump = (dump_fn)dlsym(handle, "AIBinder_dump");
+            dec_strong = (dec_strong_fn)dlsym(handle, "AIBinder_decStrong");
+        }
+        if (!get_service || !do_dump || !dec_strong) {
+            return false;
+        }
+    }
+    if (!get_service || !do_dump || !dec_strong) return false;
+
+    AIBinder* service = get_service("activity");
+    if (!service) return false;
+
+    int fds[2];
+    if (pipe(fds) != 0) {
+        dec_strong(service);
+        return false;
+    }
+
+    std::mutex mu;
+    std::atomic<bool> found(false);
+    char found_pkg[MAX_PACKAGE_LEN] = {0};
+    std::thread reader([&]() {
+        char tmp[8192];
+        std::string tail;
+        while (true) {
+            ssize_t n = read(fds[0], tmp, sizeof(tmp));
+            if (n > 0) {
+                if (!found.load()) {
+                    std::lock_guard<std::mutex> lock(mu);
+                    tail.append(tmp, (size_t)n);
+                    if (tail.size() > 65536) {
+                        tail.erase(0, tail.size() - 32768);
+                    }
+                    if (foreground_parse_top_line(tail.data(), tail.size(),
+                                                  found_pkg, sizeof(found_pkg))) {
+                        found.store(true);
+                    }
+                }
+            } else if (n == 0) {
+                break;
+            } else if (errno == EINTR) {
+                continue;
+            } else {
+                break;
+            }
+        }
+        close(fds[0]);
+    });
+
+    do_dump(service, fds[1]);
+    close(fds[1]);
+    reader.join();
+    dec_strong(service);
+
+    if (!found.load() || !found_pkg[0]) return false;
+    safe_strncpy(out_pkg, found_pkg, out_size);
+    static int binder_success_logs = 0;
+    if (binder_success_logs < 3) {
+        binder_success_logs++;
+        char msg[192];
+        safe_snprintf(msg, sizeof(msg), "binder前台探测 | pkg:%s", out_pkg);
+        log_config_message(msg);
+    }
+    return true;
+}
+
+/*
+ * Binder dump 的宿主封装：放到子进程里做，避免 AIBinder_dump 内部异常
+ * （真机上实测某些系统版本会 SIGSEGV）把调度守护进程一起带走。
+ * 子进程成功则通过管道回传 package；超时/崩溃都只当失败，回退 dumpsys。
+ */
+static bool read_foreground_package_from_binder_dump(char* out_pkg, size_t out_size) {
+    if (!out_pkg || out_size == 0) return false;
+
+    int fds[2];
+    if (pipe(fds) != 0) return false;
+
+    pid_t child = fork();
+    if (child == 0) {
+        close(fds[0]);
+        char pkg[MAX_PACKAGE_LEN] = {0};
+        bool ok = binder_probe_impl(pkg, sizeof(pkg));
+        if (ok && pkg[0]) {
+            ssize_t ignored = write(fds[1], pkg, strlen(pkg));
+            (void)ignored;
+        }
+        close(fds[1]);
+        _exit(ok ? 0 : 1);
+    }
+    close(fds[1]);
+    if (child < 0) {
+        close(fds[0]);
+        return false;
+    }
+
+    bool ok = false;
+    struct pollfd pfd = {fds[0], POLLIN, 0};
+    int ready = poll(&pfd, 1, 2500);
+    if (ready > 0) {
+        char buf[MAX_PACKAGE_LEN] = {0};
+        ssize_t n = read(fds[0], buf, sizeof(buf) - 1);
+        if (n > 0) {
+            buf[n] = '\0';
+            safe_strncpy(out_pkg, buf, out_size);
+            ok = true;
+        }
+    }
+    close(fds[0]);
+    kill(child, SIGKILL);
+    waitpid(child, NULL, 0);
+
+    static int binder_success_logs = 0;
+    static int binder_fail_logs = 0;
+    if (ok && binder_success_logs < 3) {
+        binder_success_logs++;
+        char msg[192];
+        safe_snprintf(msg, sizeof(msg), "binder前台探测 | pkg:%s", out_pkg);
+        log_config_message(msg);
+    } else if (!ok && binder_fail_logs < 2) {
+        binder_fail_logs++;
+        log_config_message("binder前台探测失败（子进程异常/超时），回退 dumpsys 链路");
+    }
+    return ok;
+}
+
 static bool read_top_resumed_activity_package(char* out_pkg,
                                               size_t out_pkg_size,
                                               char* out_activity,
@@ -229,6 +424,44 @@ static bool read_top_resumed_activity_package(char* out_pkg,
     out_pkg[0] = '\0';
     out_activity[0] = '\0';
     if (out_ignored_found) *out_ignored_found = false;
+
+    /*
+     * 6.9：优先用 Binder dump 拿前台组件（不再每 2s 拉一个 dumpsys 子进程）。
+     * AIBinder_dump 输出直接进管道，读线程边读边找 " TOP " 行；失败/无
+     * libbinder_ndk 时回退原来的 dumpsys 链路。缓存 5s，避免频繁 dump。
+     */
+    {
+        static long long last_binder_attempt_ms = 0;
+        static long long last_binder_ok_ms = 0;
+        static char binder_cached_pkg[MAX_PACKAGE_LEN] = {0};
+        static char binder_cached_activity[192] = {0};
+        long long now = get_current_time_ms();
+        if (binder_cached_pkg[0] && now - last_binder_ok_ms < 5000) {
+            if (should_ignore_foreground_package(binder_cached_pkg)) {
+                if (out_ignored_found) *out_ignored_found = true;
+                return false;
+            }
+            safe_strncpy(out_pkg, binder_cached_pkg, out_pkg_size);
+            safe_strncpy(out_activity, binder_cached_activity, out_activity_size);
+            return true;
+        }
+        if (now - last_binder_attempt_ms >= 5000) {
+            last_binder_attempt_ms = now;
+            char binder_pkg[MAX_PACKAGE_LEN] = {0};
+            if (read_foreground_package_from_binder_dump(binder_pkg, sizeof(binder_pkg))) {
+                if (!should_ignore_foreground_package(binder_pkg)) {
+                    safe_strncpy(binder_cached_pkg, binder_pkg, sizeof(binder_cached_pkg));
+                    binder_cached_activity[0] = '\0';
+                    last_binder_ok_ms = now;
+                    safe_strncpy(out_pkg, binder_pkg, out_pkg_size);
+                    safe_strncpy(out_activity, binder_cached_activity, out_activity_size);
+                    return true;
+                }
+                if (out_ignored_found) *out_ignored_found = true;
+                return false;
+            }
+        }
+    }
 
     bool ignored = false;
     if (read_foreground_component_from_command("dumpsys activity top-resumed-activity 2>/dev/null",
