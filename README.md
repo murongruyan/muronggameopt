@@ -1,230 +1,286 @@
-# 慕容调度 5.6 免费版 — 开源模块
+# 慕容调度 6.11 免费版 — 开源模块
 
-这是 `慕容调度` 的 **免费开源版** 模块仓库，面向 Magisk / KernelSU / APatch 模块环境。
+这是 **慕容调度** 的免费开源版模块，运行在 Magisk / KernelSU / APatch 的模块环境里，
+负责刷入之后设备上实际生效的调频、线程与场景调度行为。
 
-它不是 APK 工程，而是设备侧真实运行的调度模块目录，负责模块刷入后在手机上实际生效的调度行为。
-
----
-
-## 开源说明
-
-本仓库为独立维护的开源实现，与付费版属于**两个不同的仓库**，没有代码共享关系。
-
-- **本仓库**：免费开源版。代码独立编写，独立维护，可公开审查。
-- **付费版**：闭源。包含额外的实验性/高性能特性，不在本仓库中。
-
-两套版本都遵守相同的模块接口和 JSON 配置文件格式，但内部实现互不依赖。
+它是**设备侧模块仓库**，不是 APK 工程；配套 App（`慕容调度` 2.1.10+）用于图形化配置，
+模块本身可以直接用 JSON 配置文件工作。
 
 ---
 
-## 功能范围
+## 一、这是什么
 
-本仓库包含以下能力，全部对用户透明并可审查源码：
+- **免费开源**：用户态调度实现，源码可审查、可自行编译；与闭源的付费内核版是两个独立仓库。
+- **纯用户态 + eBPF**：不替换内核、不刷 boot.img，通过 eBPF 事件、`sched_setaffinity`、
+  cpufreq 节点、cgroup/cpuset 与厂商接口完成调度。
+- **面向游戏与日常**：FAS 帧感知调频 + 动态调频 + 线程角色绑核 / 动态线程放置 + 场景提频。
+- **可解释、可关闭**：所有自动行为都有配置项和日志；默认配置在不折腾的情况下即可用。
 
-### ✅ 包含的功能
+支持环境：
 
-| 类别 | 具体能力 |
+- 架构：arm64（AArch64）
+- Root：Magisk / KernelSU / APatch
+- 系统：Android 12+ 较稳（eBPF/BTF 与 cpuset v1 可用性取决于机型）
+- 推荐配套：**慕容调度 App 2.1.10+**（可选，不装也能用 JSON 配置）
+
+---
+
+## 二、功能范围
+
+### ✅ 已包含
+
+| 类别 | 能力 |
 |---|---|
-| **CPU 调频** | 调速器切换、最大/最小频率设置、governor 参数调整 |
-| **cpuset 管控** | top-app / foreground / background 等 cgroup 策略 |
-| **cpuctl 管控** | cpu.shares / cpu.max 等参数写入 |
-| **场景策略** | 前台应用识别、场景分类、动态提频 |
-| **自定义线程** | 基于 JSON 配置的线程匹配与绑核（`main/gfx/render/worker/other/extra`） |
-| **线程级策略** | 绑核 (cpus/clusters)、实时优先级 (SCHED_RR/FIFO)、nice |
-| **模式配置** | powersave / balance / performance / fast 多档位 |
+| **FAS 帧感知调频** | 三相位控制器（CALIBRATING / STABLE / DEGRADED）：帧债、甜点频率、深睡地板、稳定态 headroom、quick_drop、占用率升频；可调 `conservative`、`target_fps_offset_permille`、`fast_down` |
+| **动态调频** | `dyn.json` 阶段表（负载 → 地板/上限千分比）、迟滞、软化、收紧间隔；`corridor_owner` 决定边界由 dyn / fas / mode 谁主导；支持每档位覆盖 |
+| **限流曲线（limiter）** | 负载阶段 `idle/inactive/p1/p2/p3` → 每簇 `min/max` 钳制 + `margins` 曲线 + `excludes/prefer` + `core_ctl`，叠加在 FAS / 日用调频之上（默认关闭） |
+| **自定义线程** | `bin/cpu/<拓扑>.json` 中按 `main / gfx / render / worker / other / extra` 角色匹配线程，支持 `cpus` / `clusters` / `limit` / `nice` / `rr` / `fifo` |
+| **动态线程** | 学习—锁定会话：按负载给未显式规则的线程选簇，迁移节流；支持 `thread_select.strategy = hot / least_cpu` |
+| **线程事件驱动** | eBPF `fork / exec / task_rename / exit`：线程改名后立即按新名字重匹配规则（6.7+） |
+| **语义核名** | `clusters` 支持 `little / mid / big / prime / top / all` 与 `e-core / p-core / hp-core / all-core` |
+| **cpuset + affinity 双写** | 绑核失败时按目标掩码创建 `/dev/cpuset/murong_sched/<hash>` 专用子 cpuset，再重试 `sched_setaffinity`，释放时迁回原组（6.9+） |
+| **厂商接口（可选）** | FPSGO `fbt_attr_by_pid`、WALT `sched_per_task_boost`、`sched_pipeline_special`；默认关闭，只写真实存在的节点 |
+| **RT 模式（可选）** | 前台游戏主线程 `SCHED_RR / SCHED_FIFO` + 可选 `sched_rt_*` sysctl；默认关闭，切后台/退出恢复 |
+| **前台识别** | dumpsys 前台组件解析；可选 Binder 探测（`AIBinder_dump`，fork 子进程隔离，异常自动回退 dumpsys） |
+| **场景策略** | `config/categories.json` 场景分类与场景默认策略、按应用模式覆盖（`config/mode.txt`） |
+| **官方环境复刻** | 按 `config/official_env.conf` 复刻开发者验证环境：禁用官方增强/定制包、关闭 OIFace、解除 `game_opt` 官方调频限制（可配置关闭） |
+| **状态自检** | 只读检测写入 `config/official_state.txt`：被禁用包、OIFace、`/proc/game_opt`、`com.oplus.cosa`、带 `disable` 的 Magisk 模块 |
+| **模式系统** | `powersave / balance / performance / fast` 多档位 + 全局功能开关（`config/sched.txt`） |
 
-### ❌ 不包含的功能
+### ❌ 不包含
 
 | 类别 | 说明 |
 |---|---|
-| **FAS 帧感知** | 付费版独占的帧率采样与 queueBuffer 监控链路 |
-| **动态调频引擎** | 付费版独占的预测性频率策略链 |
-| **动态线程学习** | 付费版独占的线程自动分类 / 学习 / 锁定 / guard 机制 |
-| **授权验证** | 本仓库无卡密 / 设备绑定 / 在线校验逻辑 |
+| 授权 / 卡密 / 设备绑定 | 免费版无任何在线校验或授权逻辑 |
+| 内核模块 / boot 镜像修改 | 免费版是纯用户态；内核级调度属于付费版独立仓库 |
+| 官方调度数据库修改 | 不触碰 `com.oplus.cosa` 等官方调度数据库；需要官方调度屏蔽请另装专门模块 |
+| 温度墙 / 充电 / 显示增强 | 不属于本模块职责，请用对应模块 |
 
 ---
 
-## 与本仓库不重复的开源内容
+## 三、快速开始
 
-如果你希望更全面地理解这套调度的完整体系，以下文件与本仓库同时维护但不直接包含在本仓库源码里：
+1. 从 [GitHub Releases](https://github.com/murongruyan/muronggameopt/releases) 下载
+   `murongdiaodu-free-module-<版本>.zip`，在 Magisk / KernelSU / APatch 中刷入。
+2. 重启设备。
+3. （建议）安装配套 App `慕容调度 2.1.10+`，在 App 里查看/修改配置。
+4. 查看运行日志：
+   - `config/log.txt`：主日志
+   - `config/debug_log.txt`：调试日志（`config/log.conf` 中 `enabled=1` 才写）
+   - `config/fas_log.txt`、`config/stats_log.txt`、`config/affinity_log.txt`：FAS / 调频 / 绑核
+   - `config/official_env.log`：官方环境复刻记录
+   - `config/official_state.txt`：官方组件状态快照
 
-- `配置字段说明`：官网文档站点的免费版专题
-- `场景分类指南`：`categories.json` 的字段说明
-- `BPF自定义线程写法`：拓扑 JSON 的线程规则写法
-- `调度整体说明`：安装链、启动链、配置主线和维护口径
-
-## 5.6 相比旧开源版的变化
-
-如果和旧公开版 `5.1 / 5.2` 这条线相比，`5.6` 这次不是单纯补几个功能点，而是把公开版重新收敛成一套更适合长期维护、直接公开发布、也更接近真实运行时的稳定主线。
-
-### 版本对比
-
-| 版本 | 公开版主线 | 版本定位 |
-| --- | --- | --- |
-| `5.1` | 智能配置生成、基础公开版 | 以配置生成和早期开源为主 |
-| `5.2` | 旧公开仓库展示版 | 更偏功能展示和历史说明 |
-| `5.6` | CPU 模式 + 场景提频 + 线程专项 | 面向当前维护和 GitHub 发布的免费版主线 |
-
-### 主要提升
-
-- 线程调度链更完整：不再只是按包名切模式，而是保留了线程专项调度主线，支持 `main / gfx / render / worker / other / custom` 这类线程角色规则。
-- 线程控制粒度更细：公开版现在保留绑核、`nice`、`RR/FIFO` 等线程级策略，不再只是简单调频参数集合。
-- 配置结构更清晰：`bin/cpu/<SoC>.json` 负责模式参数，`bin/cpu/<拓扑>.json` 负责线程专项，`config/categories.json` 负责场景分类，维护边界更明确。
-- 运行时实现更完整：当前公开版主逻辑已经收敛到原生二进制、配置加载、前台识别、线程运行时这一整套链路，而不是早期偏轻量脚本式实现。
-- 构建链更完整：`monitor.skel.h`、`monitor.bpf.o`、`activity_diaodu` 已重新生成，公开目录也补齐了仓库说明和发布资料。
-
-### 新增或整理
-
-- 新增免费版专用 [调度整体使用说明.md](file:///c:/android-ndk-r27d-windows/diaodu/apk/免费版模块/5.6/调度整体使用说明.md)，单独说明免费版安装链、启动链、配置主线和维护口径。
-- 新增适合公开仓库使用的 [.gitignore](file:///c:/android-ndk-r27d-windows/diaodu/apk/免费版模块/5.6/.gitignore)，避免把本地缓存、备份和临时文件带进仓库。
-- 补齐 [LICENSE](file:///c:/android-ndk-r27d-windows/diaodu/apk/免费版模块/5.6/LICENSE) 与 [CHANGELOG.md](file:///c:/android-ndk-r27d-windows/diaodu/apk/免费版模块/5.6/CHANGELOG.md)，把公开仓库需要的基础元数据补完整。
-- 补充 [THIRD_PARTY_NOTICES.md](file:///c:/android-ndk-r27d-windows/diaodu/apk/免费版模块/5.6/THIRD_PARTY_NOTICES.md)，说明仓库中保留的第三方组件与生成文件来源。
-- 重新整理公开版目录，只保留当前免费版真实会维护、会发布、会运行的内容。
-
-### 本次收敛项
-
-- 移除了设备授权相关残留，不再保留公开仓库不需要的校验字段和安装期痕迹。
-- 移除了当前仓库不再维护的实验性频率策略实现与历史命名。
-- 移除了不再对外维护的动态调节链路，避免公开版继续混入无效策略实现。
-- 清理了备份文件、内部草稿和历史命名，让公开仓库只保留当前主线所需内容。
-
-### 版本定位
-
-- 这版不是历史目录的简单拼接，而是围绕 CPU 模式、场景提频、线程专项三条主线重新整理出来的公开版主仓库。
-- 这版的目标不是继续堆叠杂项能力，而是把公开版收敛成能维护、能解释、能构建、能直接发 GitHub 的稳定版本。
-
-## 仓库定位
-
-这套免费版仓库主要维护设备侧运行内容，包括：
-
-- 调度主二进制
-- CPU / 线程 / 场景分类 JSON
-- eBPF 相关源码与产物
-- 安装脚本与开机服务脚本
-
-如果你要改的是下面这些方向，主要就是改这个目录：
-
-- CPU 模式配置
-- 线程分配与绑核
-- 场景分类
-- 模块启动与安装逻辑
-
-## 目录结构
-
-- `bin/`
-  - 调度主程序、核心源码、CPU 配置、构建脚本
-- `bin/cpu/`
-  - SoC 模式配置与线程拓扑配置
-- `config/`
-  - 场景分类配置
-- `线程源码/`
-  - eBPF 源码、`monitor.bpf.o`、`monitor.skel.h`
-- `vtools/`
-  - 初始化与辅助脚本
-- `customize.sh`
-  - 刷入安装期脚本
-- `service.sh`
-  - 开机服务入口
-- `module.prop`
-  - 模块元信息
-
-## 当前版本信息
-
-当前 `module.prop` 中的版本信息为：
+全局功能开关（`config/sched.txt`）：
 
 ```properties
-id=muronggameopt
-name=慕容调度5.6
-version=5.6
-versionCode=56
-author=慕容茹艳（酷安慕容雪绒）
-updateJson=https://raw.githubusercontent.com/murongruyan/muronggameopt/main/update3.json
+main=1   # 调度总控
+cth=1    # 自定义线程
+dth=1    # 动态线程
+cat=1    # 场景分类
+base=1   # 模式基础
 ```
 
-## 构建方式
+关闭对应项并确认后写入该文件；模块读取的是这里的值，关闭后不会再被自动打开。
+
+---
+
+## 四、配置主线
+
+| 想改什么 | 改哪里 |
+|---|---|
+| CPU 模式参数、频率、governor、cpuset、cpuctl | `bin/cpu/<SoC>.json` |
+| 线程角色规则 / 绑核 / nice / RR / FIFO | `bin/cpu/<拓扑>.json`（如 `6+2.json`） |
+| FAS 甜点/深睡地板/headroom/新参数 | `bin/cpu/fas.json`（`defaults` 与 `deep_floor_freq` / `sweetspot_freq`） |
+| 动态调频阶段表、走廊、limiter、RT、厂商接口 | `bin/cpu/dyn.json` |
+| 场景分类与场景默认策略 | `config/categories.json` |
+| 当前模式 / 按应用模式覆盖 | `config/mode.txt` |
+| 全局功能开关 | `config/sched.txt` |
+| 官方环境复刻项 | `config/official_env.conf` |
+| 日志开关 | `config/log.conf` |
+
+### FAS 关键参数（`bin/cpu/fas.json → defaults`）
+
+```json
+{
+  "enabled": 1,
+  "quick_drop": 0,
+  "fast_down": 0,
+  "conservative": 1,
+  "target_fps_offset_permille": 0,
+  "report_thread_state": 1,
+  "upscale_occupancy": 85,
+  "stable_headroom_permille": 1250
+}
+```
+
+- `conservative`：1=默认；2~4=连续更多采样才判掉帧（升频更保守）
+- `target_fps_offset_permille`：预算目标帧率下调千分比（0~300，0=不降）
+- `fast_down`：`quick_drop` 的别名，任一开即“帧率稳定立刻降到底板”
+- `stable_headroom_permille`：稳定态天花板 = 目标 × 该值 / 1000
+
+### 限流曲线（`bin/cpu/dyn.json → limiter`，默认关闭）
+
+```json
+"limiter": {
+  "enabled": 0,
+  "scope": "games",
+  "apply_fas": 1,
+  "write_walt": 0,
+  "load_mode": 1,
+  "stage_hysteresis": 5,
+  "stage_load": { "idle": 20, "inactive": 35, "p1": 55, "p2": 75, "p3": 90 },
+  "stages": {
+    "p2": { "0": { "min": 960000, "max": 2400000, "margins": "200 1555200:130 1996800:90" } }
+  }
+}
+```
+
+- `enabled=1` 后按 cluster0 负载选阶段，对每簇 min/max 做钳制；`apply_fas=1` 表示 FAS 路径也受约束
+- `write_walt=1` 时把该阶段 `margins` 写到对应 policy 的 `walt/target_loads`（节点不存在则跳过）
+
+### RT 模式与厂商接口（默认关闭）
+
+```json
+"rt": { "enabled": 0, "policy": "rr", "priority": 1, "write_sysctls": 1 },
+"vendor_hints": { "enabled": 0, "fpsgo": 1, "walt": 1, "pipeline": 0 },
+"thread_select": { "strategy": "hot" }
+```
+
+> RT 模式会让游戏主线程进入 SCHED_RR/FIFO，**可能导致卡死/发热**，仅在明确知道风险时开启。
+
+### 官方环境复刻（`config/official_env.conf`）
+
+默认复刻开发者验证环境，可整体关闭：
+
+```properties
+enabled=1
+disable_packages=com.oplus.ohome,com.oplus.customize.coreapp
+oiface_disable=1
+game_opt_disable_limit=1
+game_opt_debug=0
+```
+
+脚本 `vtools/official_env.sh` 在每次模块启动时执行（`activity_diaodu.rc` 中调用），幂等：
+已禁用的跳过、未安装的跳过；日志见 `config/official_env.log`。
+
+---
+
+## 五、与 Scene 的配合
+
+本模块支持作为 **Scene 第三方性能调节 profile** 使用：
+
+- 模块会生成 `/data/powercfg.json` 与 `/data/powercfg.sh`；
+- Scene 切换到“慕容调度”后，档位切换会调用 `sh /data/powercfg.sh <scheme>`，模块写入
+  `config/mode.txt`（首行全局档位 + 后续按应用覆盖行）；
+- 线程/FAS/动态调频仍由模块自身配置控制，与 Scene 的档位切换互不冲突。
+
+如果你在 Scene 里切到 Scene 官方的 LP/HP/EP 档位，Scene 会用自己的 daemon/配置，
+此时本模块的部分调度可能被禁用或覆盖，属于正常现象；切回“慕容调度”即可恢复。
+
+---
+
+## 六、目录结构
+
+```
+.
+├── activity_diaodu.rc          # 模块启动入口（先复刻官方环境，再拉起调度）
+├── service.sh                  # 开机服务（boot-completed 后初始化 vtools / 启动调度）
+├── customize.sh                # 刷入安装期脚本
+├── module.prop                 # 模块元信息（版本/作者/更新地址）
+├── bin/
+│   ├── activity_diaodu         # 调度主程序（arm64 用户态二进制）
+│   ├── libbpf.so               # eBPF 用户态依赖
+│   ├── monitor.bpf.o           # eBPF 对象（fork/exec/rename/exit 等事件）
+│   ├── fas/                    # FAS 三相位引擎与配置加载源码
+│   └── cpu/
+│       ├── <SoC>.json          # 模式级 CPU 参数
+│       ├── <拓扑>.json         # 线程角色规则（如 6+2.json）
+│       ├── dyn.json            # 动态调频 / limiter / RT / 厂商接口
+│       ├── fas.json            # FAS 配置（甜点/地板/headroom/…）
+│       └── gen_fas.sh          # 按机型频率表生成默认 FAS 参数
+├── config/
+│   ├── sched.txt               # 全局功能开关
+│   ├── mode.txt                # 当前模式与按应用覆盖
+│   ├── categories.json         # 场景分类
+│   ├── official_env.conf       # 官方环境复刻配置
+│   └── log.conf                # 调试日志开关
+├── 线程源码/                    # eBPF 源码与构建脚本（monitor.bpf.c / vmlinux.h / bpf 头文件）
+├── vtools/                     # Scene 集成、官方环境复刻等辅助脚本
+└── 调度整体使用说明.md           # 安装链 / 启动链 / 维护口径
+```
+
+---
+
+## 七、构建方式
 
 ### 1. 生成 eBPF 产物
 
-在 `线程源码/` 目录执行：
+在 `线程源码/` 目录执行 `编译monitor.skel.h.bat`（需要 WSL + clang + bpftool），或手动：
 
-```bat
-编译monitor.skel.h.bat
+```bash
+clang -target bpf -g -O2 -D__TARGET_ARCH_arm64 \
+  -I<libbpf 头文件目录> -I. -c monitor.bpf.c -o monitor.bpf.o
 ```
-
-该脚本会尝试通过 WSL 调用 `clang` 和 `bpftool`，生成：
-
-- `线程源码/monitor.bpf.o`
-- `线程源码/monitor.skel.h`
 
 ### 2. 构建主程序
 
-在 `bin/` 目录执行：
-
-```bat
-build.bat
-```
-
-该脚本会使用 Android NDK 交叉编译，输出：
+在 `bin/` 目录执行 `build.bat`（Windows + Android NDK r30），输出：
 
 - `bin/activity_diaodu`
 - `bin/monitor.bpf.o`
-- `bin/libc++_shared.so`
 
-## 环境要求
+GitHub Actions 会使用 NDK `30.0.14904198` 重新编译并打包模块 zip。
+
+环境要求：
 
 - Windows
-- Android NDK `30.0.14904198` 或兼容的 `r30` 系版本
-- WSL
-- WSL 中可用的 `clang`
-- WSL 中可用的 `bpftool`
+- Android NDK `30.0.14904198` 或兼容的 r30 系版本
+- WSL + clang（仅 eBPF 对象需要）
 
-`build.bat` 会优先检测这些 NDK 路径：
+---
 
-- `%ANDROID_NDK_ROOT%`
-- `%NDK_ROOT%`
-- `C:\android-ndk-r27d-windows\huanjing\android-ndk-r30-beta1`
-- `C:\android-ndk-r27d-windows\huanjing\android-ndk-r30`
-- `C:\android-ndk-r27d-windows\android-ndk-r27d`
-- `C:\android-ndk-r27d-windows`
+## 八、常见问题
 
-当前 GitHub Actions 工作流也已经统一使用 `NDK 30.0.14904198` 重新编译二进制，本地和 CI 的说明口径保持一致。
+**Q：刷入后没有生效？**
+先确认模块已启用（Magisk/KernelSU 模块列表），查看 `config/log.txt` 是否有
+`模式 ... 的功能开关(生效)`、`eBPF 内核聚合 ... 已启用` 等日志；确认 `config/sched.txt`
+中 `main=1`，以及 `config/mode.txt` 档位正确。
 
-## 配置主线
+**Q：FAS 的深睡地板没有生效？**
+确认 `bin/cpu/fas.json → defaults.enabled = 1`，并且当前应用没有被 App 的按应用配置
+关闭 FAS；查看 `config/debug_log.txt` 里是否有 `fas:1 | fas_buf:1` 和 `c:fas` 执行日志。
 
-当前公开版最重要的配置文件是：
+**Q：线程没有按规则绑核？**
+确认 `config/sched.txt` 中 `cth=1`/`dth=1`，规则包名与当前前台包名一致；查看
+`config/affinity_log.txt` 的“静态规则绑核 / 动态层被显式规则压制”等记录。
 
-- `bin/cpu/<SoC>.json`
-  - 模式级 CPU 参数、频率、governor、`cpuset`、`cpuctl`
-- `bin/cpu/<拓扑>.json`
-  - 线程专项主配置
-- `config/categories.json`
-  - 场景分类与场景默认策略
-- `config/mode.txt`
-  - 当前模式与应用级模式覆盖
+**Q：怎么完全关闭官方环境复刻？**
+`config/official_env.conf` 设 `enabled=0`，重启或手动执行 `vtools/official_env.sh`。
 
-如果只想记住最短对应关系：
+**Q：会不会影响系统 OTA / 保修？**
+模块只改运行时的 sysfs/cgroup/应用启用状态，不修改 system/vendor 分区；卸载模块并恢复
+官方设置即可回到原状。官方环境复刻会禁用部分 OPLUS 包，按需关闭。
 
-- 改模式和频率：`bin/cpu/<SoC>.json`
-- 改线程专项：`bin/cpu/<拓扑>.json`
-- 改场景分类：`config/categories.json`
-- 改模式切换：`config/mode.txt`
+**Q：App 里看不到新功能？**
+需要 App **2.1.10+**；旧版 App 仍可使用模块原有功能，但看不到 limiter/RT/厂商接口配置页。
 
-## 安装与发布
+---
 
-- 安装前确认 `module.prop` 中版本号、作者、更新地址正确
-- 确认 `bin/activity_diaodu` 已重新编译
-- 确认 `bin/monitor.bpf.o` 与 `线程源码/monitor.bpf.o` 为当前构建产物
-- 打包前检查 `bin/`、`线程源码/` 中没有备份文件和临时文件
-- 发布前建议同步查看 `CHANGELOG.md`、`THIRD_PARTY_NOTICES.md` 与 `调度整体使用说明.md`
+## 九、变更记录与许可证
 
-## 变更记录与许可证
+- 详细更新记录：`changelog.txt`（完整历史）与 `CHANGELOG.md`
+- 开源许可证：`LICENSE`
+- 第三方组件说明：`THIRD_PARTY_NOTICES.md`
+- 使用/维护口径：`调度整体使用说明.md`
 
-- 更新记录见 `CHANGELOG.md`
-- 开源许可证见 `LICENSE`
-- 第三方组件说明见 `THIRD_PARTY_NOTICES.md`
+当前版本信息（`module.prop`）：
 
-## 说明
-
-- 本仓库是可公开维护的免费版实现。
-- 若修改了 `线程源码/monitor.bpf.c`，应先重新生成 `monitor.skel.h` 和 `monitor.bpf.o`，再执行 `bin/build.bat`。
-- 若你需要更完整的字段解释与维护口径，优先查看 `调度整体使用说明.md`。
+```properties
+id=muronggameopt
+name=慕容调度6.11
+version=6.11
+versionCode=611
+author=慕容茹艳（酷安慕容雪绒）
+updateJson=https://raw.githubusercontent.com/murongruyan/muronggameopt/main/update3.json
+```
