@@ -43,7 +43,7 @@
 
 | 类别 | 能力 |
 |---|---|
-| **FAS 帧感知调频** | 三相位控制器（CALIBRATING / STABLE / DEGRADED）：帧债、甜点频率、深睡地板、稳定态 headroom、quick_drop、占用率升频；可调 `conservative`、`target_fps_offset_permille`、`fast_down` |
+| **FAS 帧感知调频** | 三相位控制器（CALIBRATING / STABLE / DEGRADED）：帧债、甜点频率、深睡地板、稳定态 headroom、quick_drop、占用率升频；可调 `conservative`、`target_fps_offset_permille`、`quick_drop`（历史别名 `fast_down` 自动并入） |
 | **动态调频** | `dyn.json` 阶段表（负载 → 地板/上限千分比）、迟滞、软化、收紧间隔；`corridor_owner` 决定边界由 dyn / fas / mode 谁主导；支持每档位覆盖 |
 | **限流曲线（limiter）** | 负载阶段 `idle/inactive/p1/p2/p3` → 每簇 `min/max` 钳制 + `margins` 曲线 + `excludes/prefer` + `core_ctl`，叠加在 FAS / 日用调频之上（默认关闭） |
 | **自定义线程** | 线程配置文件（新版 `bin/cpu/<cpuModel>.threads.json`，兼容 `<拓扑>.threads.json` / 旧 `<拓扑>.json`）中按 `main / gfx / render / worker / other / extra` 角色匹配线程，支持 `cpus` / `clusters` / `limit` / `nice` / `rr` / `fifo`；**RT 模式（顶层 `rt` 块）也属于这一层** |
@@ -117,7 +117,6 @@ base=1   # 模式基础
 {
   "enabled": 1,
   "quick_drop": 0,
-  "fast_down": 0,
   "conservative": 1,
   "target_fps_offset_permille": 0,
   "report_thread_state": 1,
@@ -128,7 +127,7 @@ base=1   # 模式基础
 
 - `conservative`：1=默认；2~4=连续更多采样才判掉帧（升频更保守）
 - `target_fps_offset_permille`：预算目标帧率下调千分比（0~300，0=不降）
-- `fast_down`：`quick_drop` 的别名，任一开即“帧率稳定立刻降到底板”
+- `quick_drop`：帧率稳定时立刻降到底板；历史别名 `fast_down` 解析时按旧语义（任一开即开）并入本字段，新配置只写 `quick_drop`（见 CHANGELOG 迁移说明）
 - `stable_headroom_permille`：稳定态天花板 = 目标 × 该值 / 1000
 
 ### 限流曲线（`bin/cpu/dyn.json → limiter`，默认关闭）

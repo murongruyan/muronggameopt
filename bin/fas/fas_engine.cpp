@@ -139,8 +139,8 @@ bool fas_engine_init(FasEngine* e, const char* config_path) {
 
     char msg[280];
     snprintf(msg, sizeof(msg),
-        "fas_engine: v6.2 三相位控制器 | quick_drop=%d fast_down=%d conservative=%d fps_offset=%d‰ report_thread=%d upscale_occ=%d%%",
-        e->config.quick_drop, e->config.fast_down, e->config.conservative,
+        "fas_engine: v6.2 三相位控制器 | quick_drop=%d conservative=%d fps_offset=%d‰ report_thread=%d upscale_occ=%d%%",
+        e->config.quick_drop, e->config.conservative,
         e->config.target_fps_offset_permille, e->config.report_thread_state,
         e->config.upscale_occupancy);
     log_message(msg);
@@ -396,8 +396,8 @@ FasOutput fas_engine_tick(FasEngine* e) {
             out.phase = FAS_PHASE_STABLE;
             out.stable_fps = e->stable_fps;
 
-            if (e->config.quick_drop || e->config.fast_down) {
-                /* 快速降频：稳定就毫不犹豫直接降到底板（fast_down 是 quick_drop 的新别名） */
+            if (e->config.quick_drop) {
+                /* 快速降频：稳定就毫不犹豫直接降到底板（fast_down 历史别名已在解析时并入 quick_drop） */
                 out.drop_to_floor = 1;
             } else if (now_ms - e->last_drop_ms >= kSlowDropIntervalMs) {
                 out.freq_scale = kSlowDropScale;

@@ -128,7 +128,7 @@ typedef struct {
     float default_kp;
 
     /* ── 新开关（fas.json 的 defaults）── */
-    int quick_drop;            /* 帧率稳定后直接降到底板（1=开） */
+    int quick_drop;            /* 帧率稳定后直接降到底板（1=开；fast_down 是历史别名，解析时并入本字段） */
     int report_thread_state;   /* 把重要线程占用报告给 FAS（1=开） */
     int upscale_occupancy;     /* 占用率升频阈值（0=关闭） */
     /*
@@ -144,7 +144,7 @@ typedef struct {
     /* ── 6.8 新增（借鉴 Scene FAS 的可调策略，默认保持旧行为）── */
     int conservative;              /* 1=默认；2/3=连续 N 个采样才判掉帧（升频更保守） */
     int target_fps_offset_permille;/* 目标帧率下调千分比（如 20 = 目标降 2%），0=关 */
-    int fast_down;                 /* 等价 quick_drop 的别名，任一开即快速降到底板 */
+    /* 注：历史别名 fast_down 已删除，解析时并入 quick_drop（见 fas_config.cpp） */
 
     int app_count;
     FasAppConfig apps[FAS_MAX_FAS_APPS];

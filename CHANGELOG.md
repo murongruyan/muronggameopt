@@ -2,6 +2,7 @@
 
 ## 5.6 免费公开版
 
+- FAS 快速降频开关收敛：`fast_down` 并入 `quick_drop`（历史别名；解析按旧语义 OR 合并并打一次弃用日志，迁移写回不再输出 `fast_down`）
 - RT 语义修正：`rt` 块从 `bin/cpu/dyn.json` 迁移到线程配置文件（`bin/cpu/<cpuModel>.threads.json`，兼容 `<拓扑>.threads.json` / 旧 `<拓扑>.json`）；模块优先读新位置，旧 `dyn.json.rt` 仅回退兼容并打印一次弃用提示
 - 纯线程版（不打包 `dyn.json`）现在也能从线程配置文件读取 RT 配置
 - 旧版 App / 旧配置仍可把 `rt` 写在 `dyn.json`（模块回退读取并打印一次弃用提示；新版 App 应写入线程配置）

@@ -28,6 +28,9 @@ FAS（Frame Aware Scheduling）只看画面：从 queueBuffer 相邻两帧的间
 | `fas_target.h+cpp` | 目标帧率识别（升降档，降档/掉档 3s 防抖） |
 | `fas_engine.h+cpp` | FasEngine 容器：`push_frame` / `tick` → 动作档位 |
 
+> 配置兼容：`defaults.fast_down` 是 `quick_drop` 的**历史别名**。解析时按旧语义（任一开即开）并入
+> `quick_drop`，并打一次弃用日志；迁移写回后配置只保留 `quick_drop`，不再输出 `fast_down`。
+
 ## 使用方法
 
 ```c

@@ -8,6 +8,9 @@
 
 extern void log_message(const char* msg);
 
+/* 6.14：fast_down 是 quick_drop 的历史别名，已弃用；只提示一次，避免热重载刷日志。 */
+static bool g_fast_down_deprecated_logged = false;
+
 /*
  * 帧债灵敏度（配置里的 kp）：3.0 是基准，值越大同样的帧债判得越重。
  * 不再换算成"频率比例增益"——目标频率已经不从引擎输出，频率由执行器按动作档位查表。
@@ -30,7 +33,6 @@ void fas_config_reset_defaults(FasConfig* cfg) {
     cfg->stable_headroom_permille = 1250;
     cfg->conservative = 1;
     cfg->target_fps_offset_permille = 0;
-    cfg->fast_down = 0;
     cfg->app_count = 0;
     memset(cfg->apps, 0, sizeof(cfg->apps));
 }
@@ -147,8 +149,23 @@ bool fas_config_load(FasConfig* cfg, const char* json_str) {
             json_get_float(defaults, "kp", cfg->default_kp),
             cfg->default_kp);
 
-        /* v6.2 新开关 */
-        cfg->quick_drop = json_get_bool(defaults, "quick_drop", cfg->quick_drop != 0) ? 1 : 0;
+        /*
+         * v6.2 新开关。6.14 起 fast_down 并入 quick_drop（历史别名）：
+         *   - 只有 fast_down  -> 用它的值；
+         *   - 两者都存在      -> 按旧语义 OR（任一开即开），保证老 fas.json 行为不变；
+         *   - 迁移写回时删除 fast_down，新配置只序列化 quick_drop。
+         */
+        bool quick_drop_on = json_get_bool(defaults, "quick_drop", cfg->quick_drop != 0);
+        cJSON* legacy_fast_down = cJSON_GetObjectItem(defaults, "fast_down");
+        bool legacy_fast_down_on =
+            legacy_fast_down &&
+            (cJSON_IsBool(legacy_fast_down) || cJSON_IsNumber(legacy_fast_down)) &&
+            legacy_fast_down->valueint != 0;
+        cfg->quick_drop = (quick_drop_on || legacy_fast_down_on) ? 1 : 0;
+        if (legacy_fast_down && !g_fast_down_deprecated_logged) {
+            g_fast_down_deprecated_logged = true;
+            log_message("fas.json: fast_down 是 quick_drop 的历史别名，已按旧语义合并；该字段已弃用，后续写回只保留 quick_drop");
+        }
         cfg->report_thread_state =
             json_get_bool(defaults, "report_thread_state", cfg->report_thread_state != 0) ? 1 : 0;
         cfg->upscale_occupancy =
@@ -166,7 +183,6 @@ bool fas_config_load(FasConfig* cfg, const char* json_str) {
             json_get_int(defaults, "target_fps_offset_permille", cfg->target_fps_offset_permille);
         if (cfg->target_fps_offset_permille < 0) cfg->target_fps_offset_permille = 0;
         if (cfg->target_fps_offset_permille > 300) cfg->target_fps_offset_permille = 300;
-        cfg->fast_down = json_get_bool(defaults, "fast_down", cfg->fast_down != 0) ? 1 : 0;
     }
 
     bool truncated = false;
@@ -258,6 +274,8 @@ bool fas_config_load(FasConfig* cfg, const char* json_str) {
  *   1. 备份 fas.json -> fas.json.bak
  *   2. 删除所有 apps[].fps_profiles
  *   3. 补齐 defaults 里缺失的新开关
+ *   4. 历史别名 defaults.fast_down 按旧语义并入 quick_drop 后删除，
+ *      保证写回后的配置里不再出现 fast_down
  * 只有在确实需要改动时才写回，避免无谓的 mtime 变化触发配置重载。
  */
 bool fas_config_migrate_file(const char* path) {
@@ -298,6 +316,25 @@ bool fas_config_migrate_file(const char* path) {
         changed = true;
     }
     if (defaults) {
+        /* 6.14：历史别名 fast_down 并入 quick_drop（旧语义 OR），并从配置中删除，避免再次写出 */
+        cJSON* legacy_fast_down = cJSON_GetObjectItem(defaults, "fast_down");
+        if (legacy_fast_down) {
+            bool legacy_on =
+                (cJSON_IsBool(legacy_fast_down) || cJSON_IsNumber(legacy_fast_down)) &&
+                legacy_fast_down->valueint != 0;
+            cJSON* quick = cJSON_GetObjectItem(defaults, "quick_drop");
+            bool quick_on =
+                quick && (cJSON_IsBool(quick) || cJSON_IsNumber(quick)) &&
+                quick->valueint != 0;
+            int merged = (quick_on || legacy_on) ? 1 : 0;
+            if (!quick) {
+                cJSON_AddNumberToObject(defaults, "quick_drop", merged);
+            } else if (merged != (quick_on ? 1 : 0)) {
+                cJSON_ReplaceItemInObject(defaults, "quick_drop", cJSON_CreateNumber(merged));
+            }
+            cJSON_DeleteItemFromObject(defaults, "fast_down");
+            changed = true;
+        }
         static const char* kNewKeys[] = {
             "quick_drop", "report_thread_state",
             "upscale_occupancy", "stable_headroom_permille"
@@ -336,7 +373,7 @@ bool fas_config_migrate_file(const char* path) {
     fclose(wf);
     free(out);
 
-    log_message("fas.json 已迁移：删除 fps_profiles、补齐新开关（原文件备份为 fas.json.bak）");
+    log_message("fas.json 已迁移：删除 fps_profiles、fast_down 并入 quick_drop、补齐新开关（原文件备份为 fas.json.bak）");
     return true;
 }
 
