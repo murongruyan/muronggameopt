@@ -39,6 +39,55 @@ static int g_gpu_write_fail_streak = 0;
 static int g_ddr_write_fail_streak = 0;
 static const int kKernelOwnedWriteStreakLimit = 5;
 
+/* ───────────────────────────────────────────────────────────────────────────
+ * DDR 上限按 GPU 当前频率压制（task-38，配置文件 config/ddr_gpu_cap.conf 可选）
+ *
+ * 用户需求：刷入后 DDR 太激进，要按 GPU 频率压 DDR 上限：
+ *   GPU ≤ 300MHz → DDR 上限 6389 MT/s
+ *   GPU ≥ 400MHz → DDR 上限 9569 MT/s（对应本机 DDR 节点 4780000kHz，不放到 hw_max）
+ *   中间线性插值；MT/s→DDR 节点 kHz = ×1000/2，再吸附到 available_frequencies 中
+ *   不超过结果的最高档（9569→4784500→4780000；6389→3194500→3187000）。
+ *
+ * 写全部 g_ddr_max_freq_paths（用户确认 DDR 必须写全路径才生效）；值不变不写；
+ * 每 250ms 检测节点被平台改高/改回时重写；连续 kKernelOwnedWriteStreakLimit 次
+ * 写不进去则停写（参考 min floor 的 stuck 逻辑），失败日志限流。
+ * GPU 频率节点不存在/读不到（无 kgsl 或非 QCOM）时整项功能不启用，避免误伤。
+ * ─────────────────────────────────────────────────────────────────────────── */
+#define DDR_GPU_CAP_CONFIG_FILE CONFIG_DIR "ddr_gpu_cap.conf"
+static const long long kDdrGpuCapConfigCheckMs = 5000;
+static const int kDdrGpuCapDefaultGpuLowMhz = 300;
+static const int kDdrGpuCapDefaultGpuHighMhz = 400;
+static const int kDdrGpuCapDefaultDdrLowMts = 6389;
+static const int kDdrGpuCapDefaultDdrHighMts = 9569;
+
+struct DdrGpuCapConfig {
+    bool enabled;
+    int gpu_low_mhz;
+    int gpu_high_mhz;
+    int ddr_low_mts;
+    int ddr_high_mts;
+};
+
+static DdrGpuCapConfig g_ddr_gpu_cap = {true, 300, 400, 6389, 9569};
+static bool g_ddr_gpu_cap_config_loaded = false;
+static long long g_ddr_gpu_cap_config_mtime = -1;
+static long long g_ddr_gpu_cap_config_size = -1;
+static long long g_ddr_gpu_cap_config_last_check_ms = 0;
+static bool g_ddr_gpu_cap_active = false;
+/* 我们当前写入的 DDR 上限（kHz）；0 = 未接管。g_ddr_applied_max_freq 在 apply_ddr_settings 里同步为该值。 */
+static int g_ddr_ours_max_freq = 0;
+/* 最近一次 resolve 出来的「期望 DDR 上限」（kHz，用户配置/hw_max）。用于 enforce 判 need_reapply，
+ * 与 g_ddr_applied_max_freq（我们实际写的 cap）解耦，避免启用压制后每 250ms 误判重写。 */
+static int g_ddr_desired_max_freq = 0;
+/* 各 max_freq 路径的原始值，用于 ddr_cap_restore() 恢复（长度与 g_ddr_max_freq_paths 对齐）。 */
+static std::vector<int> g_ddr_cap_base_max_freq;
+static int g_ddr_cap_write_fail_streak = 0;
+static bool g_ddr_cap_write_disabled = false;
+static long long g_ddr_cap_last_warn_ms = 0;
+
+/* initialize_gpu_ddr_control_state() 定义在本文件更前面，这里先声明。 */
+static void ddr_cap_init(void);
+
 static bool read_text_file_local(const char* path, char* buf, size_t buf_size);
 
 static int read_int_file_simple(const char* path, int fallback) {
@@ -613,6 +662,9 @@ static void initialize_gpu_ddr_control_state() {
     if (g_ddr_hw_max_freq <= 0 && !g_ddr_available_freqs.empty()) {
         g_ddr_hw_max_freq = g_ddr_available_freqs.back();
     }
+
+    /* task-38：GPU/DDR 路径与频率表就绪后载入「按 GPU 频率压制 DDR 上限」配置。 */
+    ddr_cap_init();
 }
 
 static void write_int_value_with_perm(const char* path, int value, mode_t pre_perm, mode_t post_perm) {
@@ -794,6 +846,385 @@ static void apply_ddr_floor_freq(int want_min_freq) {
     }
 }
 
+/* ── DDR 上限按 GPU 频率压制：配置解析 ───────────────────────────────────── */
+
+static void ddr_gpu_cap_set_defaults(void) {
+    g_ddr_gpu_cap.enabled = true;
+    g_ddr_gpu_cap.gpu_low_mhz = kDdrGpuCapDefaultGpuLowMhz;
+    g_ddr_gpu_cap.gpu_high_mhz = kDdrGpuCapDefaultGpuHighMhz;
+    g_ddr_gpu_cap.ddr_low_mts = kDdrGpuCapDefaultDdrLowMts;
+    g_ddr_gpu_cap.ddr_high_mts = kDdrGpuCapDefaultDdrHighMts;
+}
+
+static bool ddr_gpu_cap_parse_bool(const char* raw, bool fallback) {
+    if (!raw || !raw[0]) return fallback;
+    std::string value = scheduler_to_lower_copy(trim_copy(raw).c_str());
+    if (value == "1" || value == "true" || value == "on" || value == "yes") return true;
+    if (value == "0" || value == "false" || value == "off" || value == "no") return false;
+    return fallback;
+}
+
+static bool ddr_gpu_cap_parse_int(const char* raw, int min_value, int max_value, int* out) {
+    if (!raw || !out) return false;
+    char* end = NULL;
+    long parsed = strtol(raw, &end, 10);
+    if (end == raw) return false;
+    while (end && *end && isspace((unsigned char)*end)) end++;
+    if (!end || *end != '\0') return false;
+    if (parsed < min_value || parsed > max_value) return false;
+    *out = (int)parsed;
+    return true;
+}
+
+/* 读 config/ddr_gpu_cap.conf；文件缺失/键缺失都按内置默认值（enabled=1）走。 */
+static void ddr_gpu_cap_load_config(void) {
+    ddr_gpu_cap_set_defaults();
+    FILE* fp = fopen(DDR_GPU_CAP_CONFIG_FILE, "r");
+    if (!fp) {
+        return;
+    }
+    char line[256];
+    while (fgets(line, sizeof(line), fp)) {
+        char* comment = strchr(line, '#');
+        if (comment) *comment = '\0';
+        std::string text = trim_copy(line);
+        if (text.empty()) continue;
+        size_t eq = text.find('=');
+        if (eq == std::string::npos) continue;
+        std::string key = scheduler_to_lower_copy(trim_copy(text.substr(0, eq)).c_str());
+        std::string value = trim_copy(text.substr(eq + 1));
+        int parsed = 0;
+        if (key == "enabled") {
+            g_ddr_gpu_cap.enabled = ddr_gpu_cap_parse_bool(value.c_str(), g_ddr_gpu_cap.enabled);
+        } else if (key == "gpu_low_mhz") {
+            if (ddr_gpu_cap_parse_int(value.c_str(), 1, 5000, &parsed)) g_ddr_gpu_cap.gpu_low_mhz = parsed;
+        } else if (key == "gpu_high_mhz") {
+            if (ddr_gpu_cap_parse_int(value.c_str(), 2, 5000, &parsed)) g_ddr_gpu_cap.gpu_high_mhz = parsed;
+        } else if (key == "ddr_low_mts") {
+            if (ddr_gpu_cap_parse_int(value.c_str(), 1, 60000, &parsed)) g_ddr_gpu_cap.ddr_low_mts = parsed;
+        } else if (key == "ddr_high_mts") {
+            if (ddr_gpu_cap_parse_int(value.c_str(), 2, 60000, &parsed)) g_ddr_gpu_cap.ddr_high_mts = parsed;
+        }
+    }
+    fclose(fp);
+    /* 倒挂/非法曲线会让插值除零或反向，直接回退默认曲线。 */
+    if (g_ddr_gpu_cap.gpu_high_mhz <= g_ddr_gpu_cap.gpu_low_mhz) {
+        g_ddr_gpu_cap.gpu_low_mhz = kDdrGpuCapDefaultGpuLowMhz;
+        g_ddr_gpu_cap.gpu_high_mhz = kDdrGpuCapDefaultGpuHighMhz;
+    }
+    if (g_ddr_gpu_cap.ddr_high_mts <= g_ddr_gpu_cap.ddr_low_mts) {
+        g_ddr_gpu_cap.ddr_low_mts = kDdrGpuCapDefaultDdrLowMts;
+        g_ddr_gpu_cap.ddr_high_mts = kDdrGpuCapDefaultDdrHighMts;
+    }
+}
+
+static void ddr_gpu_cap_stat_config(long long* out_mtime, long long* out_size) {
+    if (out_mtime) *out_mtime = -1;
+    if (out_size) *out_size = -1;
+    struct stat st;
+    if (stat(DDR_GPU_CAP_CONFIG_FILE, &st) != 0) {
+        return;
+    }
+    if (out_mtime) *out_mtime = (long long)st.st_mtime;
+    if (out_size) *out_size = (long long)st.st_size;
+}
+
+/* ── DDR 上限按 GPU 频率压制：计算与读写 ─────────────────────────────────── */
+
+/* 读 GPU 当前频率（MHz）。g_gpu_cur_freq_path 可能是 Hz 节点（gpuclk）或 MHz 节点（clock_mhz），
+ * 沿用 enforce 里既有的归一化：<10000 视为 MHz，×1e6 转 Hz。 */
+static bool ddr_gpu_cap_read_gpu_mhz(int* out_mhz) {
+    if (!out_mhz || !g_gpu_cur_freq_path[0]) return false;
+    int value = read_int_file_simple(g_gpu_cur_freq_path, -1);
+    if (value <= 0) return false;
+    if (value < 10000) value *= 1000000;
+    value /= 1000000;
+    if (value <= 0) return false;
+    *out_mhz = value;
+    return true;
+}
+
+/* 按 GPU 频率算 DDR 上限（kHz）：线性插值 → ×1000/2 → 吸附 available_frequencies 里
+ * 不超过结果的最高档；再确保不低于 min_floor（避免 max < 正在写的 min）。 */
+static int ddr_gpu_cap_compute_khz(int gpu_mhz, int min_floor_khz) {
+    const int low_mhz = g_ddr_gpu_cap.gpu_low_mhz;
+    const int high_mhz = g_ddr_gpu_cap.gpu_high_mhz;
+    double ratio = 0.0;
+    if (gpu_mhz <= low_mhz) {
+        ratio = 0.0;
+    } else if (gpu_mhz >= high_mhz) {
+        ratio = 1.0;
+    } else {
+        ratio = (double)(gpu_mhz - low_mhz) / (double)(high_mhz - low_mhz);
+    }
+    const double mts = (double)g_ddr_gpu_cap.ddr_low_mts +
+                       (double)(g_ddr_gpu_cap.ddr_high_mts - g_ddr_gpu_cap.ddr_low_mts) * ratio;
+    int request_khz = round_double_to_int(mts * 500.0); /* MT/s → kHz：×1000/2 */
+    if (request_khz <= 0) return 0;
+    int capped = request_khz;
+    if (!g_ddr_available_freqs.empty()) {
+        capped = snap_freq_ceiling(g_ddr_available_freqs, request_khz, request_khz);
+    }
+    if (g_ddr_hw_max_freq > 0 && capped > g_ddr_hw_max_freq) {
+        capped = g_ddr_hw_max_freq;
+    }
+    if (min_floor_khz > 0 && capped < min_floor_khz) {
+        capped = min_floor_khz;
+    }
+    return capped;
+}
+
+static void ddr_gpu_cap_restore_internal(void);
+
+static void ddr_gpu_cap_capture_bases(void) {
+    g_ddr_cap_base_max_freq.clear();
+    g_ddr_cap_base_max_freq.reserve(g_ddr_max_freq_paths.size());
+    for (size_t i = 0; i < g_ddr_max_freq_paths.size(); i++) {
+        int current = read_int_file_simple(g_ddr_max_freq_paths[i].c_str(), -1);
+        g_ddr_cap_base_max_freq.push_back(current > 0 ? current : 0);
+    }
+}
+
+static void ddr_gpu_cap_warn_throttled(const char* message) {
+    if (!message) return;
+    long long now = get_current_time_ms();
+    if (now - g_ddr_cap_last_warn_ms < 5000) return;
+    g_ddr_cap_last_warn_ms = now;
+    log_stats_message(message);
+}
+
+/* 恢复我们写入前的 DDR 上限：只回滚「节点仍等于我们写进去的值」的路径，别推平平台。
+ * 公开给退出/关闭路径调用（main 的清理代码在 activity_diaodu.cpp，未在本任务范围内改动）。 */
+void ddr_cap_restore(void) {
+    ddr_gpu_cap_restore_internal();
+}
+
+static void ddr_gpu_cap_restore_internal(void) {
+    if (g_ddr_ours_max_freq <= 0) {
+        g_ddr_gpu_cap_active = false;
+        g_ddr_cap_base_max_freq.clear();
+        g_ddr_applied_max_freq = g_ddr_hw_max_freq;
+        return;
+    }
+    int restored = 0;
+    for (size_t i = 0; i < g_ddr_max_freq_paths.size(); i++) {
+        int base = (i < g_ddr_cap_base_max_freq.size()) ? g_ddr_cap_base_max_freq[i] : 0;
+        if (base <= 0) continue;
+        const char* path = g_ddr_max_freq_paths[i].c_str();
+        if (read_int_file_simple(path, -1) != g_ddr_ours_max_freq) continue;
+        write_int_value_default(path, base);
+        restored++;
+    }
+    if (restored > 0) {
+        char msg[256];
+        safe_snprintf(msg, sizeof(msg),
+                      "DDR 上限按 GPU 频率压制：已恢复原上限（%d 个节点，原值第一条 %d kHz）",
+                      restored,
+                      g_ddr_cap_base_max_freq.empty() ? 0 : g_ddr_cap_base_max_freq[0]);
+        log_message(msg);
+    }
+    g_ddr_ours_max_freq = 0;
+    g_ddr_gpu_cap_active = false;
+    g_ddr_cap_base_max_freq.clear();
+    g_ddr_cap_write_fail_streak = 0;
+    g_ddr_applied_max_freq = g_ddr_hw_max_freq;
+}
+
+/*
+ * 配置热加载：每 5s 检查一次 mtime/size，变化才重读。
+ * enabled 从 1→0 或文件被删时恢复原上限；重新启用时清空失败计数再尝试。
+ */
+static void ddr_gpu_cap_refresh_config(bool force) {
+    long long now = get_current_time_ms();
+    if (!force && g_ddr_gpu_cap_config_loaded &&
+        now - g_ddr_gpu_cap_config_last_check_ms < kDdrGpuCapConfigCheckMs) {
+        return;
+    }
+    g_ddr_gpu_cap_config_last_check_ms = now;
+    long long mtime = -1;
+    long long size = -1;
+    ddr_gpu_cap_stat_config(&mtime, &size);
+    if (g_ddr_gpu_cap_config_loaded && mtime == g_ddr_gpu_cap_config_mtime && size == g_ddr_gpu_cap_config_size) {
+        return;
+    }
+    const bool first_load = !g_ddr_gpu_cap_config_loaded;
+    const bool was_enabled = g_ddr_gpu_cap.enabled;
+    const int old_gpu_low = g_ddr_gpu_cap.gpu_low_mhz;
+    const int old_gpu_high = g_ddr_gpu_cap.gpu_high_mhz;
+    const int old_ddr_low = g_ddr_gpu_cap.ddr_low_mts;
+    const int old_ddr_high = g_ddr_gpu_cap.ddr_high_mts;
+    ddr_gpu_cap_load_config();
+    g_ddr_gpu_cap_config_mtime = mtime;
+    g_ddr_gpu_cap_config_size = size;
+    g_ddr_gpu_cap_config_loaded = true;
+    g_ddr_cap_write_fail_streak = 0;
+    g_ddr_cap_write_disabled = false;
+    if (!g_ddr_gpu_cap.enabled) {
+        ddr_gpu_cap_restore_internal();
+        if (!first_load && was_enabled) {
+            log_message("DDR 上限按 GPU 频率压制：配置已关闭，已恢复原上限");
+        }
+        return;
+    }
+    const bool changed = first_load || !was_enabled ||
+                         old_gpu_low != g_ddr_gpu_cap.gpu_low_mhz ||
+                         old_gpu_high != g_ddr_gpu_cap.gpu_high_mhz ||
+                         old_ddr_low != g_ddr_gpu_cap.ddr_low_mts ||
+                         old_ddr_high != g_ddr_gpu_cap.ddr_high_mts;
+    if (changed) {
+        char msg[256];
+        safe_snprintf(msg, sizeof(msg),
+                      "DDR 上限按 GPU 频率压制：已启用（GPU %d→%dMHz，DDR %d→%d MT/s，%s）",
+                      g_ddr_gpu_cap.gpu_low_mhz, g_ddr_gpu_cap.gpu_high_mhz,
+                      g_ddr_gpu_cap.ddr_low_mts, g_ddr_gpu_cap.ddr_high_mts,
+                      DDR_GPU_CAP_CONFIG_FILE);
+        log_message(msg);
+    }
+}
+
+/* 每 250ms（enforce 内）调用：算目标上限 → 值变化或平台改回则写全部 max_freq 路径。 */
+static void ddr_gpu_cap_enforce(void) {
+    ddr_gpu_cap_refresh_config(false);
+    if (!g_ddr_gpu_cap.enabled) {
+        ddr_gpu_cap_restore_internal();
+        return;
+    }
+    if (g_ddr_cap_write_disabled) {
+        return;
+    }
+    if (g_ddr_max_freq_paths.empty() || g_ddr_available_freqs.empty() || !g_gpu_cur_freq_path[0]) {
+        if (g_ddr_ours_max_freq > 0) {
+            ddr_gpu_cap_warn_throttled("DDR 上限按 GPU 频率压制：缺少 GPU 频率节点或 DDR 频率表，已恢复原上限");
+            ddr_gpu_cap_restore_internal();
+        }
+        return;
+    }
+    int gpu_mhz = 0;
+    if (!ddr_gpu_cap_read_gpu_mhz(&gpu_mhz)) {
+        if (g_ddr_ours_max_freq > 0) {
+            ddr_gpu_cap_warn_throttled("DDR 上限按 GPU 频率压制：读取不到 GPU 当前频率，已恢复原上限");
+            ddr_gpu_cap_restore_internal();
+        }
+        return;
+    }
+    int min_floor = 0;
+    int resolved_max = 0;
+    if (!resolve_ddr_frequency_range(&min_floor, &resolved_max)) {
+        min_floor = g_ddr_applied_min_freq;
+        resolved_max = 0;
+    }
+    int target = ddr_gpu_cap_compute_khz(gpu_mhz, min_floor);
+    /*
+     * 用户/档位 JSON 若显式配了更低的 DDR 上限（resolved_max），cap 不能把它写高：
+     * 取二者更小值；再保证不低于 min 地板。
+     */
+    if (resolved_max > 0 && target > resolved_max) {
+        target = resolved_max;
+    }
+    if (min_floor > 0 && target < min_floor) {
+        target = min_floor;
+    }
+    if (target <= 0) {
+        return;
+    }
+
+    bool need_write = (target != g_ddr_ours_max_freq);
+    if (!need_write) {
+        /* 防平台改写：任一 max_freq 路径不等于目标就重写（改高/改回都算）。 */
+        for (size_t i = 0; i < g_ddr_max_freq_paths.size(); i++) {
+            int current = read_int_file_simple(g_ddr_max_freq_paths[i].c_str(), -1);
+            if (current > 0 && current != target) {
+                need_write = true;
+                break;
+            }
+        }
+    }
+    if (!need_write) {
+        return;
+    }
+
+    if (g_ddr_ours_max_freq <= 0) {
+        ddr_gpu_cap_capture_bases();
+        g_ddr_gpu_cap_active = true;
+        char msg[320];
+        safe_snprintf(msg, sizeof(msg),
+                      "DDR 上限按 GPU 频率压制：GPU %dMHz → DDR 上限 %d kHz（写 %d 个 max_freq 节点）",
+                      gpu_mhz, target, (int)g_ddr_max_freq_paths.size());
+        log_message(msg);
+    }
+    for (size_t i = 0; i < g_ddr_max_freq_paths.size(); i++) {
+        write_int_value_default(g_ddr_max_freq_paths[i].c_str(), target);
+    }
+    g_ddr_ours_max_freq = target;
+    g_ddr_applied_max_freq = target; /* 语义：我们应用的 DDR 上限 */
+
+    /* 写后回读：任一节点仍不等于目标 → 记一次失败；连续 N 次停写（与 min floor 的 stuck 同口径）。 */
+    bool stuck = false;
+    for (size_t i = 0; i < g_ddr_max_freq_paths.size(); i++) {
+        int current = read_int_file_simple(g_ddr_max_freq_paths[i].c_str(), -1);
+        if (current > 0 && current != target) {
+            stuck = true;
+            break;
+        }
+    }
+    if (stuck) {
+        if (++g_ddr_cap_write_fail_streak >= kKernelOwnedWriteStreakLimit) {
+            g_ddr_cap_write_disabled = true;
+            char msg[320];
+            safe_snprintf(msg, sizeof(msg),
+                          "DDR 上限按 GPU 频率压制：max_freq 节点被平台接管（目标 %d kHz，连续 %d 次写入被改写），已停止写入",
+                          target, g_ddr_cap_write_fail_streak);
+            log_message(msg);
+        } else {
+            ddr_gpu_cap_warn_throttled("DDR 上限按 GPU 频率压制：写入未生效（被平台改写），稍后重试");
+        }
+    } else {
+        g_ddr_cap_write_fail_streak = 0;
+    }
+}
+
+/* 公开：强制重读 config/ddr_gpu_cap.conf（供设置页/调试用；正常运行时由 enforce 每 5s 自动检查）。 */
+void ddr_cap_reload_config(void) {
+    g_ddr_gpu_cap_config_loaded = false;
+    g_ddr_gpu_cap_config_mtime = -1;
+    g_ddr_gpu_cap_config_size = -1;
+    g_ddr_cap_write_disabled = false;
+    g_ddr_cap_write_fail_streak = 0;
+    ddr_gpu_cap_refresh_config(true);
+}
+
+/* 初始化：initialize_gpu_ddr_control_state() 末尾调用（此时 GPU/DDR 路径与频率表已就绪）。 */
+static void ddr_cap_init(void) {
+    g_ddr_gpu_cap_config_loaded = false;
+    g_ddr_gpu_cap_config_mtime = -1;
+    g_ddr_gpu_cap_config_size = -1;
+    g_ddr_gpu_cap_config_last_check_ms = 0;
+    g_ddr_cap_write_fail_streak = 0;
+    g_ddr_cap_write_disabled = false;
+    g_ddr_cap_last_warn_ms = 0;
+    g_ddr_cap_base_max_freq.clear();
+    g_ddr_ours_max_freq = 0;
+    g_ddr_gpu_cap_active = false;
+    ddr_gpu_cap_set_defaults();
+    ddr_gpu_cap_refresh_config(true);
+    if (!g_ddr_gpu_cap.enabled) {
+        return;
+    }
+    if (g_ddr_max_freq_paths.empty() || g_ddr_available_freqs.empty() || !g_gpu_cur_freq_path[0]) {
+        log_message("DDR 上限按 GPU 频率压制：未找到 GPU 频率节点或 DDR max_freq/频率表，功能未启用（不写任何节点）");
+        return;
+    }
+    const int low_khz = ddr_gpu_cap_compute_khz(g_ddr_gpu_cap.gpu_low_mhz, 0);
+    const int high_khz = ddr_gpu_cap_compute_khz(g_ddr_gpu_cap.gpu_high_mhz, 0);
+    char msg[320];
+    safe_snprintf(msg, sizeof(msg),
+                  "DDR 上限按 GPU 频率压制：GPU %dMHz→%d kHz，GPU %dMHz→%d kHz（写 %d 个 max_freq 节点）",
+                  g_ddr_gpu_cap.gpu_low_mhz, low_khz,
+                  g_ddr_gpu_cap.gpu_high_mhz, high_khz,
+                  (int)g_ddr_max_freq_paths.size());
+    log_message(msg);
+}
+
 void apply_gpu_settings() {
     int min_freq = 0;
     int max_freq = 0;
@@ -861,6 +1292,13 @@ void apply_ddr_settings() {
      */
     if (g_ddr_boost_freq_path[0] && min_freq > g_ddr_hw_min_freq) {
         int boost_freq = std::min(max_freq, std::max(min_freq, g_ddr_hw_min_freq));
+        /*
+         * task-38：GPU 频率压制启用时，boost 投票也要 clamp 到我们写的 DDR 上限内，
+         * 否则一次 boost 会把刚压下去的上限又顶回去（任务要求 4）。
+         */
+        if (g_ddr_ours_max_freq > 0 && boost_freq > g_ddr_ours_max_freq) {
+            boost_freq = std::max(min_freq, g_ddr_ours_max_freq);
+        }
         if (boost_freq != g_ddr_last_boost_freq) {
             write_int_value_default(g_ddr_boost_freq_path, boost_freq);
             g_ddr_last_boost_freq = boost_freq;
@@ -868,8 +1306,12 @@ void apply_ddr_settings() {
     }
 
     g_ddr_applied_min_freq = min_freq;
-    /* 上限我们不写（平台/memlat 自己管），所以不拿它当"我们写过的值" */
-    g_ddr_applied_max_freq = g_ddr_hw_max_freq;
+    g_ddr_desired_max_freq = max_freq;
+    /*
+     * g_ddr_applied_max_freq 语义（task-38）：我们当前应用的 DDR 上限。
+     * GPU 频率压制启用并写过 max_freq 时 = g_ddr_ours_max_freq；未接管时回退硬件上限（=不限制）。
+     */
+    g_ddr_applied_max_freq = g_ddr_ours_max_freq > 0 ? g_ddr_ours_max_freq : g_ddr_hw_max_freq;
     double fas_ratio = 0.0;
     bool fas_active = get_fas_control_ratio(&fas_ratio);
     g_ddr_monitor_enabled = fas_active || (min_freq > g_ddr_hw_min_freq || max_freq < g_ddr_hw_max_freq);
@@ -960,7 +1402,11 @@ static void enforce_gpu_ddr_limits(bool force) {
         int desired_ddr_min = 0;
         int desired_ddr_max = 0;
         if (resolve_ddr_frequency_range(&desired_ddr_min, &desired_ddr_max)) {
-            if (desired_ddr_min != g_ddr_applied_min_freq || desired_ddr_max != g_ddr_applied_max_freq) {
+            /*
+             * 上限比较用 g_ddr_desired_max_freq（上次 resolve 值），不要用 g_ddr_applied_max_freq：
+             * task-38 后 applied_max 是我们写的 GPU 压制 cap，拿它与 resolve 值比会每 250ms 误判重写。
+             */
+            if (desired_ddr_min != g_ddr_applied_min_freq || desired_ddr_max != g_ddr_desired_max_freq) {
                 need_reapply = true;
             }
         }
@@ -972,8 +1418,14 @@ static void enforce_gpu_ddr_limits(bool force) {
             }
         }
         int current_ddr_freq = read_int_file_simple(g_ddr_cur_freq_path, 0);
+        /*
+         * 上限只用作「我们写过的 DDR 上限」的观测（task-38），这条重写判定仍用硬件上限：
+         * 否则启用 GPU 压制后，平台若把 DDR 跑在 cap 之上，会每 250ms 误判 need_reapply、
+         * 反复调 apply_ddr_settings 写地板/boost（真正的 cap 改写由 ddr_gpu_cap_enforce 负责）。
+         */
+        const int ddr_upper_bound = g_ddr_hw_max_freq > 0 ? g_ddr_hw_max_freq : g_ddr_applied_max_freq;
         if (current_ddr_freq > 0 &&
-            (current_ddr_freq < g_ddr_applied_min_freq || current_ddr_freq > g_ddr_applied_max_freq)) {
+            (current_ddr_freq < g_ddr_applied_min_freq || current_ddr_freq > ddr_upper_bound)) {
             need_reapply = true;
         }
         if (need_reapply) {
@@ -1003,6 +1455,9 @@ static void enforce_gpu_ddr_limits(bool force) {
             }
         }
     }
+
+    /* task-38：DDR 上限按 GPU 当前频率压制（独立于上面的 min floor / FAS 逻辑）。 */
+    ddr_gpu_cap_enforce();
 }
 
 void apply_ddr_settings_qualcomm() {

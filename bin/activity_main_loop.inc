@@ -255,8 +255,12 @@ void run_main_loop() {
     // 初始化inotify
     int inotify_fd = inotify_init();
     if (inotify_fd < 0) {
-        log_message("inotify初始化失败");
-        return;
+        /*
+         * task-41：不再静默退出（main 返回 0 会让看护逻辑误以为正常结束）。
+         * 降级为定时轮询热重载，主循环照常运行。
+         */
+        log_message("inotify初始化失败，配置热重载降级为定时轮询");
+        config_reload_enable_poll_fallback("inotify_init");
     }
 
 #ifndef MURONG_THREAD_ONLY
@@ -265,34 +269,58 @@ void run_main_loop() {
 #endif
     UnifiedScheduler::start_threads();
 
-    // 监控配置文件目录变化（只认写入完成，不认 IN_MODIFY 防止半写即加载）
-    int wd_general_config_dir = inotify_add_watch(inotify_fd, CONFIG_DIR, IN_MOVED_TO | IN_CLOSE_WRITE);
-    int wd_cpu_config_dir = inotify_add_watch(inotify_fd, CPU_CONFIG_DIR, IN_MOVED_TO | IN_CLOSE_WRITE);
+    /*
+     * 监控配置文件目录变化（task-41）：
+     *   - IN_CLOSE_WRITE / IN_MOVED_TO：普通保存与 App 的「写临时文件再 mv」原子替换；
+     *   - IN_MOVED_FROM / IN_DELETE：删除/改名也触发重载（回退默认值）；
+     *   - add_watch 失败不再静默：降级为定时轮询热重载并打主日志。
+     */
+    const uint32_t config_watch_mask =
+        IN_MOVED_TO | IN_CLOSE_WRITE | IN_MOVED_FROM | IN_DELETE;
+    int wd_general_config_dir = -1;
+    int wd_cpu_config_dir = -1;
+    if (inotify_fd >= 0) {
+        wd_general_config_dir = inotify_add_watch(inotify_fd, CONFIG_DIR, config_watch_mask);
+        wd_cpu_config_dir = inotify_add_watch(inotify_fd, CPU_CONFIG_DIR, config_watch_mask);
+        if (wd_general_config_dir < 0 || wd_cpu_config_dir < 0) {
+            log_message("配置目录 inotify 监听失败，热重载降级为定时轮询");
+            config_reload_enable_poll_fallback("inotify_add_watch");
+        }
+    }
 
     char last_app[MAX_APP_NAME_LEN] = "";
     long long last_app_check_ms = 0;
+    /* task-37：平台限制（WALT IPC/频率上限、msm_performance）需要知道当前是否游戏场景；
+     * 每 500ms 前台检测时更新一次，避免每 tick 调 is_game_package_name 读 mode.txt。 */
+    bool platform_limits_is_game = false;
 
     while (g_keep_running) {
         g_runtime_stats.loop_ticks.fetch_add(1);
-        fd_set fds;
-        struct timeval timeout;
+        int ret = 0;
+        if (inotify_fd >= 0 && inotify_fd < FD_SETSIZE) {
+            fd_set fds;
+            struct timeval timeout;
 
-        FD_ZERO(&fds);
-        FD_SET(inotify_fd, &fds);
+            FD_ZERO(&fds);
+            FD_SET(inotify_fd, &fds);
 
-        timeout.tv_sec = 0;
-        /*
-         * 30ms：频率区间要跟着负载走，而平台（perfservice / thermal / msm_performance）
-         * 会往同一对 scaling_min/max_freq 里写；核对得比它快，区间才守得住。
-         * 重活（场景策略、详细日志）各自有 500ms/1s 节流，这里只是多几次文件读。
-         */
-        timeout.tv_usec = 30000;
+            timeout.tv_sec = 0;
+            /*
+             * 30ms：频率区间要跟着负载走，而平台（perfservice / thermal / msm_performance）
+             * 会往同一对 scaling_min/max_freq 里写；核对得比它快，区间才守得住。
+             * 重活（场景策略、详细日志）各自有 500ms/1s 节流，这里只是多几次文件读。
+             */
+            timeout.tv_usec = 30000;
 
-        int ret = select(inotify_fd + 1, &fds, NULL, NULL, &timeout);
+            ret = select(inotify_fd + 1, &fds, NULL, NULL, &timeout);
 
-        // 处理inotify事件
-        if (ret > 0 && inotify_fd >= 0 && FD_ISSET(inotify_fd, &fds)) {
-            handle_inotify_events(inotify_fd, wd_general_config_dir, wd_cpu_config_dir);
+            // 处理inotify事件
+            if (ret > 0 && FD_ISSET(inotify_fd, &fds)) {
+                handle_inotify_events(inotify_fd, wd_general_config_dir, wd_cpu_config_dir);
+            }
+        } else {
+            /* 没有可用的 inotify（init 失败/FD 超限）：保持 30ms tick，靠轮询兜底。 */
+            usleep(30000);
         }
         process_pending_config_reloads();
         refresh_official_state(false);
@@ -331,6 +359,7 @@ void run_main_loop() {
                     process_foreground_app(current_app, last_app);
                 }
             }
+            platform_limits_is_game = current_app_ok && is_game_package_name(current_app);
         }
 
         // --- 动态调频处理 ---
@@ -341,6 +370,7 @@ void run_main_loop() {
 
         handle_dynamic_tuning(current_app_buf);
         enforce_gpu_ddr_limits(false);
+        platform_limits_tick(now_ms, platform_limits_is_game);
         UnifiedScheduler::run_scheduler_step();
         emit_runtime_stats_snapshot(current_app_buf, get_current_time_ms());
         // --- 动态调频处理结束 ---
@@ -405,6 +435,9 @@ int main() {
 
     // 运行主循环
     run_main_loop();
+
+    /* 退出前尽量把 DDR 上限恢复到接管前的值（SIGKILL 无法执行到这里）。 */
+    ddr_cap_restore();
 
     return 0;
 }

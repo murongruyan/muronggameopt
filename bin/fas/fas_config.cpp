@@ -2,6 +2,8 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <algorithm>
 #include <string>
 #include <vector>
@@ -354,23 +356,72 @@ bool fas_config_migrate_file(const char* path) {
     cJSON_Delete(root);
     if (!out) return false;
 
-    /* 先备份，再原子覆盖 */
+    /*
+     * 写回：先备份，再「同目录临时文件 + fsync + rename」原子覆盖。
+     *
+     * 旧实现直接 fopen(path, "w") 截断原文件再写：掉电/被杀/磁盘满会留下半个 JSON，
+     * 下次 cJSON_Parse 失败 → fas_engine_init() 失败，FAS 静默失效且配置无法自动恢复。
+     * rename 在同一文件系统内是原子的：任何时刻 path 要么是旧内容、要么是新内容。
+     */
     char bak_path[320];
     snprintf(bak_path, sizeof(bak_path), "%s.bak", path);
+
+    struct stat original_stat;
+    bool have_original_stat = (stat(path, &original_stat) == 0);
+
+    /* 1) 备份原文件到 <path>.bak；备份失败就放弃本次迁移，绝不覆盖原文件。 */
     FILE* src = fopen(path, "r");
-    FILE* dst = fopen(bak_path, "w");
-    if (src && dst) {
-        char tmp[4096];
-        size_t r;
-        while ((r = fread(tmp, 1, sizeof(tmp), src)) > 0) fwrite(tmp, 1, r, dst);
+    FILE* dst = src ? fopen(bak_path, "w") : NULL;
+    bool backup_ok = (src != NULL && dst != NULL);
+    if (backup_ok) {
+        char copy_buf[4096];
+        size_t read_size;
+        while ((read_size = fread(copy_buf, 1, sizeof(copy_buf), src)) > 0) {
+            if (fwrite(copy_buf, 1, read_size, dst) != read_size) {
+                backup_ok = false;
+                break;
+            }
+        }
+        if (ferror(src)) backup_ok = false;
+        if (fflush(dst) != 0) backup_ok = false;
+        if (backup_ok && fsync(fileno(dst)) != 0) backup_ok = false;
     }
     if (src) fclose(src);
-    if (dst) fclose(dst);
+    if (dst && fclose(dst) != 0) backup_ok = false;
+    if (!backup_ok) {
+        log_message("fas.json 迁移中止：备份 fas.json.bak 失败，原文件保持不变");
+        free(out);
+        return false;
+    }
 
-    FILE* wf = fopen(path, "w");
-    if (!wf) { free(out); return false; }
-    fwrite(out, 1, strlen(out), wf);
-    fclose(wf);
+    /* 2) 写同目录临时文件、fsync 后再 rename 原子替换。 */
+    char tmp_path[320];
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
+    FILE* wf = fopen(tmp_path, "w");
+    bool write_ok = (wf != NULL);
+    if (write_ok) {
+        size_t out_len = strlen(out);
+        if (fwrite(out, 1, out_len, wf) != out_len) write_ok = false;
+        if (write_ok && fflush(wf) != 0) write_ok = false;
+        if (write_ok && fsync(fileno(wf)) != 0) write_ok = false;
+        if (fclose(wf) != 0) write_ok = false;
+    }
+    if (!write_ok) {
+        remove(tmp_path);
+        log_message("fas.json 迁移中止：临时文件写入失败，原文件保持不变");
+        free(out);
+        return false;
+    }
+    /* rename 会换成新 inode，尽量沿用原文件权限（例如 0600/0644）。 */
+    if (have_original_stat) {
+        (void)chmod(tmp_path, original_stat.st_mode & 07777);
+    }
+    if (rename(tmp_path, path) != 0) {
+        remove(tmp_path);
+        log_message("fas.json 迁移中止：rename 覆盖失败，原文件保持不变");
+        free(out);
+        return false;
+    }
     free(out);
 
     log_message("fas.json 已迁移：删除 fps_profiles、fast_down 并入 quick_drop、补齐新开关（原文件备份为 fas.json.bak）");

@@ -505,13 +505,54 @@ const char* get_scheduler_config_path() {
     return path;
 }
 
+/*
+ * 拓扑布局名（小核→大核）。
+ *
+ * 用户习惯：按 CPU id 升序拼接每个 cluster 的 CPU 数，
+ *   0-5,6-7           -> "6+2"
+ *   0-1,2-4,5-6,7     -> "2+3+2+1"
+ * cpu_clusters[] 的顺序依赖内核枚举，这里显式按每个 cluster 的最小 CPU id 排序，
+ * 保证生成的名字与 README/内置模板（bin/cpu/<拓扑>.json）的命名一致。
+ */
 static void build_cluster_layout_name(char* out, size_t out_size) {
     if (!out || out_size == 0) return;
     out[0] = '\0';
     if (cluster_count <= 0) return;
-    size_t used = 0;
+
+    /* 取 cluster 内最小 CPU id（cpu_ids 理论升序，但不同内核/平台不保证）。 */
+    auto cluster_min_cpu = [](const auto& cluster) -> int {
+        int min_cpu = -1;
+        for (int i = 0; i < cluster.cpu_count; i++) {
+            const int cpu = cluster.cpu_ids[i];
+            if (min_cpu < 0 || cpu < min_cpu) min_cpu = cpu;
+        }
+        return min_cpu;
+    };
+
+    int order[MAX_CLUSTERS];
     for (int i = 0; i < cluster_count; i++) {
-        int written = safe_snprintf(out + used, out_size - used, "%s%d", i == 0 ? "" : "+", cpu_clusters[i].cpu_count);
+        order[i] = i;
+    }
+    for (int i = 1; i < cluster_count; i++) {
+        int key = order[i];
+        int key_cpu = cluster_min_cpu(cpu_clusters[key]);
+        if (key_cpu < 0) key_cpu = key;
+        int j = i - 1;
+        while (j >= 0) {
+            int cur = order[j];
+            int cur_cpu = cluster_min_cpu(cpu_clusters[cur]);
+            if (cur_cpu < 0) cur_cpu = cur;
+            if (cur_cpu <= key_cpu) break;
+            order[j + 1] = order[j];
+            j--;
+        }
+        order[j + 1] = key;
+    }
+
+    size_t used = 0;
+    for (int idx = 0; idx < cluster_count; idx++) {
+        int i = order[idx];
+        int written = safe_snprintf(out + used, out_size - used, "%s%d", idx == 0 ? "" : "+", cpu_clusters[i].cpu_count);
         if (written <= 0 || (size_t)written >= out_size - used) {
             break;
         }
@@ -519,30 +560,151 @@ static void build_cluster_layout_name(char* out, size_t out_size) {
     }
 }
 
+/*
+ * 反向拓扑名：6+2 -> 2+6，2+3+2+1 -> 1+2+3+2。
+ * 仅用于兼容另一派命名顺序（历史 App/其它模块可能按大核→小核写模板名），
+ * 查找文件与时序匹配时两个方向都试。
+ */
+static void build_reversed_cluster_layout_name(char* out, size_t out_size) {
+    if (!out || out_size == 0) return;
+    out[0] = '\0';
+    char forward[64];
+    build_cluster_layout_name(forward, sizeof(forward));
+    if (!forward[0]) return;
+
+    int counts[MAX_CLUSTERS];
+    int count = 0;
+    const char* cursor = forward;
+    while (*cursor && count < MAX_CLUSTERS) {
+        char* end = NULL;
+        long value = strtol(cursor, &end, 10);
+        if (end == cursor || value <= 0) break;
+        counts[count++] = (int)value;
+        cursor = end;
+        if (*cursor == '+') {
+            cursor++;
+        } else {
+            break;
+        }
+    }
+
+    size_t used = 0;
+    for (int i = count - 1; i >= 0; i--) {
+        int written = safe_snprintf(out + used, out_size - used, "%s%d",
+                                    (i == count - 1) ? "" : "+", counts[i]);
+        if (written <= 0 || (size_t)written >= out_size - used) {
+            break;
+        }
+        used += (size_t)written;
+    }
+}
+
+/*
+ * inotify 事件名是否属于「线程配置」候选之一。
+ * 线程配置现在有 5 种可能文件名（<cpuModel>.threads.json / <拓扑>.threads.json /
+ * <反向拓扑>.threads.json / <拓扑>.json / <反向拓扑>.json），
+ * 热重载监听用本函数按文件名匹配，避免每个事件/每步都去 stat 一遍文件系统。
+ */
+static bool thread_config_event_name_matches(const char* event_name) {
+    if (!event_name || !event_name[0]) return false;
+
+    char candidates[6][128];
+    int candidate_count = 0;
+
+    char model_threads[128];
+    safe_snprintf(model_threads, sizeof(model_threads), "%s.threads.json", cpu_model);
+    safe_strncpy(candidates[candidate_count++], model_threads, sizeof(candidates[0]));
+
+    char layout_name[64];
+    char reversed_name[64];
+    build_cluster_layout_name(layout_name, sizeof(layout_name));
+    build_reversed_cluster_layout_name(reversed_name, sizeof(reversed_name));
+    const char* layouts[2] = { layout_name, reversed_name };
+    for (int n = 0; n < 2 && candidate_count < 6; n++) {
+        if (!layouts[n][0]) continue;
+        if (n == 1 && strcmp(reversed_name, layout_name) == 0) continue;
+        char threads_name[128];
+        char json_name[128];
+        safe_snprintf(threads_name, sizeof(threads_name), "%s.threads.json", layouts[n]);
+        safe_snprintf(json_name, sizeof(json_name), "%s.json", layouts[n]);
+        bool dup_threads = false;
+        bool dup_json = false;
+        for (int i = 0; i < candidate_count; i++) {
+            if (strcmp(candidates[i], threads_name) == 0) dup_threads = true;
+            if (strcmp(candidates[i], json_name) == 0) dup_json = true;
+        }
+        if (!dup_threads && candidate_count < 6) {
+            safe_strncpy(candidates[candidate_count++], threads_name, sizeof(candidates[0]));
+        }
+        if (!dup_json && candidate_count < 6) {
+            safe_strncpy(candidates[candidate_count++], json_name, sizeof(candidates[0]));
+        }
+    }
+
+    for (int i = 0; i < candidate_count; i++) {
+        if (strcmp(event_name, candidates[i]) == 0) return true;
+    }
+    return false;
+}
+
+/*
+ * 线程配置文件查找（RT 块与线程角色规则共用同一份文件）。
+ *
+ * 优先级（README「配置主线」+ 任务约定）：
+ *   1) <cpuModel>.threads.json      —— App 写入的新格式，最高优先
+ *   2) <拓扑>.threads.json          —— 旧版兼容命名（小核→大核）
+ *   3) <反向拓扑>.threads.json      —— 兼容相反命名顺序（如 2+6.threads.json）
+ *   4) <拓扑>.json                  —— README 主命名的内置模板（6+2.json 等，含 rt 块）
+ *   5) <反向拓扑>.json              —— 兼容相反顺序的内置模板
+ * 都不存在时返回「1)」的不存在路径，让调用方按默认规则（无自定义线程配置）运行；
+ * 这样 <拓扑>.json 模板真正生效，同时 .threads.json 新格式仍然优先（向后兼容）。
+ */
 const char* get_thread_signature_config_path() {
-    static char path[256];
-    safe_snprintf(path, sizeof(path), "%s%s.threads.json", CPU_CONFIG_DIR, cpu_model);
-    if (file_exists(path)) {
-        return path;
+    static char device_path[256];
+    safe_snprintf(device_path, sizeof(device_path), "%s%s.threads.json", CPU_CONFIG_DIR, cpu_model);
+    if (file_exists(device_path)) {
+        return device_path;
     }
 
     char layout_name[64];
+    char reversed_name[64];
     build_cluster_layout_name(layout_name, sizeof(layout_name));
+    build_reversed_cluster_layout_name(reversed_name, sizeof(reversed_name));
+
+    static char layout_threads_path[256];
+    static char reversed_threads_path[256];
+    static char layout_json_path[256];
+    static char reversed_json_path[256];
+
     if (layout_name[0]) {
-        static char layout_threads_path[256];
-        safe_snprintf(layout_threads_path, sizeof(layout_threads_path), "%s%s.threads.json", CPU_CONFIG_DIR, layout_name);
+        safe_snprintf(layout_threads_path, sizeof(layout_threads_path),
+                      "%s%s.threads.json", CPU_CONFIG_DIR, layout_name);
         if (file_exists(layout_threads_path)) {
             return layout_threads_path;
         }
-
-        /*
-         * 不要回退到 <拓扑>.json：那是「模式级 CPU 配置」（频率/调速器/cpuset），
-         * 不是线程签名规则。旧实现把它当线程配置解析，会得到语义完全错误的
-         * 线程规则（且每次读到的内容随 CPU 档位变化）。线程配置不存在时应返回
-         * 一个不存在的 .threads.json 路径，让调用方按「无自定义线程规则」走默认值。
-         */
     }
-    return path;
+    if (reversed_name[0] && strcmp(reversed_name, layout_name) != 0) {
+        safe_snprintf(reversed_threads_path, sizeof(reversed_threads_path),
+                      "%s%s.threads.json", CPU_CONFIG_DIR, reversed_name);
+        if (file_exists(reversed_threads_path)) {
+            return reversed_threads_path;
+        }
+    }
+    if (layout_name[0]) {
+        safe_snprintf(layout_json_path, sizeof(layout_json_path),
+                      "%s%s.json", CPU_CONFIG_DIR, layout_name);
+        if (file_exists(layout_json_path)) {
+            return layout_json_path;
+        }
+    }
+    if (reversed_name[0] && strcmp(reversed_name, layout_name) != 0) {
+        safe_snprintf(reversed_json_path, sizeof(reversed_json_path),
+                      "%s%s.json", CPU_CONFIG_DIR, reversed_name);
+        if (file_exists(reversed_json_path)) {
+            return reversed_json_path;
+        }
+    }
+    return device_path;
 }
 
 /*

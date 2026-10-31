@@ -962,11 +962,72 @@ static void thread_rule_dsl_assign_signature_list(const std::string& key,
     }
 }
 
+/* "6+2" -> "2+6"，用于兼容相反顺序的拓扑命名（双向匹配）。 */
+static std::string thread_rule_reverse_layout_name(const std::string& layout) {
+    if (layout.empty()) return std::string();
+    std::vector<std::string> parts;
+    size_t start = 0;
+    while (start <= layout.size()) {
+        size_t pos = layout.find('+', start);
+        if (pos == std::string::npos) {
+            parts.push_back(layout.substr(start));
+            break;
+        }
+        parts.push_back(layout.substr(start, pos - start));
+        start = pos + 1;
+    }
+    if (parts.size() <= 1) return std::string();
+    std::string reversed;
+    for (size_t i = parts.size(); i > 0; i--) {
+        if (!reversed.empty()) reversed += '+';
+        reversed += parts[i - 1];
+    }
+    return reversed;
+}
+
+/*
+ * 判断线程配置文件是否属于指定拓扑布局。
+ *
+ * 历史实现只做「文件名包含拓扑名」的子串匹配，两个坑：
+ *   1) 只认 6+2，不认相反写法的 2+6（历史/其它模块按大核→小核命名）；
+ *   2) <cpuModel>.threads.json 这类设备专属文件不含拓扑名，永远匹配不上，
+ *      导致 6+2 机型上 App 写入的线程配置拿不到内置默认值。
+ * 现在：文件名按「原序 + 反向」双向匹配；设备专属线程配置则按当前 CPU 拓扑
+ * 双向判定（只在 <cpuModel>.threads.json 时生效，不误伤 persistent.json）。
+ */
 static bool thread_rule_config_matches_layout(const char* config_path, const char* layout_name) {
-    if (!config_path || !layout_name || !layout_name[0]) return false;
+    if (!config_path || !config_path[0] || !layout_name || !layout_name[0]) return false;
     std::string lowered_path = scheduler_to_lower_copy(config_path);
     std::string lowered_layout = scheduler_to_lower_copy(layout_name);
-    return lowered_path.find(lowered_layout) != std::string::npos;
+    if (lowered_path.find(lowered_layout) != std::string::npos) return true;
+
+    std::string reversed_layout = thread_rule_reverse_layout_name(lowered_layout);
+    if (!reversed_layout.empty() && reversed_layout != lowered_layout &&
+        lowered_path.find(reversed_layout) != std::string::npos) {
+        return true;
+    }
+
+    char current_layout[64];
+    build_cluster_layout_name(current_layout, sizeof(current_layout));
+    std::string lowered_current = scheduler_to_lower_copy(current_layout);
+    if (lowered_current.empty()) return false;
+    char current_reversed[64];
+    build_reversed_cluster_layout_name(current_reversed, sizeof(current_reversed));
+    std::string lowered_current_reversed = scheduler_to_lower_copy(current_reversed);
+    const bool topology_matches =
+        lowered_current == lowered_layout ||
+        lowered_current == reversed_layout ||
+        (!lowered_current_reversed.empty() &&
+         (lowered_current_reversed == lowered_layout ||
+          lowered_current_reversed == reversed_layout));
+    if (!topology_matches) return false;
+
+    std::string lowered_model = scheduler_to_lower_copy(cpu_model);
+    if (lowered_model.empty()) return false;
+    std::string device_thread_file = lowered_model + ".threads.json";
+    return lowered_path.size() >= device_thread_file.size() &&
+           lowered_path.compare(lowered_path.size() - device_thread_file.size(),
+                                device_thread_file.size(), device_thread_file) == 0;
 }
 
 static void thread_rule_assign_builtin_signatures_for_6p2() {
@@ -1487,14 +1548,14 @@ static void load_thread_json_app_rule_config(cJSON* app_obj, ThreadJsonAppRule* 
  * activity_thread_hints.inc 独立解析（完整版/纯线程版共用、约 5s 热更新），
  * 这里只解析线程角色/签名/按应用规则，不重复读取 rt。
  */
-static void load_thread_signature_config() {
+static bool load_thread_signature_config() {
     // 热更新保护: 构建期间持有 g_mutex 写锁，防止读线程遍历半构建状态
     std::lock_guard<std::shared_mutex> lock(g_mutex);
     clear_thread_signature_config();
 
     const char* config_path = get_thread_signature_config_path();
     if (!file_exists(config_path)) {
-        return;
+        return false;
     }
 
     FILE* fp = fopen(config_path, "rb");
@@ -1503,7 +1564,7 @@ static void load_thread_signature_config() {
         safe_snprintf(error_msg, sizeof(error_msg), "无法打开线程签名扩展配置: %s (错误: %s)",
                       config_path, strerror(errno));
         log_config_message(error_msg);
-        return;
+        return false;
     }
 
     fseek(fp, 0, SEEK_END);
@@ -1511,7 +1572,7 @@ static void load_thread_signature_config() {
     if (len <= 0) {
         log_config_message("线程签名扩展配置为空或读取失败");
         cleanup_resources(fp, NULL, NULL);
-        return;
+        return false;
     }
     fseek(fp, 0, SEEK_SET);
 
@@ -1519,7 +1580,7 @@ static void load_thread_signature_config() {
     if (!data) {
         log_config_message("内存分配失败");
         cleanup_resources(fp, NULL, NULL);
-        return;
+        return false;
     }
 
     size_t bytes_read = fread(data, 1, len, fp);
@@ -1531,7 +1592,7 @@ static void load_thread_signature_config() {
     if (!root) {
         if (load_thread_rules_dsl_config(data, config_path)) {
             cleanup_resources(NULL, data, NULL);
-            return;
+            return true;
         }
         const char* error_ptr = cJSON_GetErrorPtr();
         if (error_ptr) {
@@ -1540,7 +1601,7 @@ static void load_thread_signature_config() {
             log_config_message(error_msg);
         }
         cleanup_resources(NULL, data, NULL);
-        return;
+        return false;
     }
 
     apply_builtin_thread_signature_defaults(config_path);
@@ -1652,6 +1713,7 @@ static void load_thread_signature_config() {
     cleanup_resources(NULL, data, root);
     /* 线程规则变了：每应用的生效开关缓存作废（规则里也有按应用的开关覆写） */
     invalidate_runtime_feature_switch_cache();
+    return true;
 }
 
 static void apply_scheduler_session_json(cJSON* session_obj) {
@@ -1670,10 +1732,10 @@ static void apply_scheduler_session_json(cJSON* session_obj) {
     }
 }
 
-static void load_scheduler_session_config_json(const char* mode) {
+static bool load_scheduler_session_config_json(const char* mode) {
     const char* config_path = get_scheduler_config_path();
     if (!file_exists(config_path)) {
-        return;
+        return false;
     }
 
     FILE* fp = fopen(config_path, "rb");
@@ -1682,7 +1744,7 @@ static void load_scheduler_session_config_json(const char* mode) {
         safe_snprintf(error_msg, sizeof(error_msg), "无法打开调度扩展配置: %s (错误: %s)",
                       config_path, strerror(errno));
         log_config_message(error_msg);
-        return;
+        return false;
     }
 
     fseek(fp, 0, SEEK_END);
@@ -1690,7 +1752,7 @@ static void load_scheduler_session_config_json(const char* mode) {
     if (len <= 0) {
         log_config_message("调度扩展配置为空或读取失败");
         cleanup_resources(fp, NULL, NULL);
-        return;
+        return false;
     }
     fseek(fp, 0, SEEK_SET);
 
@@ -1698,7 +1760,7 @@ static void load_scheduler_session_config_json(const char* mode) {
     if (!data) {
         log_config_message("内存分配失败");
         cleanup_resources(fp, NULL, NULL);
-        return;
+        return false;
     }
 
     size_t bytes_read = fread(data, 1, len, fp);
@@ -1715,7 +1777,7 @@ static void load_scheduler_session_config_json(const char* mode) {
             log_config_message(error_msg);
         }
         cleanup_resources(NULL, data, NULL);
-        return;
+        return false;
     }
 
     cJSON* default_obj = cJSON_GetObjectItem(root, "default");
@@ -1729,6 +1791,7 @@ static void load_scheduler_session_config_json(const char* mode) {
     }
 
     cleanup_resources(NULL, data, root);
+    return true;
 }
 
 void load_scene_categories_config() {

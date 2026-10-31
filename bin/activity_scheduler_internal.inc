@@ -24,6 +24,8 @@ struct ThreadRuntimeState {
     pid_t tid;
     std::string package;
     std::string comm;
+    /* comm 的小写缓存：热路径（规则匹配/优先级判定）不再每次 new std::string。 */
+    std::string lowered_comm;
     long long discovered_ms;
     unsigned long long last_ticks;
     long long last_sample_ms;
@@ -64,6 +66,12 @@ struct ThreadRuntimeState {
     /* 绑核收敛退避：线程被 cpuset 限制、掩码永远无法等于目标时，不要每 500ms 重写一次 */
     int affinity_retry_streak;           /* 连续"写了但没收敛"的次数 */
     long long affinity_yield_until_ms;   /* 退避截止时间 */
+    /* 非显式规则线程的回读校验节流：上次校验时间 + 结论（1=匹配）。
+     * 写后收敛确认仍然直接读，语义不变。 */
+    long long last_affinity_verify_ms;
+    int last_affinity_verify_match;
+    /* 上次校验对应的目标掩码签名：target 变化时必须立即重新直接读取，不能复用旧结论。 */
+    unsigned long long last_affinity_verify_sig;
 };
 
 /* Phase2: 每个(规则+角色)的 limit 选择稳定追踪 */
@@ -344,6 +352,10 @@ static struct bpf_program* find_bpf_program_compat(const char* program_name, con
 
 static bool is_render_thread_name(const char* comm);
 static bool is_main_thread_name_for_package(const char* package, const char* comm, pid_t tid);
+/* task-42：comm 小写缓存 helper（定义在下方，供 is_hot_priority_thread_locked 使用）。 */
+static void set_thread_comm_locked(ThreadRuntimeState& state, const char* comm);
+static const std::string& thread_lowered_comm_cached(
+    const ThreadRuntimeState& state, std::string& fallback);
 
 static unsigned long long read_thread_total_cpu_ms(pid_t tid) {
     if (tid <= 0) return 0;
@@ -359,7 +371,21 @@ static unsigned long long read_thread_total_cpu_ms(pid_t tid) {
 
 static bool is_hot_priority_thread_locked(pid_t tid, const char* comm, float cpu_usage_pct) {
     if (!comm || !comm[0]) return false;
-    std::string name = scheduler_to_lower_copy(comm);
+    /*
+     * task-42：线程名小写串走 ThreadRuntimeState 缓存，去掉热路径 O(T) 次 std::string 分配。
+     * 传进来的 comm 与 state 不一致时（rename 事件中途）退化为临时计算，结果不变。
+     */
+    std::string self_fallback;
+    std::string other_fallback;
+    const std::string* name_ptr = NULL;
+    auto self_it = g_threads.find((int)tid);
+    if (self_it != g_threads.end() && self_it->second.comm == comm) {
+        name_ptr = &thread_lowered_comm_cached(self_it->second, self_fallback);
+    } else {
+        self_fallback = scheduler_to_lower_copy(comm);
+        name_ptr = &self_fallback;
+    }
+    const std::string& name = *name_ptr;
     bool main_like = (name.find("unitymain") != std::string::npos ||
                       name.find("gamethread") != std::string::npos);
     bool render_like = is_render_thread_name(comm);
@@ -386,7 +412,7 @@ static bool is_hot_priority_thread_locked(pid_t tid, const char* comm, float cpu
         for (auto& kv : g_threads) {
             const ThreadRuntimeState& other = kv.second;
             if (other.tid == tid) continue;
-            if (scheduler_to_lower_copy(other.comm.c_str()) != name) continue;
+            if (thread_lowered_comm_cached(other, other_fallback) != name) continue;
             unsigned long long other_total = read_thread_total_cpu_ms(other.tid);
             if (other_total < my_total) smaller_or_equal++;
         }
@@ -397,7 +423,7 @@ static bool is_hot_priority_thread_locked(pid_t tid, const char* comm, float cpu
     for (auto& kv : g_threads) {
         const ThreadRuntimeState& other = kv.second;
         if (other.tid == tid) continue;
-        if (scheduler_to_lower_copy(other.comm.c_str()) != name) continue;
+        if (thread_lowered_comm_cached(other, other_fallback) != name) continue;
         if (other.cpu_usage_pct > cpu_usage_pct + 0.5f) {
             hotter_same_name++;
         }
@@ -600,6 +626,21 @@ static bool matches_any_pattern(const char* text, const std::vector<std::string>
     return matches_any_pattern_lowered(scheduler_to_lower_copy(text), patterns);
 }
 
+/* comm 只在入册 / rename / 周期扫描补名时变化，统一在这里维护小写缓存。 */
+static void set_thread_comm_locked(ThreadRuntimeState& state, const char* comm) {
+    if (!comm) return;
+    state.comm = comm;
+    state.lowered_comm = comm[0] ? scheduler_to_lower_copy(comm) : std::string();
+}
+
+/* 读取小写名缓存；空缓存（极早期记录）时用 fallback 兜底计算一次，不写回。 */
+static const std::string& thread_lowered_comm_cached(
+    const ThreadRuntimeState& state, std::string& fallback) {
+    if (!state.lowered_comm.empty()) return state.lowered_comm;
+    fallback = scheduler_to_lower_copy(state.comm.c_str());
+    return fallback;
+}
+
 static int score_process_threads_for_scheduler(pid_t pid) {
     if (pid <= 0) return -1;
 
@@ -709,13 +750,17 @@ static void ensure_thread_state_for_tid_locked(pid_t pid, const char* package, p
         state.guard_yielded = false;
         state.affinity_retry_streak = 0;
         state.affinity_yield_until_ms = 0;
+        state.last_affinity_verify_ms = 0;
+        state.last_affinity_verify_match = 0;
+        state.last_affinity_verify_sig = 0;
+        state.lowered_comm.clear();
     }
     state.pid = pid;
     if (package && package[0]) {
         state.package = package;
     }
     if (comm_hint && comm_hint[0]) {
-        state.comm = comm_hint;
+        set_thread_comm_locked(state, comm_hint);
     }
 }
 
@@ -3168,7 +3213,13 @@ static bool resolve_affinity_template(const char* package, pid_t tid, const char
         return false;
     }
 
-    std::vector<std::vector<int>> candidates;
+    /*
+     * task-42：该函数每个前台线程每步调用一次，候选容器改成线程局部复用，
+     * 避免每次 new vector<vector<int>>（内层小 vector 仍按需分配，逻辑不变）。
+     */
+    thread_local static std::vector<std::vector<int>> candidates;
+    candidates.clear();
+    candidates.reserve(8);
 
     switch (topo) {
         case TOPOLOGY_2_3_2_1:
@@ -3906,7 +3957,7 @@ static int handle_process_event_signal(void* ctx, void* data, size_t size) {
         }
 
         std::string old_comm = rename_it->second.comm;
-        rename_it->second.comm = event_comm;
+        set_thread_comm_locked(rename_it->second, event_comm);
         rename_it->second.cls = classify_thread_role_for_lock(
             signal->tid, event_comm, rename_it->second.cpu_usage_pct);
 
@@ -3946,7 +3997,7 @@ static int handle_process_event_signal(void* ctx, void* data, size_t size) {
         ensure_thread_state_for_tid_locked(signal->pid, package, signal->tid, event_comm);
         ThreadRuntimeState& new_state = g_threads[signal->tid];
         if (new_state.comm.empty()) {
-            new_state.comm = event_comm;
+            set_thread_comm_locked(new_state, event_comm);
         }
         new_state.pid = signal->pid;
         new_state.package = package;
@@ -4491,6 +4542,10 @@ static void sample_proc_runtime_locked(
         state.frozen_at_ms = 0;
         state.frozen = false;
         state.last_event_log_ms = 0;
+        state.last_affinity_verify_ms = 0;
+        state.last_affinity_verify_match = 0;
+        state.last_affinity_verify_sig = 0;
+        state.lowered_comm.clear();
         return;
     }
 
@@ -4571,7 +4626,7 @@ static void collect_process_threads_for_package_locked(
         ensure_thread_state_for_tid_locked(pid, package, tid, comm_buf);
         ThreadRuntimeState& state = g_threads[tid];
         if (!state.comm.size()) {
-            state.comm = comm_buf;
+            set_thread_comm_locked(state, comm_buf);
         }
         if (use_proc_runtime) {
             unsigned long long total_ticks = read_thread_ticks(pid, tid);
@@ -4976,6 +5031,48 @@ static bool is_thread_assignment_matching_locked(
         return false;
     }
     return CPU_EQUAL(&expected_mask, &actual_mask);
+}
+
+/*
+ * task-42：非显式规则线程的「回读校验」节流。
+ *
+ * 外部篡改不需要 30–100ms 级感知，500–1000ms 一次足够；其余时间复用上次结论，
+ * 省掉每步一次 sched_getaffinity。注意：
+ *   · has_explicit_affinity_rule 的线程仍直接读（显式规则路径本来每步只读一次）；
+ *   · 写后确认收敛的调用点仍然直接读（见 runtime 动态路径的 applied 分支），语义/收敛逻辑不变。
+ */
+static const long long kAffinityVerifyIntervalMs = 750;
+
+/* 目标掩码签名：cluster / cpus / valid 任一变化都会让旧校验结论失效。 */
+static unsigned long long affinity_assignment_signature(const LockedClassAssignment& assignment) {
+    unsigned long long sig = 1469598103934665603ULL;  /* FNV offset basis */
+    if (assignment.valid) sig ^= 0x9e3779b97f4a7c15ULL;
+    sig ^= (unsigned long long)(assignment.cluster + 1);
+    sig *= 1099511628211ULL;
+    sig ^= (unsigned long long)assignment.cpus.size();
+    for (size_t i = 0; i < assignment.cpus.size(); i++) {
+        sig ^= (unsigned long long)(assignment.cpus[i] + 1);
+        sig *= 1099511628211ULL;
+    }
+    return sig;
+}
+
+static bool is_thread_assignment_matching_throttled_locked(
+        ThreadRuntimeState& state,
+        const LockedClassAssignment& assignment,
+        long long now_ms) {
+    unsigned long long sig = affinity_assignment_signature(assignment);
+    if (state.has_explicit_affinity_rule ||
+        state.last_affinity_verify_ms <= 0 ||
+        state.last_affinity_verify_sig != sig ||
+        now_ms - state.last_affinity_verify_ms >= kAffinityVerifyIntervalMs) {
+        state.last_affinity_verify_ms = now_ms;
+        state.last_affinity_verify_sig = sig;
+        state.last_affinity_verify_match =
+            is_thread_assignment_matching_locked(state.tid, assignment) ? 1 : 0;
+        return state.last_affinity_verify_match != 0;
+    }
+    return state.last_affinity_verify_match != 0;
 }
 
 /*
@@ -5402,14 +5499,26 @@ static float avg_idle_ratio(int cluster_id, const AllCpuStats& stats) {
 
 static float get_freq_headroom(int cluster_id) {
     if (cluster_id < 0 || cluster_id >= cluster_count) return 0.0f;
-    int policy_num = cpu_clusters[cluster_id].policies[0];
-    char path[256];
-    safe_snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpufreq/policy%d/scaling_cur_freq", policy_num);
-    FILE* fp = fopen(path, "r");
-    int cur_freq = 0;
-    if (fp) {
-        fscanf(fp, "%d", &cur_freq);
-        fclose(fp);
+    /*
+     * task-42：当前频率是观测量，调度步 30–100ms 一步、每簇都读一次 sysfs。
+     * 用 300ms TTL 缓存（按簇），同一步内多个调用点共享结果。
+     */
+    static long long s_cur_freq_ms[MAX_CLUSTERS] = {0};
+    static int s_cur_freq[MAX_CLUSTERS] = {0};
+    long long now_ms = get_current_time_ms();
+    int cur_freq = s_cur_freq[cluster_id];
+    if (s_cur_freq_ms[cluster_id] == 0 || now_ms - s_cur_freq_ms[cluster_id] >= 300) {
+        int policy_num = cpu_clusters[cluster_id].policies[0];
+        char path[256];
+        safe_snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpufreq/policy%d/scaling_cur_freq", policy_num);
+        FILE* fp = fopen(path, "r");
+        cur_freq = 0;
+        if (fp) {
+            fscanf(fp, "%d", &cur_freq);
+            fclose(fp);
+        }
+        s_cur_freq[cluster_id] = cur_freq;
+        s_cur_freq_ms[cluster_id] = now_ms;
     }
     int min_freq = g_cluster_policies[cluster_id].min_freq;
     int max_freq = g_cluster_policies[cluster_id].max_freq;
@@ -5421,9 +5530,21 @@ static float get_freq_headroom(int cluster_id) {
 }
 
 static float estimate_thermal_pressure() {
+    /*
+     * task-42：温度是秒级慢变量，调度步却是 30–100ms 一步。
+     * 用 400ms TTL 缓存，避免每步一次 fopen/fread/fclose；读失败也缓存 0，防止故障时每步重试。
+     */
+    static long long s_last_read_ms = 0;
+    static float s_cached_pressure = 0.0f;
+    long long now_ms = get_current_time_ms();
+    if (s_last_read_ms > 0 && now_ms - s_last_read_ms < 400) {
+        return s_cached_pressure;
+    }
+    s_last_read_ms = now_ms;
     char buf[64];
     if (!read_text_file("/sys/class/thermal/thermal_zone0/temp", buf, sizeof(buf))) {
-        return 0.0f;
+        s_cached_pressure = 0.0f;
+        return s_cached_pressure;
     }
     int temp = atoi(buf);
     if (temp <= 0) return 0.0f;
@@ -5431,7 +5552,8 @@ static float estimate_thermal_pressure() {
     float pressure = (celsius - 45.0f) / 35.0f;
     if (pressure < 0.0f) pressure = 0.0f;
     if (pressure > 1.0f) pressure = 1.0f;
-    return pressure;
+    s_cached_pressure = pressure;
+    return s_cached_pressure;
 }
 
 float compute_cluster_score(int cluster_id, const ClusterPolicy& policy, const AllCpuStats& stats, float thermal) {
@@ -5849,10 +5971,21 @@ static int read_int_from_file(const char* path, int fallback) {
 void update_cluster_freq(int cluster_id, int target_min_khz, int target_max_khz) {
     static int last_min[MAX_CLUSTERS] = {0};
     static int last_max[MAX_CLUSTERS] = {0};
+    /* task-42：目标与上次写入相同且未到校验周期时，跳过两次 sysfs 回读（外部改写最多 1s 内被纠正）。 */
+    static long long last_verify_ms[MAX_CLUSTERS] = {0};
     if (cluster_id < 0 || cluster_id >= cluster_count) return;
     int policy_num = cpu_clusters[cluster_id].policies[0];
     if (target_min_khz < 0) target_min_khz = 0;
     if (target_max_khz > 0 && target_max_khz < target_min_khz) target_max_khz = target_min_khz;
+    long long now_ms = get_current_time_ms();
+    bool target_unchanged =
+        target_min_khz == last_min[cluster_id] && target_max_khz == last_max[cluster_id];
+    bool verify_due =
+        last_verify_ms[cluster_id] == 0 || now_ms - last_verify_ms[cluster_id] >= 1000;
+    if (target_unchanged && !verify_due) {
+        return;
+    }
+    last_verify_ms[cluster_id] = now_ms;
     char path_min[256], path_max[256], min_str[32], max_str[32];
     safe_snprintf(path_min, sizeof(path_min), "/sys/devices/system/cpu/cpufreq/policy%d/scaling_min_freq", policy_num);
     safe_snprintf(path_max, sizeof(path_max), "/sys/devices/system/cpu/cpufreq/policy%d/scaling_max_freq", policy_num);

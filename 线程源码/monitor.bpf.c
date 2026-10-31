@@ -14,10 +14,25 @@
 #endif
 #endif
 
+/*
+ * queueBuffer 帧信号。
+ *
+ * 6.14：加 tgid/tid。uprobe 挂在 libgui 的 Surface::queueBuffer 上，是全系统生效的；
+ * 没有来源 pid 时用户态无法区分「目标游戏」与「其它应用/系统 UI」，会把它们的提交
+ * 混进 FAS 的帧时间/FPS。tgid 填 bpf_get_current_pid_tgid() 的高 32 位（与用户态
+ * g_queuebuffer_pid 的进程 pid 同语义），tid 仅作调试/日志用。
+ *
+ * ⚠️ 改这个结构必须同步修改 bin/activity_fas_sampling.inc 的 QueueBufferFrameSignal，
+ *    并重新生成 monitor.bpf.o（bin/monitor.bpf.o 与 线程源码/monitor.bpf.o）。
+ */
 struct queuebuffer_frame_signal {
+    __u32 tgid;
+    __u32 tid;
     __u64 ktime_ns;
     __u64 buffer;
 };
+_Static_assert(sizeof(struct queuebuffer_frame_signal) == 24,
+               "queuebuffer_frame_signal 布局变了：必须同步改用户态 QueueBufferFrameSignal 并重建 monitor.bpf.o");
 
 struct process_event_signal {
     __s32 pid;
@@ -235,6 +250,9 @@ int handle_queuebuffer(struct pt_regs *ctx) {
         return 0;
     }
 
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    signal->tgid = (__u32)(pid_tgid >> 32);
+    signal->tid = (__u32)pid_tgid;
     signal->ktime_ns = bpf_ktime_get_ns();
     signal->buffer = (__u64)PT_REGS_PARM1(ctx);
     bpf_ringbuf_submit(signal, 0);

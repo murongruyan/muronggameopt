@@ -76,6 +76,31 @@ static void reset_mode_runtime_state() {
     g_extra_write_count = 0;
 }
 
+/*
+ * sched.txt 的布尔值解析（task-41）：
+ *   只接受 on / 1 / true / yes / t（大小写不敏感），其余任何值一律为 false。
+ * 旧实现只看首字符，导致 "off" 因为以 o 开头被当成 true；现在按 token 完整比较。
+ */
+static bool runtime_feature_value_is_true(const char* start, const char* end) {
+    while (start < end && (*start == ' ' || *start == '\t')) start++;
+    while (end > start && (end[-1] == ' ' || end[-1] == '\t')) end--;
+    const size_t len = (size_t)(end - start);
+    if (len == 0) return false;
+    if (len == 1) {
+        const char c = (char)tolower((unsigned char)start[0]);
+        /* 任务约定：只接受 on / 1 / true / yes / t；单个 y 不在白名单内。 */
+        return c == '1' || c == 't';
+    }
+    if (len == 2) {
+        return strncasecmp(start, "on", 2) == 0;
+    }
+    if (len == 3) {
+        return strncasecmp(start, "yes", 3) == 0;
+    }
+    if (len == 4 && strncasecmp(start, "true", 4) == 0) return true;
+    return false;
+}
+
 static bool parse_runtime_feature_flag_from_text(const char* text, const char* key, bool* out_value) {
     if (!text || !key || !key[0] || !out_value) return false;
     size_t key_len = strlen(key);
@@ -92,23 +117,16 @@ static bool parse_runtime_feature_flag_from_text(const char* text, const char* k
         while (cursor < line_end && (*cursor == ' ' || *cursor == '\t')) {
             cursor++;
         }
-        if ((size_t)(line_end - cursor) > key_len + 1 &&
-            strncmp(cursor, key, key_len) == 0 &&
-            (cursor[key_len] == '=' || cursor[key_len] == ':')) {
-            const char* value = cursor + key_len + 1;
-            while (value < line_end && (*value == ' ' || *value == '\t')) {
-                value++;
+        if ((size_t)(line_end - cursor) > key_len &&
+            strncmp(cursor, key, key_len) == 0) {
+            const char* separator = cursor + key_len;
+            while (separator < line_end && (*separator == ' ' || *separator == '\t')) {
+                separator++;
             }
-            if (value < line_end) {
-                if (*value == '1' || *value == 'y' || *value == 'Y' || *value == 't' || *value == 'T' ||
-                    *value == 'o' || *value == 'O') {
-                    *out_value = true;
-                    return true;
-                }
-                if (*value == '0' || *value == 'n' || *value == 'N' || *value == 'f' || *value == 'F') {
-                    *out_value = false;
-                    return true;
-                }
+            if (separator < line_end && (*separator == '=' || *separator == ':')) {
+                const char* value = separator + 1;
+                *out_value = runtime_feature_value_is_true(value, line_end);
+                return true;
             }
         }
         cursor = line_end;
@@ -128,6 +146,16 @@ static bool parse_runtime_feature_flag_alias_from_text(
 
 static bool apply_runtime_feature_overrides_from_shared_config(const char* mode) {
     (void)mode;
+    /*
+     * task-41：外部开关（dyn.json 的 enabled / fas.json 的 defaults.enabled）不依赖
+     * config/sched.txt，必须先无条件同步。旧实现把这两行放在「sched.txt 存在」分支之后，
+     * sched.txt 缺失（新装模块未打开 App / 用户删除）时 FAS 会停在默认 true，
+     * 用户在 fas.json 里关闭 FAS 不生效（runtime_loop #4）。
+     */
+    g_mode_runtime_features.dynamic_tuning_enabled = g_dyn_params.enabled;
+    g_mode_runtime_features.fas_enabled = g_fas_enabled_config;
+    invalidate_runtime_feature_switch_cache();
+
     const char* config_path = get_runtime_feature_config_path();
     if (!file_exists(config_path)) {
         return false;
@@ -168,14 +196,19 @@ static bool apply_runtime_feature_overrides_from_shared_config(const char* mode)
     if (parse_runtime_feature_flag_alias_from_text(data, "base", "base_profile", &value)) {
         g_mode_runtime_features.base_profile_enabled = value;
     }
-    g_mode_runtime_features.dynamic_tuning_enabled = g_dyn_params.enabled;
-    g_mode_runtime_features.fas_enabled = g_fas_enabled_config;
     invalidate_runtime_feature_switch_cache();
     free(data);
     return true;
 }
 
 void load_mode_settings_json(const char* mode) {
+    /*
+     * task-41：fas.json 的 defaults.enabled 不依赖 cpu.json / sched.txt。
+     * 在最早的返回点之前同步一次，保证「sched.txt 缺失」「cpu.json 暂缺」等
+     * 提前返回路径上，用户关闭 FAS 也立即生效。
+     */
+    g_mode_runtime_features.fas_enabled = g_fas_enabled_config;
+
     const char* config_path = get_cpu_config_path();
     if (!file_exists(config_path)) {
         return;
@@ -655,6 +688,10 @@ struct ConfigReloadWatchState {
     long long cooldown_until_ms;
     uint64_t last_hash;
     bool hash_ready;
+    /* task-41：本次尝试读到的内容 hash（加载成功后才提交到 last_hash）。 */
+    uint64_t attempt_hash;
+    /* 连续失败次数，用于重试退避；成功清零。 */
+    int failure_count;
 };
 
 static const long long kConfigReloadDebounceMs = 1500;
@@ -722,7 +759,42 @@ static void mark_config_reload_pending(ConfigReloadWatchState* state) {
     state->dirty_since_ms = now_ms;
 }
 
-static bool should_reload_pending_config(ConfigReloadWatchState* state, const char* path) {
+/* 配置重载的 JSON 预检：给不在本文件内的 loader 判断文件是否可解析（失败可重试）。 */
+static bool config_reload_json_file_valid(const char* path) {
+    if (!path || !path[0] || !file_exists(path)) return false;
+    char* data = NULL;
+    size_t len = 0;
+    if (!read_file_all(path, &data, &len) || !data || len == 0) {
+        if (data) free(data);
+        return false;
+    }
+    cJSON* root = cJSON_Parse(data);
+    free(data);
+    if (!root) return false;
+    cJSON_Delete(root);
+    return true;
+}
+
+/* 热重载失败日志：按路径限流，避免坏配置/缺失文件把 debug 日志刷爆。 */
+static void config_reload_log_failure(const char* name, const char* path, const char* reason) {
+    char throttle_key[128];
+    safe_snprintf(throttle_key, sizeof(throttle_key), "reload-fail:%s", path ? path : "?");
+    char message[320];
+    safe_snprintf(message, sizeof(message),
+                  "配置热重载失败(%s): %s（原因: %s），稍后重试",
+                  name && name[0] ? name : "config",
+                  path && path[0] ? path : "?",
+                  reason && reason[0] ? reason : "unknown");
+    log_config_message_throttled(throttle_key, 10000LL, message);
+}
+
+/*
+ * task-41：尝试一次热重载。
+ * 只判断「该不该试」，不提交 hash；文件被删除时也返回 true（attempt_hash=0），
+ * 由调用方按默认值加载后调 finish_config_reload() 收尾，避免旧实现「先提交 hash
+ * 再加载，加载失败永不重试」的问题。
+ */
+static bool take_pending_config_reload(ConfigReloadWatchState* state, const char* path) {
     if (!state || !state->dirty || !path || !path[0]) {
         return false;
     }
@@ -739,21 +811,128 @@ static bool should_reload_pending_config(ConfigReloadWatchState* state, const ch
         return false;
     }
 
+    if (!file_exists(path)) {
+        /* 文件被删除：允许尝试一次「回退默认值」。 */
+        state->attempt_hash = 0;
+        return true;
+    }
+
     uint64_t hash = 0;
     if (!compute_file_content_hash64(path, &hash)) {
         return false;
     }
-
-    state->dirty = false;
-    state->dirty_since_ms = 0;
     if (state->hash_ready && state->last_hash == hash) {
+        state->dirty = false;
+        state->dirty_since_ms = 0;
         return false;
     }
-
-    state->last_hash = hash;
-    state->hash_ready = true;
-    state->cooldown_until_ms = now_ms + kConfigReloadCooldownMs;
+    state->attempt_hash = hash;
     return true;
+}
+
+/* task-41：加载结束后提交/回滚。loaded_ok=false 时保留 dirty 并按指数退避重试。 */
+static void finish_config_reload(ConfigReloadWatchState* state, const char* name,
+                                 const char* path, bool loaded_ok) {
+    if (!state) return;
+    const long long now_ms = get_current_time_ms();
+    if (loaded_ok) {
+        state->dirty = false;
+        state->dirty_since_ms = 0;
+        state->last_hash = state->attempt_hash;
+        state->hash_ready = state->attempt_hash != 0;
+        state->failure_count = 0;
+        state->cooldown_until_ms = now_ms + kConfigReloadCooldownMs;
+        return;
+    }
+
+    state->failure_count++;
+    int retry_level = state->failure_count > 5 ? 5 : state->failure_count;
+    long long backoff_ms = 1000LL << retry_level;
+    if (backoff_ms > 30000LL) backoff_ms = 30000LL;
+    state->dirty = true;
+    state->dirty_since_ms = 0;
+    state->cooldown_until_ms = now_ms + backoff_ms;
+    config_reload_log_failure(name, path, "加载失败或内容无效");
+}
+
+/* inotify 队列溢出/监听异常：把全部配置标记为 dirty，不错过后续事件。 */
+static void mark_all_config_reload_pending(const char* reason) {
+    mark_config_reload_pending(&g_mode_reload_watch);
+    mark_config_reload_pending(&g_scene_categories_reload_watch);
+    mark_config_reload_pending(&g_skip_processes_reload_watch);
+    mark_config_reload_pending(&g_fas_reload_watch);
+    mark_config_reload_pending(&g_dyn_reload_watch);
+    mark_config_reload_pending(&g_thread_signature_reload_watch);
+    mark_config_reload_pending(&g_thread_persistent_reload_watch);
+    mark_config_reload_pending(&g_runtime_features_reload_watch);
+    mark_config_reload_pending(&g_scheduler_reload_watch);
+    mark_config_reload_pending(&g_cpu_reload_watch);
+    char message[256];
+    safe_snprintf(message, sizeof(message),
+                  "inotify 事件丢失/监听异常，已标记全部配置待重载（原因: %s）",
+                  reason && reason[0] ? reason : "unknown");
+    log_config_message_throttled("config-reload-overflow", 10000LL, message);
+}
+
+/*
+ * task-41：inotify 不可用（inotify_init 或 inotify_add_watch 失败）时降级为
+ * 定时轮询：每 2s 比较一次各配置文件 hash，变了就标记 dirty，热重载继续可用。
+ */
+static bool g_config_reload_poll_fallback = false;
+static long long g_config_reload_poll_last_ms = 0;
+
+void config_reload_enable_poll_fallback(const char* reason) {
+    if (g_config_reload_poll_fallback) return;
+    g_config_reload_poll_fallback = true;
+    char message[256];
+    safe_snprintf(message, sizeof(message),
+                  "inotify 监听不可用，配置热重载降级为定时轮询（原因: %s）",
+                  reason && reason[0] ? reason : "unknown");
+    log_message(message);
+}
+
+static void poll_config_reload_fallback_if_needed() {
+    if (!g_config_reload_poll_fallback) return;
+    const long long now_ms = get_current_time_ms();
+    if (g_config_reload_poll_last_ms != 0 && now_ms - g_config_reload_poll_last_ms < 2000) {
+        return;
+    }
+    g_config_reload_poll_last_ms = now_ms;
+
+    char persistent_path[256];
+    build_persistent_thread_override_path(persistent_path, sizeof(persistent_path));
+    const char* thread_config_path = get_thread_signature_config_path();
+
+    struct PollItem {
+        ConfigReloadWatchState* state;
+        const char* path;
+    };
+    const PollItem items[] = {
+        { &g_mode_reload_watch, MODE_FILE },
+        { &g_scene_categories_reload_watch, SCENE_CATEGORIES_FILE },
+        { &g_skip_processes_reload_watch, SCHEDULER_SKIP_PROCESSES_FILE },
+        { &g_fas_reload_watch, FAS_CONFIG_FILE },
+        { &g_dyn_reload_watch, DYN_CONFIG_FILE },
+        { &g_thread_signature_reload_watch, thread_config_path },
+        { &g_thread_persistent_reload_watch, persistent_path },
+        { &g_runtime_features_reload_watch, get_runtime_feature_config_path() },
+        { &g_scheduler_reload_watch, get_scheduler_config_path() },
+        { &g_cpu_reload_watch, get_cpu_config_path() },
+    };
+    for (size_t i = 0; i < sizeof(items) / sizeof(items[0]); i++) {
+        ConfigReloadWatchState* state = items[i].state;
+        const char* path = items[i].path;
+        if (!state || !path || !path[0]) continue;
+        uint64_t hash = 0;
+        if (compute_file_content_hash64(path, &hash)) {
+            if (!state->hash_ready || state->last_hash != hash) {
+                mark_config_reload_pending(state);
+            }
+        } else if (state->hash_ready) {
+            /* 文件被删除：标记一次，让重载路径回退默认值/给出限流日志。 */
+            mark_config_reload_pending(state);
+        }
+    }
 }
 
 void prime_config_reload_watch_hashes() {
@@ -776,83 +955,181 @@ void prime_config_reload_watch_hashes() {
 }
 
 void process_pending_config_reloads() {
-    if (should_reload_pending_config(&g_mode_reload_watch, MODE_FILE)) {
+    poll_config_reload_fallback_if_needed();
+
+    if (g_mode_reload_watch.dirty &&
+        take_pending_config_reload(&g_mode_reload_watch, MODE_FILE)) {
         log_message("模式文件内容已变更，正在热重载");
         char mode[64] = "balance";
+        bool mode_file_read = false;
         FILE* mode_file = fopen(MODE_FILE, "r");
         if (mode_file) {
             char line[256];
             if (fgets(line, sizeof(line), mode_file)) {
                 line[strcspn(line, "\n")] = 0;
                 safe_strncpy(mode, line, sizeof(mode));
+                mode_file_read = mode[0] != '\0';
             }
             fclose(mode_file);
         }
+        if (!mode_file_read) {
+            safe_strncpy(mode, "balance", sizeof(mode));
+            log_config_message_throttled("reload-mode-missing", 30000LL,
+                "mode.txt 缺失或为空，热重载回退到 balance 模式");
+        }
         safe_strncpy(g_current_mode, mode, sizeof(g_current_mode));
-        load_mode_settings_json(mode);
-        UnifiedScheduler::initialize_cluster_policies();
+        /* load_mode_settings_json() 保持 void（cpp 里有前置声明，不能改签名）：
+           这里用 CPU 配置 JSON 预检判定「加载是否可成功」，坏 JSON/缺文件时保留 dirty 重试。 */
+        const bool ok = config_reload_json_file_valid(get_cpu_config_path());
+        if (ok) {
+            load_mode_settings_json(mode);
+            UnifiedScheduler::initialize_cluster_policies();
+        }
+        finish_config_reload(&g_mode_reload_watch, "mode.txt", MODE_FILE, ok);
     }
 
-    if (should_reload_pending_config(&g_scene_categories_reload_watch, SCENE_CATEGORIES_FILE)) {
+    if (g_scene_categories_reload_watch.dirty &&
+        take_pending_config_reload(&g_scene_categories_reload_watch, SCENE_CATEGORIES_FILE)) {
         log_message("场景分类配置内容已变更，正在热重载");
-        load_scene_categories_config();
+        bool ok = config_reload_json_file_valid(SCENE_CATEGORIES_FILE);
+        if (ok) {
+            load_scene_categories_config();
+        } else if (!file_exists(SCENE_CATEGORIES_FILE)) {
+            /* 删除 categories.json = 回退「无场景分类规则」，算一次成功加载，不无限重试。 */
+            load_scene_categories_config();
+            ok = true;
+        } else {
+            config_reload_log_failure("categories.json", SCENE_CATEGORIES_FILE,
+                                      "JSON 解析失败或文件不可读");
+        }
+        finish_config_reload(&g_scene_categories_reload_watch, "categories.json",
+                             SCENE_CATEGORIES_FILE, ok);
     }
 
-    if (should_reload_pending_config(
-            &g_skip_processes_reload_watch,
-            SCHEDULER_SKIP_PROCESSES_FILE)) {
+    if (g_skip_processes_reload_watch.dirty &&
+        take_pending_config_reload(&g_skip_processes_reload_watch, SCHEDULER_SKIP_PROCESSES_FILE)) {
         log_message("进程调度排除名单已变更，正在热重载");
-        load_scheduler_skip_processes_config();
-        if (refresh_scheduler_skip_process_state()) {
+        bool ok = load_scheduler_skip_processes_config();
+        if (!ok && !file_exists(SCHEDULER_SKIP_PROCESSES_FILE)) {
+            /* 删除名单 = 空名单（loader 内部已清空并记日志），算成功加载。 */
+            ok = true;
+        }
+        if (ok && refresh_scheduler_skip_process_state()) {
             handle_scheduler_skip_process_transition();
+        }
+        finish_config_reload(&g_skip_processes_reload_watch, "skip_processes.txt",
+                             SCHEDULER_SKIP_PROCESSES_FILE, ok);
+    }
+
+    if (g_fas_reload_watch.dirty &&
+        take_pending_config_reload(&g_fas_reload_watch, FAS_CONFIG_FILE)) {
+        log_message("FAS 配置内容已变更，正在热重载");
+        const bool valid = config_reload_json_file_valid(FAS_CONFIG_FILE);
+        if (valid) {
+            load_fas_config();
+            /* task-41：外部开关不依赖 sched.txt，热重载后同步一次。 */
+            g_mode_runtime_features.fas_enabled = g_fas_enabled_config;
+            invalidate_runtime_feature_switch_cache();
+        } else {
+            config_reload_log_failure("fas.json", FAS_CONFIG_FILE, "JSON 解析失败或文件不可读");
+        }
+        finish_config_reload(&g_fas_reload_watch, "fas.json", FAS_CONFIG_FILE, valid);
+    }
+
+    if (g_dyn_reload_watch.dirty &&
+        take_pending_config_reload(&g_dyn_reload_watch, DYN_CONFIG_FILE)) {
+        log_message("动态调频配置内容已变更，正在热重载");
+        const bool valid = config_reload_json_file_valid(DYN_CONFIG_FILE);
+        if (valid) {
+            load_dyn_config_json(g_current_mode);
+            g_mode_runtime_features.dynamic_tuning_enabled = g_dyn_params.enabled;
+            invalidate_runtime_feature_switch_cache();
+        } else {
+            config_reload_log_failure("dyn.json", DYN_CONFIG_FILE, "JSON 解析失败或文件不可读");
+        }
+        finish_config_reload(&g_dyn_reload_watch, "dyn.json", DYN_CONFIG_FILE, valid);
+    }
+
+    if (g_runtime_features_reload_watch.dirty) {
+        const char* runtime_feature_config_path = get_runtime_feature_config_path();
+        if (take_pending_config_reload(&g_runtime_features_reload_watch, runtime_feature_config_path)) {
+            log_message("调度开关配置内容已变更，正在热重载");
+            const bool ok = config_reload_json_file_valid(get_cpu_config_path());
+            if (ok) {
+                load_mode_settings_json(g_current_mode);
+                UnifiedScheduler::initialize_cluster_policies();
+            }
+            finish_config_reload(&g_runtime_features_reload_watch, "sched.txt",
+                                 runtime_feature_config_path, ok);
         }
     }
 
-    if (should_reload_pending_config(&g_fas_reload_watch, FAS_CONFIG_FILE)) {
-        log_message("FAS 配置内容已变更，正在热重载");
-        load_fas_config();
+    if (g_thread_signature_reload_watch.dirty) {
+        const char* thread_config_path = get_thread_signature_config_path();
+        if (take_pending_config_reload(&g_thread_signature_reload_watch, thread_config_path)) {
+            log_message("线程专项配置内容已变更，正在热重载");
+            const bool ok = load_thread_signature_config();
+            if (ok) {
+                UnifiedScheduler::reload_thread_config_now();
+            }
+            finish_config_reload(&g_thread_signature_reload_watch, "thread config",
+                                 thread_config_path, ok);
+        }
     }
 
-    if (should_reload_pending_config(&g_dyn_reload_watch, DYN_CONFIG_FILE)) {
-        log_message("动态调频配置内容已变更，正在热重载");
-        load_dyn_config_json(g_current_mode);
-        g_mode_runtime_features.dynamic_tuning_enabled = g_dyn_params.enabled;
+    if (g_thread_persistent_reload_watch.dirty) {
+        char persistent_path[256];
+        build_persistent_thread_override_path(persistent_path, sizeof(persistent_path));
+        if (take_pending_config_reload(&g_thread_persistent_reload_watch, persistent_path)) {
+            log_message("设备持久规则覆盖内容已变更，正在热重载");
+            bool ok;
+            if (!file_exists(persistent_path)) {
+                /* 删除覆盖文件 = 撤销设备级持久规则：重读主配置即可，算成功。 */
+                load_thread_signature_config();
+                UnifiedScheduler::reload_thread_config_now();
+                ok = true;
+            } else {
+                ok = config_reload_json_file_valid(persistent_path);
+                if (ok) {
+                    load_thread_signature_config();
+                    UnifiedScheduler::reload_thread_config_now();
+                } else {
+                    config_reload_log_failure("persistent threads", persistent_path,
+                                              "JSON 解析失败或文件不可读");
+                }
+            }
+            finish_config_reload(&g_thread_persistent_reload_watch, "persistent threads",
+                                 persistent_path, ok);
+        }
     }
 
-    const char* runtime_feature_config_path = get_runtime_feature_config_path();
-    if (should_reload_pending_config(&g_runtime_features_reload_watch, runtime_feature_config_path)) {
-        log_message("调度开关配置内容已变更，正在热重载");
-        load_mode_settings_json(g_current_mode);
-        UnifiedScheduler::initialize_cluster_policies();
+    if (g_scheduler_reload_watch.dirty) {
+        const char* scheduler_config_path = get_scheduler_config_path();
+        if (take_pending_config_reload(&g_scheduler_reload_watch, scheduler_config_path)) {
+            log_message("会话配置内容已变更，正在热重载");
+            const bool ok = load_scheduler_session_config_json(g_current_mode);
+            if (ok) {
+                UnifiedScheduler::reload_thread_config_now();
+            }
+            finish_config_reload(&g_scheduler_reload_watch, "scheduler config",
+                                 scheduler_config_path, ok);
+        }
     }
 
-    const char* thread_config_path = get_thread_signature_config_path();
-    if (should_reload_pending_config(&g_thread_signature_reload_watch, thread_config_path)) {
-        log_message("线程专项配置内容已变更，正在热重载");
-        load_thread_signature_config();
-        UnifiedScheduler::reload_thread_config_now();
-    }
-
-    char persistent_path[256];
-    build_persistent_thread_override_path(persistent_path, sizeof(persistent_path));
-    if (should_reload_pending_config(&g_thread_persistent_reload_watch, persistent_path)) {
-        log_message("设备持久规则覆盖内容已变更，正在热重载");
-        load_thread_signature_config();
-        UnifiedScheduler::reload_thread_config_now();
-    }
-
-    const char* scheduler_config_path = get_scheduler_config_path();
-    if (should_reload_pending_config(&g_scheduler_reload_watch, scheduler_config_path)) {
-        log_message("会话配置内容已变更，正在热重载");
-        load_scheduler_session_config_json(g_current_mode);
-        UnifiedScheduler::reload_thread_config_now();
-    }
-
-    const char* cpu_config_path = get_cpu_config_path();
-    if (should_reload_pending_config(&g_cpu_reload_watch, cpu_config_path)) {
-        log_message("CPU 配置内容已变更，正在热重载");
-        load_mode_settings_json(g_current_mode);
-        UnifiedScheduler::initialize_cluster_policies();
+    if (g_cpu_reload_watch.dirty) {
+        const char* cpu_config_path = get_cpu_config_path();
+        if (take_pending_config_reload(&g_cpu_reload_watch, cpu_config_path)) {
+            log_message("CPU 配置内容已变更，正在热重载");
+            const bool ok = config_reload_json_file_valid(cpu_config_path);
+            if (ok) {
+                load_mode_settings_json(g_current_mode);
+                UnifiedScheduler::initialize_cluster_policies();
+            } else {
+                config_reload_log_failure("cpu config", cpu_config_path,
+                                          "JSON 解析失败或文件不可读");
+            }
+            finish_config_reload(&g_cpu_reload_watch, "cpu config", cpu_config_path, ok);
+        }
     }
 }
 
@@ -868,45 +1145,68 @@ void handle_inotify_events(int inotify_fd, int wd_general_config_dir, int wd_cpu
         struct inotify_event* event = (struct inotify_event*)ptr;
         ptr += INOTIFY_EVENT_SIZE + event->len;
 
-        // Ignore temporary files
-        if (event->len > 0 && strstr(event->name, ".tmp") != NULL) {
+        /* task-41：队列溢出时丢弃的事件无法补，全部标记 dirty 让热重载重新扫描。 */
+        if (event->mask & IN_Q_OVERFLOW) {
+            mark_all_config_reload_pending("IN_Q_OVERFLOW");
+            continue;
+        }
+        /* 被监听的目录本身被删除/移动：监听已失效，降级轮询并全量重载。 */
+        if (event->mask & (IN_DELETE_SELF | IN_MOVE_SELF)) {
+            mark_all_config_reload_pending("watch directory removed");
+            config_reload_enable_poll_fallback("watch directory removed");
+            continue;
+        }
+        if (event->len == 0) {
             continue;
         }
 
-        if (event->mask & (IN_MODIFY | IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE)) {
-            if (event->wd == wd_general_config_dir && event->len > 0) {
-                if (strcmp(event->name, "mode.txt") == 0) {
-                    mark_config_reload_pending(&g_mode_reload_watch);
-                } else if (strcmp(event->name, "categories.json") == 0) {
-                    mark_config_reload_pending(&g_scene_categories_reload_watch);
-                } else if (event_name_matches_config_path(
-                               event->name,
-                               SCHEDULER_SKIP_PROCESSES_FILE)) {
-                    mark_config_reload_pending(&g_skip_processes_reload_watch);
-                } else if (event_name_matches_config_path(event->name, get_runtime_feature_config_path())) {
-                    mark_config_reload_pending(&g_runtime_features_reload_watch);
+        // Ignore temporary files
+        if (strstr(event->name, ".tmp") != NULL) {
+            continue;
+        }
+
+        /*
+         * 写完成 / 原子替换 / 删除都算配置变更：删除后由重载路径回退默认值
+         * （task-41：add_watch 也订阅了 IN_DELETE|IN_MOVED_FROM）。
+         */
+        if (!(event->mask & (IN_MODIFY | IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE |
+                             IN_MOVED_FROM | IN_DELETE))) {
+            continue;
+        }
+
+        if (event->wd == wd_general_config_dir) {
+            if (strcmp(event->name, "mode.txt") == 0) {
+                mark_config_reload_pending(&g_mode_reload_watch);
+            } else if (strcmp(event->name, "categories.json") == 0) {
+                mark_config_reload_pending(&g_scene_categories_reload_watch);
+            } else if (event_name_matches_config_path(
+                           event->name,
+                           SCHEDULER_SKIP_PROCESSES_FILE)) {
+                mark_config_reload_pending(&g_skip_processes_reload_watch);
+            } else if (event_name_matches_config_path(event->name, get_runtime_feature_config_path())) {
+                mark_config_reload_pending(&g_runtime_features_reload_watch);
+            }
+        } else if (event->wd == wd_cpu_config_dir) {
+            if (strcmp(event->name, "fas.json") == 0) {
+                mark_config_reload_pending(&g_fas_reload_watch);
+            } else if (strcmp(event->name, "dyn.json") == 0) {
+                mark_config_reload_pending(&g_dyn_reload_watch);
+            } else if (thread_config_event_name_matches(event->name)) {
+                /* 线程配置候选名（<cpuModel>.threads.json / <拓扑>.threads.json /
+                   <拓扑>.json，含反向拓扑）由 sysfs_runtime 统一生成，避免每个事件 stat。 */
+                mark_config_reload_pending(&g_thread_signature_reload_watch);
+            } else {
+                // 检查是否触发了设备级 persistent 规则覆盖文件变更
+                char persistent_path[256];
+                build_persistent_thread_override_path(persistent_path, sizeof(persistent_path));
+                if (event_name_matches_config_path(event->name, persistent_path)) {
+                    mark_config_reload_pending(&g_thread_persistent_reload_watch);
                 }
             }
-            else if (event->wd == wd_cpu_config_dir && event->len > 0) {
-                if (strcmp(event->name, "fas.json") == 0) {
-                    mark_config_reload_pending(&g_fas_reload_watch);
-                } else if (strcmp(event->name, "dyn.json") == 0) {
-                    mark_config_reload_pending(&g_dyn_reload_watch);
-                } else if (event_name_matches_config_path(event->name, get_thread_signature_config_path())) {
-                    mark_config_reload_pending(&g_thread_signature_reload_watch);
-                } else {
-                    // 检查是否触发了设备级 persistent 规则覆盖文件变更
-                    char persistent_path[256];
-                    build_persistent_thread_override_path(persistent_path, sizeof(persistent_path));
-                    if (event_name_matches_config_path(event->name, persistent_path)) {
-                        mark_config_reload_pending(&g_thread_persistent_reload_watch);
-                    }
-                }
-                if (event_name_matches_config_path(event->name, get_scheduler_config_path())) {
-                    mark_config_reload_pending(&g_scheduler_reload_watch);
-                } else if (event_name_matches_config_path(event->name, get_cpu_config_path())) {
-                    mark_config_reload_pending(&g_cpu_reload_watch);
-                }
+            if (event_name_matches_config_path(event->name, get_scheduler_config_path())) {
+                mark_config_reload_pending(&g_scheduler_reload_watch);
+            } else if (event_name_matches_config_path(event->name, get_cpu_config_path())) {
+                mark_config_reload_pending(&g_cpu_reload_watch);
             }
         }
     }

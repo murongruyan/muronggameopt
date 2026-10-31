@@ -526,11 +526,12 @@ void run_scheduler_step() {
                         bool target_changed =
                             state.assigned_cluster != locked_assignment.cluster ||
                             !cpu_mask_equals(state.assigned_cpus, locked_assignment.cpus);
+                        bool applied = false;
                         if ((target_changed || !actual_assignment_match) &&
                             (!actual_assignment_match ||
                              state.last_migrate_ms == 0 ||
                              now_ms - state.last_migrate_ms >= kRebindCooldownMs)) {
-                            bool applied = !locked_assignment.cpus.empty() ?
+                            applied = !locked_assignment.cpus.empty() ?
                                 set_thread_affinity_mask(state.tid, locked_assignment.cpus) :
                                 set_thread_affinity(state.tid, locked_assignment.cluster);
                             if (applied) {
@@ -539,7 +540,14 @@ void run_scheduler_step() {
                                 state.last_migrate_ms = now_ms;
                             }
                         }
-                        if (is_thread_assignment_matching_locked(state.tid, locked_assignment)) {
+                        /*
+                         * task-42：只有真的写过才需要再回读一次确认；
+                         * 本轮没写时复用开头那次读取结果，少一次 sched_getaffinity。
+                         */
+                        bool assignment_live = applied
+                            ? is_thread_assignment_matching_locked(state.tid, locked_assignment)
+                            : actual_assignment_match;
+                        if (assignment_live) {
                             maybe_latch_primary_thread_tid_locked(state);
                         }
                         continue;
@@ -630,8 +638,13 @@ void run_scheduler_step() {
                 target_assignment.valid = true;
                 target_assignment.cluster = target_cluster;
                 target_assignment.cpus = has_explicit_mask ? explicit_cpus : std::vector<int>();
-                bool actual_assignment_match =
-                    is_thread_assignment_matching_locked(state.tid, target_assignment);
+                /*
+                 * task-42：走到这里的都是非显式规则线程（显式规则在上方已 continue）。
+                 * 回读校验节流到 500–1000ms 一次，其余时间复用上次结论；
+                 * 写后收敛确认仍然直接读（见下方 attempted 分支），收敛判定逻辑不变。
+                 */
+                bool actual_assignment_match = is_thread_assignment_matching_throttled_locked(
+                    state, target_assignment, now_ms);
                 if (has_explicit_mask) {
                     need_apply = (state.assigned_cluster != target_cluster) ||
                                  !cpu_mask_equals(state.assigned_cpus, explicit_cpus) ||
@@ -642,12 +655,15 @@ void run_scheduler_step() {
                                  !actual_assignment_match;
                 }
 
+                bool attempted = false;
+                bool applied = false;
                 if (need_apply &&
                     !thread_affinity_backoff_active_locked(state, now_ms) &&
                     (!actual_assignment_match ||
                      state.last_migrate_ms == 0 ||
                      now_ms - state.last_migrate_ms >= 500)) {
-                    bool applied = has_explicit_mask ?
+                    attempted = true;
+                    applied = has_explicit_mask ?
                         set_thread_affinity_mask(state.tid, explicit_cpus) :
                         set_thread_affinity(state.tid, target_cluster);
                     if (applied) {
@@ -655,18 +671,22 @@ void run_scheduler_step() {
                         state.last_migrate_ms = now_ms;
                         state.assigned_cpus = has_explicit_mask ? explicit_cpus : std::vector<int>();
                     }
+                }
+
+                bool assignment_live = actual_assignment_match;
+                if (attempted) {
                     /*
                      * 回读确认是否真的收敛。受 cpuset 限制的线程写成功但永远不
                      * 收敛，这里记账，连续多次就退避，避免每 500ms 重写一次。
+                     * （一次直接回读，同时更新节流缓存，供后续 tick 复用。）
                      */
-                    thread_affinity_note_result_locked(
-                        state,
-                        applied && is_thread_assignment_matching_locked(state.tid, target_assignment),
-                        now_ms);
-                }
-
-                bool assignment_live = is_thread_assignment_matching_locked(state.tid, target_assignment);
-                if (assignment_live) {
+                    bool reread_live = is_thread_assignment_matching_locked(state.tid, target_assignment);
+                    state.last_affinity_verify_ms = now_ms;
+                    state.last_affinity_verify_match = reread_live ? 1 : 0;
+                    state.last_affinity_verify_sig = affinity_assignment_signature(target_assignment);
+                    thread_affinity_note_result_locked(state, applied && reread_live, now_ms);
+                    assignment_live = reread_live;
+                } else if (assignment_live) {
                     thread_affinity_note_result_locked(state, true, now_ms);
                 }
                 if (assignment_live &&

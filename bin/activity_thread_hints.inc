@@ -14,6 +14,8 @@
  *   - 仅当线程配置里没有顶层 rt 块时，才回退读取 bin/cpu/dyn.json 的 rt，并打印一次
  *     弃用提示（向后兼容旧配置，旧位置后续版本移除）。
  *   - vendor_hints 仍来自 dyn.json（厂商接口开关不属于 RT 语义）。
+ *   - RT 的 sched_rt_* 是全局 sysctl：开启前保存原值，关闭/切应用/正常退出时恢复
+ *     （见 thread_hints_rt_save_sysctls_once / thread_hints_rt_restore_sysctls）。
  */
 struct ThreadVendorHintsConfig {
     bool enabled;
@@ -39,6 +41,28 @@ static long long g_thread_hints_rt_pid = 0;
 static bool g_thread_hints_rt_sysctl_done = false;
 /* 旧 dyn.json.rt 回退只提示一次，避免 5s 轮询刷日志。 */
 static bool g_thread_rt_dyn_fallback_logged = false;
+
+/*
+ * RT 模式写入的全局 sched_rt_* sysctl 原值。
+ *
+ * 这三个是内核全局参数（不是本进程私有）：开启 RT 前保存原值，关闭 / 切应用 /
+ * 守护进程正常退出时必须恢复，否则用户开过一次 RT 后整机 RT 节流配置会永久残留
+ * （直到重启），并影响其它 RT 任务。原值为空串表示该路径当时读取失败，恢复时跳过。
+ */
+static const char* const kThreadHintsRtSysctlPaths[] = {
+    "/proc/sys/kernel/sched_rr_timeslice_ms",
+    "/proc/sys/kernel/sched_rt_period_us",
+    "/proc/sys/kernel/sched_rt_runtime_us",
+};
+static const char* const kThreadHintsRtSysctlTargets[] = {"3", "30000", "29500"};
+static constexpr size_t kThreadHintsRtSysctlCount =
+    sizeof(kThreadHintsRtSysctlPaths) / sizeof(kThreadHintsRtSysctlPaths[0]);
+static char g_thread_hints_rt_sysctl_original[kThreadHintsRtSysctlCount][32];
+static bool g_thread_hints_rt_sysctl_saved = false;
+static bool g_thread_hints_rt_atexit_registered = false;
+static long long g_thread_hints_rt_sysctl_last_fail_log_ms[kThreadHintsRtSysctlCount] = {0};
+
+static void thread_hints_rt_atexit_handler();
 
 static ThreadRtConfig thread_hints_default_rt_config() {
     ThreadRtConfig config;
@@ -78,6 +102,106 @@ static char* thread_hints_read_file(const char* path, long max_bytes) {
     data[read_size] = '\0';
     fclose(fp);
     return data;
+}
+
+/* sysctl 回读值尾部可能带换行/空白；保存原值前归一化，恢复时才能原样写回。 */
+static void thread_hints_trim_sysctl_value(char* value) {
+    if (!value) return;
+    size_t len = strlen(value);
+    while (len > 0) {
+        char c = value[len - 1];
+        if (c != '\n' && c != '\r' && c != ' ' && c != '\t') break;
+        value[--len] = '\0';
+    }
+}
+
+/* RT sysctl 写/恢复失败的限流日志：同一路径 60s 最多一条，避免 5s 轮询刷屏。 */
+static void thread_hints_log_rt_sysctl_failure(size_t index, const char* action) {
+    if (index >= kThreadHintsRtSysctlCount) return;
+    long long now = get_current_time_ms();
+    if (now - g_thread_hints_rt_sysctl_last_fail_log_ms[index] < 60000) return;
+    g_thread_hints_rt_sysctl_last_fail_log_ms[index] = now;
+    char msg[224];
+    safe_snprintf(msg, sizeof(msg), "RT sysctl %s: %s (errno=%d)",
+                  action ? action : "操作失败",
+                  kThreadHintsRtSysctlPaths[index], errno);
+    log_affinity_message(msg);
+}
+
+/*
+ * 首次写入 sched_rt_* 之前保存原值，并注册 atexit 兜底。
+ * 只有成功读到原值的路径才会在恢复时写回；读失败的路径保持内核原样不动。
+ */
+static void thread_hints_rt_save_sysctls_once() {
+    if (g_thread_hints_rt_sysctl_saved) return;
+    for (size_t i = 0; i < kThreadHintsRtSysctlCount; ++i) {
+        g_thread_hints_rt_sysctl_original[i][0] = '\0';
+        char* data = thread_hints_read_file(kThreadHintsRtSysctlPaths[i], 64);
+        if (!data) {
+            thread_hints_log_rt_sysctl_failure(i, "读取原值失败");
+            continue;
+        }
+        thread_hints_trim_sysctl_value(data);
+        if (data[0]) {
+            safe_strncpy(g_thread_hints_rt_sysctl_original[i], data,
+                         sizeof(g_thread_hints_rt_sysctl_original[i]));
+        } else {
+            thread_hints_log_rt_sysctl_failure(i, "原值为空，跳过恢复");
+        }
+        free(data);
+    }
+    /*
+     * 旧版本打开过 RT 且被 SIGKILL/异常退出时，磁盘上的值可能已经是本模块写过的目标值；
+     * 这时把它当"原值"保存就无法真正恢复。提示一次，建议重启后再测恢复逻辑。
+     */
+    bool looks_like_stale_baseline = false;
+    for (size_t i = 0; i < kThreadHintsRtSysctlCount; ++i) {
+        if (g_thread_hints_rt_sysctl_original[i][0] &&
+            strcmp(g_thread_hints_rt_sysctl_original[i], kThreadHintsRtSysctlTargets[i]) == 0) {
+            looks_like_stale_baseline = true;
+            break;
+        }
+    }
+    if (looks_like_stale_baseline) {
+        log_affinity_message("RT sysctl 原值与目标值相同：可能是旧版本残留，重启后再验证恢复逻辑");
+    }
+    g_thread_hints_rt_sysctl_saved = true;
+    if (!g_thread_hints_rt_atexit_registered) {
+        g_thread_hints_rt_atexit_registered = true;
+        atexit(thread_hints_rt_atexit_handler);
+    }
+}
+
+/*
+ * 把 RT 模式改过的 sched_rt_* 恢复为开启前的原值，并复位「已写」标志，
+ * 这样下次开启 RT 会重新保存（新）原值并重新写入。
+ */
+static void thread_hints_rt_restore_sysctls() {
+    if (!g_thread_hints_rt_sysctl_saved) {
+        g_thread_hints_rt_sysctl_done = false;
+        return;
+    }
+    bool restored_any = false;
+    for (size_t i = 0; i < kThreadHintsRtSysctlCount; ++i) {
+        const char* original = g_thread_hints_rt_sysctl_original[i];
+        if (!original[0]) continue;
+        if (!thread_hints_write_text(kThreadHintsRtSysctlPaths[i], original)) {
+            thread_hints_log_rt_sysctl_failure(i, "恢复原值失败");
+            continue;
+        }
+        g_thread_hints_rt_sysctl_original[i][0] = '\0';
+        restored_any = true;
+    }
+    g_thread_hints_rt_sysctl_saved = false;
+    g_thread_hints_rt_sysctl_done = false;
+    if (restored_any) {
+        log_affinity_message("RT sysctl 已恢复为开启前的原值");
+    }
+}
+
+/* 守护进程正常退出时兜底恢复（SIGKILL 无法拦截；游戏退出/切后台由 tick 恢复）。 */
+static void thread_hints_rt_atexit_handler() {
+    thread_hints_rt_restore_sysctls();
 }
 
 /* 解析顶层 rt 对象；线程配置与旧 dyn.json.rt 共用同一套字段语义。 */
@@ -211,6 +335,8 @@ static void thread_hints_rt_restore() {
         }
         g_thread_hints_rt_pid = 0;
     }
+    /* 全局 sysctl 与 pid 恢复解耦：即使 sched_setscheduler 失败，只要写过 sysctl 也要还原。 */
+    thread_hints_rt_restore_sysctls();
 }
 
 /*
@@ -234,10 +360,22 @@ static void thread_hints_tick() {
         if (g_thread_hints_rt_pid != fg_pid) {
             thread_hints_rt_restore();
             if (g_thread_rt.write_sysctls && !g_thread_hints_rt_sysctl_done) {
+                /* 写前保存原值：关闭/切应用/正常退出时恢复，避免全局内核参数残留。 */
+                thread_hints_rt_save_sysctls_once();
+                /*
+                 * 写入顺序：timeslice -> runtime -> period。
+                 * 内核要求 runtime <= period；默认 period=1s / runtime=950ms，
+                 * 若先写 period=30ms 再写 runtime，中间会有一瞬间 runtime > period 的非法窗口。
+                 */
+                static const size_t kRtSysctlApplyOrder[kThreadHintsRtSysctlCount] = {0, 2, 1};
+                for (size_t order = 0; order < kThreadHintsRtSysctlCount; ++order) {
+                    size_t i = kRtSysctlApplyOrder[order];
+                    if (!thread_hints_write_text(kThreadHintsRtSysctlPaths[i],
+                                                 kThreadHintsRtSysctlTargets[i])) {
+                        thread_hints_log_rt_sysctl_failure(i, "写入失败");
+                    }
+                }
                 g_thread_hints_rt_sysctl_done = true;
-                thread_hints_write_text("/proc/sys/kernel/sched_rr_timeslice_ms", "3");
-                thread_hints_write_text("/proc/sys/kernel/sched_rt_period_us", "30000");
-                thread_hints_write_text("/proc/sys/kernel/sched_rt_runtime_us", "29500");
             }
             int policy = (g_thread_rt.policy == "fifo") ? SCHED_FIFO : SCHED_RR;
             struct sched_param sp = {};

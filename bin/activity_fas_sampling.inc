@@ -341,10 +341,21 @@ void load_fas_config() {
     }
 }
 
+/*
+ * queueBuffer 帧信号（布局必须与 线程源码/monitor.bpf.c 的
+ * struct queuebuffer_frame_signal 完全一致，否则 size 检查会丢弃全部帧信号）。
+ *
+ * tgid/tid 由 BPF 侧 bpf_get_current_pid_tgid() 填充：uprobe 全系统生效，
+ * 消费侧靠 tgid == g_queuebuffer_pid 把非目标应用的提交挡在外面。
+ */
 typedef struct {
+    uint32_t tgid;
+    uint32_t tid;
     uint64_t ktime_ns;
     uint64_t buffer;
 } QueueBufferFrameSignal;
+static_assert(sizeof(QueueBufferFrameSignal) == 24,
+              "QueueBufferFrameSignal 布局必须与 monitor.bpf.c 的 struct queuebuffer_frame_signal 一致");
 
 typedef struct {
     uint64_t surface_key;
@@ -366,6 +377,8 @@ typedef struct {
 static std::mutex g_frame_sample_mutex;
 static long long g_queuebuffer_last_wall_ms = 0;
 static uint64_t g_queuebuffer_signal_count = 0;
+/* 非目标进程（或 pid<=0）被过滤掉的帧信号数，用于排查/统计，不参与控制。 */
+static uint64_t g_queuebuffer_filtered_count = 0;
 static uint64_t g_queuebuffer_accepted_count = 0;
 static uint64_t g_queuebuffer_rejected_count = 0;
 static uint64_t g_queuebuffer_last_delta_ns = 0;
@@ -492,6 +505,7 @@ static void clear_queuebuffer_frametimes_locked() {
     g_queuebuffer_primary_key = 0;
     g_queuebuffer_last_wall_ms = 0;
     g_queuebuffer_signal_count = 0;
+    g_queuebuffer_filtered_count = 0;
     g_queuebuffer_accepted_count = 0;
     g_queuebuffer_rejected_count = 0;
     g_queuebuffer_last_delta_ns = 0;
@@ -510,6 +524,15 @@ static int handle_queuebuffer_frame_signal(void* ctx, void* data, size_t size) {
     const QueueBufferFrameSignal* signal = reinterpret_cast<const QueueBufferFrameSignal*>(data);
     std::lock_guard<std::mutex> lock(g_frame_sample_mutex);
     if (g_queuebuffer_pid <= 0) return 0;
+    /*
+     * queueBuffer uprobe 全系统生效：只接受当前目标游戏进程的提交。
+     * 其它应用 / 系统 UI / 无 pid 来源的信号会让 FAS 的帧时间与 FPS 失真，
+     * 这里按 tgid 直接丢弃（不创建 surface 状态、不更新 primary 选择）。
+     */
+    if (signal->tgid != static_cast<uint32_t>(g_queuebuffer_pid)) {
+        g_queuebuffer_filtered_count++;
+        return 0;
+    }
     g_queuebuffer_signal_count++;
 
     QueueBufferSurfaceState* state = find_or_create_queuebuffer_surface_state_locked(signal->buffer);

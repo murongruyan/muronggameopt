@@ -207,7 +207,12 @@ static void apply_render_band(int ci, int pi, int band_min, int band_max,
         if (now - g_render_band_raise_ms[ci] < 120) return;   /* 刚升过频，先稳住 */
         if (now - g_render_band_release_ms[ci] < g_dyn_control.release_hold_ms) return;
         int range = std::max(1, fmax - fmin);
-        int step = std::max(range * g_dyn_control.release_step_permille / 1000, 64000);
+        /*
+         * 64 位中间量：range 可达 ~3.7e6，release_step_permille 配置上限 1000，
+         * int 相乘会越过 INT_MAX（有符号溢出 UB）。取整语义不变（正数先乘后整除）。
+         */
+        long long step_raw = (long long)range * g_dyn_control.release_step_permille / 1000;
+        int step = (int)std::max(step_raw, (long long)64000);
         int next = current - step;
         if (next < want_max) next = want_max;
         applied = round_freq_down_to_table(pi, next);
@@ -1016,11 +1021,18 @@ void handle_dynamic_tuning(const char* current_app) {
                         (upper.ceiling_permille - lower.ceiling_permille) * t / 1000;
                 }
             }
-            daily_floor = fmin + span * floor_permille / 1000;
-            daily_target = fmin + span * ceiling_permille / 1000;
+            /*
+             * span 最大可达 ~4e6、permille 最大 1000，int 相乘会越过 INT_MAX：
+             * 例：SM8650 performance cluster3 span=2,284,800，ceiling=950/1000 即溢出，
+             * daily_target 变负后被下面 "daily_target < daily_floor" 夹回 floor，
+             * 大核上限被错误钉在低档。统一改 64 位中间量；仍是"先乘后整除"的整数截断，
+             * 与原取整语义一致。
+             */
+            daily_floor = fmin + (int)((long long)span * floor_permille / 1000);
+            daily_target = fmin + (int)((long long)span * ceiling_permille / 1000);
             if (daily.soften_permille < 1000 && daily_target > fmin) {
                 daily_target = fmin +
-                    (daily_target - fmin) * daily.soften_permille / 1000;
+                    (int)((long long)(daily_target - fmin) * daily.soften_permille / 1000);
             }
         }
         if (daily_target < daily_floor) daily_target = daily_floor;

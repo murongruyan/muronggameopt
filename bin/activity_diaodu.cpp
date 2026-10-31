@@ -1721,6 +1721,7 @@ namespace UnifiedScheduler {
  */
 #include "activity_freq_utils.inc"
 #include "activity_official_state.inc"
+#include "activity_platform_limits.inc"
 
 /*
  * 纯线程版不编动态调频执行器：频率由 <SoC>.json 的 min/max 走廊 + apply_settings() 决定
