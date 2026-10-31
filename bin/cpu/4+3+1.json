@@ -1,5 +1,6 @@
 {
   "version": 3,
+  "rt": { "enabled": 0, "policy": "rr", "priority": 1, "write_sysctls": 1 },
   "apps": [
     {
       "friendly": "王者荣耀",

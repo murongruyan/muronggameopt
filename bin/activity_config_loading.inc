@@ -1481,6 +1481,12 @@ static void load_thread_json_app_rule_config(cJSON* app_obj, ThreadJsonAppRule* 
     load_thread_json_safety_config(safety, &out->safety);
 }
 
+/*
+ * 线程规则（线程配置）解析入口。
+ * 注意：RT 模式（rt 块）也放在同一份线程配置文件的顶层，但它由
+ * activity_thread_hints.inc 独立解析（完整版/纯线程版共用、约 5s 热更新），
+ * 这里只解析线程角色/签名/按应用规则，不重复读取 rt。
+ */
 static void load_thread_signature_config() {
     // 热更新保护: 构建期间持有 g_mutex 写锁，防止读线程遍历半构建状态
     std::lock_guard<std::shared_mutex> lock(g_mutex);

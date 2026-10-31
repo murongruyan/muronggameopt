@@ -1708,9 +1708,9 @@ namespace UnifiedScheduler {
 }  // namespace UnifiedScheduler
 
 /*
- * 6.12：线程级厂商接口 + 可选全局 RT 模式（完整版 / 纯线程版共用）。
- * 放在调度器之后、动态调频之前，两边都能用；配置仍读 dyn.json 的
- * vendor_hints / rt 块。
+ * 6.12/6.13：线程级厂商接口（vendor_hints，读 dyn.json）+ 可选全局 RT 模式
+ * （rt，读线程配置文件的顶层 rt 块；旧 dyn.json.rt 仅回退兼容）。
+ * 放在调度器之后、动态调频之前，完整版 / 纯线程版共用。
  */
 #include "activity_thread_hints.inc"
 

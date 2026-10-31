@@ -39,12 +39,6 @@
       "p3":       { "0": { "min": 1152000, "max": 2745600 }, "1": { "min": 1209600, "max": 2841600 } }
     }
   },
-  "rt": {
-    "enabled": 0,
-    "policy": "rr",
-    "priority": 1,
-    "write_sysctls": 1
-  },
   "vendor_hints": {
     "enabled": 0,
     "fpsgo": 1,

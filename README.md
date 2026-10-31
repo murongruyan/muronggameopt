@@ -46,13 +46,13 @@
 | **FAS 帧感知调频** | 三相位控制器（CALIBRATING / STABLE / DEGRADED）：帧债、甜点频率、深睡地板、稳定态 headroom、quick_drop、占用率升频；可调 `conservative`、`target_fps_offset_permille`、`fast_down` |
 | **动态调频** | `dyn.json` 阶段表（负载 → 地板/上限千分比）、迟滞、软化、收紧间隔；`corridor_owner` 决定边界由 dyn / fas / mode 谁主导；支持每档位覆盖 |
 | **限流曲线（limiter）** | 负载阶段 `idle/inactive/p1/p2/p3` → 每簇 `min/max` 钳制 + `margins` 曲线 + `excludes/prefer` + `core_ctl`，叠加在 FAS / 日用调频之上（默认关闭） |
-| **自定义线程** | `bin/cpu/<拓扑>.json` 中按 `main / gfx / render / worker / other / extra` 角色匹配线程，支持 `cpus` / `clusters` / `limit` / `nice` / `rr` / `fifo` |
+| **自定义线程** | 线程配置文件（新版 `bin/cpu/<cpuModel>.threads.json`，兼容 `<拓扑>.threads.json` / 旧 `<拓扑>.json`）中按 `main / gfx / render / worker / other / extra` 角色匹配线程，支持 `cpus` / `clusters` / `limit` / `nice` / `rr` / `fifo`；**RT 模式（顶层 `rt` 块）也属于这一层** |
 | **动态线程** | 学习—锁定会话：按负载给未显式规则的线程选簇，迁移节流；支持 `thread_select.strategy = hot / least_cpu` |
 | **线程事件驱动** | eBPF `fork / exec / task_rename / exit`：线程改名后立即按新名字重匹配规则（6.7+） |
 | **语义核名** | `clusters` 支持 `little / mid / big / prime / top / all` 与 `e-core / p-core / hp-core / all-core` |
 | **cpuset + affinity 双写** | 绑核失败时按目标掩码创建 `/dev/cpuset/murong_sched/<hash>` 专用子 cpuset，再重试 `sched_setaffinity`，释放时迁回原组（6.9+） |
 | **厂商接口（可选）** | FPSGO `fbt_attr_by_pid`、WALT `sched_per_task_boost`、`sched_pipeline_special`；默认关闭，只写真实存在的节点 |
-| **RT 模式（可选）** | 前台游戏主线程 `SCHED_RR / SCHED_FIFO` + 可选 `sched_rt_*` sysctl；默认关闭，切后台/退出恢复 |
+| **RT 模式（可选）** | 前台游戏主线程 `SCHED_RR / SCHED_FIFO` + 可选 `sched_rt_*` sysctl；配置在线程配置文件的顶层 `rt` 块（**不再属于 dyn.json**）；默认关闭，切后台/退出恢复 |
 | **前台识别** | Binder `AIBinder_dump`（官方 4 参 ABI，API 29+；fork 子进程隔离，异常自动回退 dumpsys）+ dumpsys 前台组件解析；忽略桌面/输入法/SystemUI |
 | **场景策略** | `config/categories.json` 场景分类与场景默认策略、按应用模式覆盖（`config/mode.txt`） |
 | **官方环境复刻** | 按 `config/official_env.conf` 复刻开发者验证环境：禁用官方增强/定制包、关闭 OIFace、解除 `game_opt` 官方调频限制（可配置关闭） |
@@ -102,9 +102,9 @@ base=1   # 模式基础
 | 想改什么 | 改哪里 |
 |---|---|
 | CPU 模式参数、频率、governor、cpuset、cpuctl | `bin/cpu/<SoC>.json` |
-| 线程角色规则 / 绑核 / nice / RR / FIFO | `bin/cpu/<拓扑>.json`（如 `6+2.json`） |
+| 线程角色规则 / 绑核 / nice / RR / FIFO / **RT 模式（rt）** | `bin/cpu/<cpuModel>.threads.json`（优先；App 写入此文件），内置模板为 `bin/cpu/<拓扑>.json`（如 `6+2.json`） |
 | FAS 甜点/深睡地板/headroom/新参数 | `bin/cpu/fas.json`（`defaults` 与 `deep_floor_freq` / `sweetspot_freq`） |
-| 动态调频阶段表、走廊、limiter、RT、厂商接口 | `bin/cpu/dyn.json` |
+| 动态调频阶段表、走廊、limiter、厂商接口 | `bin/cpu/dyn.json`（旧版 `rt` 仅作回退兼容，见下文） |
 | 场景分类与场景默认策略 | `config/categories.json` |
 | 当前模式 / 按应用模式覆盖 | `config/mode.txt` |
 | 全局功能开关 | `config/sched.txt` |
@@ -151,15 +151,28 @@ base=1   # 模式基础
 - `enabled=1` 后按 cluster0 负载选阶段，对每簇 min/max 做钳制；`apply_fas=1` 表示 FAS 路径也受约束
 - `write_walt=1` 时把该阶段 `margins` 写到对应 policy 的 `walt/target_loads`（节点不存在则跳过）
 
-### RT 模式与厂商接口（默认关闭）
+### RT 模式（线程配置的顶层 `rt`，默认关闭）
+
+RT 属于线程分类，配置在**线程配置文件**的顶层 `rt` 块：新版为 `bin/cpu/<cpuModel>.threads.json`，
+加载器同时兼容 `<拓扑>.threads.json` 与旧命名的 `<拓扑>.json`（如 `6+2.json`）。
+**不再写入 `bin/cpu/dyn.json`**，这样纯线程版（不带 dyn.json）也能读取 RT 配置。
 
 ```json
-"rt": { "enabled": 0, "policy": "rr", "priority": 1, "write_sysctls": 1 },
+"rt": { "enabled": 0, "policy": "rr", "priority": 1, "write_sysctls": 1 }
+```
+
+- `enabled`：是否启用；`policy`：`rr` / `fifo`；`priority`：`1..99`；`write_sysctls`：是否同时写 `sched_rt_*`
+- **兼容旧配置**：线程配置里没有 `rt` 块时，模块回退读取 `bin/cpu/dyn.json` 的 `rt`，并打印一次弃用提示；请尽快把 `rt` 迁到线程配置文件（旧位置后续版本移除）
+- **旧版 App 兼容**：旧版 App 仍把 RT 写入 `dyn.json`，模块会按上述回退路径读取并提示弃用，功能不受影响；新版 App 应写入线程配置文件 `bin/cpu/<cpuModel>.threads.json`
+
+> RT 模式会让游戏主线程进入 SCHED_RR/FIFO，**可能导致卡死/发热**，仅在明确知道风险时开启。
+
+### 厂商接口（`dyn.json → vendor_hints`，默认关闭）
+
+```json
 "vendor_hints": { "enabled": 0, "fpsgo": 1, "walt": 1, "pipeline": 0 },
 "thread_select": { "strategy": "hot" }
 ```
-
-> RT 模式会让游戏主线程进入 SCHED_RR/FIFO，**可能导致卡死/发热**，仅在明确知道风险时开启。
 
 ### 官方环境复刻（`config/official_env.conf`）
 
@@ -207,8 +220,9 @@ game_opt_debug=0
 │   ├── fas/                    # FAS 三相位引擎与配置加载源码
 │   └── cpu/
 │       ├── <SoC>.json          # 模式级 CPU 参数
-│       ├── <拓扑>.json         # 线程角色规则（如 6+2.json）
-│       ├── dyn.json            # 动态调频 / limiter / RT / 厂商接口
+│       ├── <cpuModel>.threads.json  # 线程角色规则 + 顶层 rt（优先加载；App 写入）
+│       ├── <拓扑>.json         # 旧命名线程模板（如 6+2.json，仍兼容；含 rt 块）
+│       ├── dyn.json            # 动态调频 / limiter / 厂商接口（旧版 rt 仅回退兼容）
 │       ├── fas.json            # FAS 配置（甜点/地板/headroom/…）
 │       └── gen_fas.sh          # 按机型频率表生成默认 FAS 参数
 ├── config/
