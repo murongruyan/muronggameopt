@@ -535,11 +535,12 @@ const char* get_thread_signature_config_path() {
             return layout_threads_path;
         }
 
-        static char layout_plain_path[256];
-        safe_snprintf(layout_plain_path, sizeof(layout_plain_path), "%s%s.json", CPU_CONFIG_DIR, layout_name);
-        if (file_exists(layout_plain_path)) {
-            return layout_plain_path;
-        }
+        /*
+         * 不要回退到 <拓扑>.json：那是「模式级 CPU 配置」（频率/调速器/cpuset），
+         * 不是线程签名规则。旧实现把它当线程配置解析，会得到语义完全错误的
+         * 线程规则（且每次读到的内容随 CPU 档位变化）。线程配置不存在时应返回
+         * 一个不存在的 .threads.json 路径，让调用方按「无自定义线程规则」走默认值。
+         */
     }
     return path;
 }
