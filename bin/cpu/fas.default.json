@@ -16,7 +16,7 @@
   },
   "apps": [
     {
-      "friendly": "王者荣耀/cfm/LOLM/球球大作战/金铲铲之战",
+      "friendly": "游戏",
       "packages": [
         "com.tencent.tmgp.sgame",
         "com.levelinfinite.sgameGlobal",
@@ -24,12 +24,7 @@
         "com.tencent.tmgp.cf",
         "com.tencent.lolm",
         "com.ztgame.bob",
-        "com.tencent.jkchess"
-      ]
-    },
-    {
-      "friendly": "和平精英/qq飞车/无畏契约:能源行动/CODM/暗区突围/巅峰极速/荒野行动/极品飞车:集结/DNFM",
-      "packages": [
+        "com.tencent.jkchess",
         "com.tencent.tmgp.pubgmhd",
         "com.tencent.ig",
         "com.pubg.krmobile",
@@ -42,12 +37,7 @@
         "com.netease.hyxd.nearme.gamecenter",
         "com.tencent.nfsonline",
         "com.netease.aceracer.aligames",
-        "com.tencent.tmgp.dnf"
-      ]
-    },
-    {
-      "friendly": "原神/异环/鸣潮/崩坏:星穹铁道/绝区零/第五人格/跑跑卡丁车/元气骑士/少女前线2/明日方舟/战双帕弥什/幻塔/逆水寒/永劫无间/星球重启/晶核/燕云十六声/洛克王国:世界/火影忍者/蛋仔派对/元梦之星/NBA 2K21/香肠派对/迷你世界/尘白禁区/碧蓝航线/重返未来:1999/来自星尘/学园偶像大师/猎魂觉醒/深空之眼/部落冲突/海岛奇兵/一念逍遥/网易狼人杀/崩坏3/阴阳师/炉石传说",
-      "packages": [
+        "com.tencent.tmgp.dnf",
         "com.miHoYo.Yuanshen",
         "com.hottagames.yh.laohu",
         "com.kurogame.mingchao",
@@ -90,7 +80,6 @@
       ]
     }
   ],
-  "projects": [],
   "_murong_remote": {
     "config_version": "0",
     "synced_at": 1777741871294,

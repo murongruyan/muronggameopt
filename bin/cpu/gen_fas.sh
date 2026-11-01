@@ -4,7 +4,7 @@
 #
 # 作用：按【本机真实 CPU 档位表】生成 bin/cpu/fas.json 里的
 #       sweetspot_freq（甜点频率）与 deep_floor_freq（深睡地板），
-#       其它字段（defaults / apps / projects / _murong_remote）原样保留。
+#       其它字段（defaults / apps / _murong_remote）原样保留。
 #
 # 调用时机：安装期（customize.sh）。绝不能每次开机重写：
 #   用户会在软件里手改 fas.json，重写等于冲掉用户配置。
@@ -57,9 +57,9 @@ OLD_MODULE_DIR="${MURONG_OLD_MODULE_DIR:-/data/adb/modules/$MODULE_ID}"
 
 # ---- 比例（千分比，由 SM8850 现有 fas.json 反推）------------------------
 # 甜点比例：模式:簇0/簇>=1
-SS_PM="powersave:354/234 balance:297/107 performance:399/189 fast:542/360"
+SS_PM="powersave:328/173 balance:380/171 performance:481/252 fast:648/483"
 # 深睡地板比例（相对甜点）：模式:簇0[/簇>=1]，"-" 表示该簇不显式写（内核 65% 兜底）
-DF_PM="powersave:680 balance:592/736 performance:655/682 fast:630/587"
+DF_PM="powersave:621/606 balance:465/582 performance:500/552 fast:517/521"
 
 log() { echo "gen_fas: $*"; }
 
