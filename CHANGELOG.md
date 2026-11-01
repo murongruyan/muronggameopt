@@ -1,5 +1,22 @@
 # 更新记录
 
+## 6.17 FAS 频率与配置整理
+
+- FAS 甜点/地板按实测重新标定（真机已生效）：
+  - powersave：甜点 1113600/1267200，地板 691200/768000（日用更省电）
+  - balance：甜点 1900800/1747200，地板 883200/1017600（降地板保低帧，甜点略升保跟手）
+  - performance：甜点 2227200/2227200，地板 1113600/1228800
+  - fast：甜点 2899200/3129600，地板 1497600/1632000
+- `gen_fas.sh` 的 SS_PM/DF_PM 比例同步更新，新装/换 SoC 生成结果一致
+- 清理 `fas.default.json` 死字段 `projects`；`apps` 三组包名列表合并为一组（59 个包，加载数量不变）
+
+## 6.16 按模式固定 msm / IPC
+
+- powersave：msm 0-5:2227200 / 6-7:2438400；IPC c0 全 1363200、c1 全 1497600
+- balance：msm 0-5:2745600 / 6-7:2880000；IPC 自动第 3 档
+- performance：msm 0-5:2899200 / 6-7:3398400；IPC 恢复原始档位
+- fast：msm 0-5:3628800 / 6-7:4608000；IPC 原始档位
+- msm 写后 chmod 0444，模式切换时先 0666 写再锁；模式表生效期间旧 daily/game 逻辑让位
 ## 6.15 模式级系统微调（参考 STRP SmoothUI / Battery）
 
 - powersave 模式同步 STRP「Battery（最大电量）」：dm-* 队列 `read_ahead_kb=128`、`nomerges=0`；基础 prop；`low_power`/`low_power_sticky`/`screen_brightness_mode=1`；drop_caches
