@@ -5,9 +5,11 @@
  * activity_platform_limits.inc —— WALT / msm_performance 平台限制管理（6.13+）
  *
  * 背景：用户反馈 IPC 频率档位突然飙高、日常功耗偏高、msm_performance 的
- * cpu_max_freq 被平台反复改导致帧率不稳。节点语义研究见
- * _module_scan/kernel_notes.md（WALT/msm_performance 实现源码不在手头三棵树里，
- * 节点格式已由真机只读确认，语义部分标注未确认）。
+ * cpu_max_freq 被平台反复改导致帧率不稳。节点语义已由 GitHub 一加开源 6.12 内核
+ * 源码确认（OnePlusOSS/android_kernel_oneplus_sm8850 @ fc30e541），详见
+ * _module_scan/kernel_notes.md §6/§7：ipc_freq_levels 是「IPC 档位→频率上限(kHz)」，
+ * 必须非递减；high_perf_cluster_freq_cap 本版本因 plenty_giant_tasks 从未赋值而空转；
+ * partial_halt 仅 CPU 全暂停窗口生效；msm cpu_max_freq 是该驱动自己的 FREQ_QOS_MAX.
  *
  * 设计原则（保守，不写坏系统）：
  *   1) 只做「读当前值 → 超过配置上限则写回上限、否则不动」，主动放开仅限
@@ -25,6 +27,8 @@
  * 依赖（均在 include 点之前定义）：CONFIG_DIR、safe_snprintf、file_exists、
  * read_text_file、trim_copy、log_config_message(_throttled)、get_current_time_ms。
  */
+
+#include <sys/stat.h>
 
 #define PL_MAX_CLUSTERS 4
 #define PL_IPC_LEVELS 5
@@ -72,6 +76,13 @@ static long long g_platform_limits_last_tick_ms = 0;
 static long long g_platform_limits_last_msm_ms = 0;
 static int g_platform_limits_last_game = -1;
 static char g_platform_limits_msm_baseline[512] = "";
+/* 配置热重载：每 5s 检查 mtime/size，改为「改配置立即生效」，无需重启守护进程。 */
+static long long g_platform_limits_conf_last_mtime_ms = -1;
+static long long g_platform_limits_conf_last_size = -1;
+static long long g_platform_limits_conf_last_check_ms = 0;
+/* IPC 原始值（首次写入前保存），enabled=0/删配置时恢复。 */
+static int g_platform_limits_ipc_original[PL_MAX_CLUSTERS][PL_IPC_LEVELS];
+static bool g_platform_limits_ipc_original_valid[PL_MAX_CLUSTERS] = {false, false, false, false};
 
 static void platform_limits_reset_config() {
     g_platform_limits.enabled = true;
@@ -193,7 +204,8 @@ static bool platform_limits_read_ipc_levels(int cluster, int values[PL_IPC_LEVEL
 
 /*
  * IPC 档位限制：每个元素不超过上限，有变化才写回。
- * 语义未完全确认（见 kernel_notes.md）：只做上限钳制，不做频点吸附。
+ * 语义（源码已确认）：ipc_freq_levels[i] = IPC 档位 i 的频率上限(kHz)，内核校验数组
+ * 非递减；这里只做上限钳制（min），保持非递减，不做频点吸附（真机需确认写值被接受）。
  */
 static void platform_limits_apply_ipc_limits() {
     for (int cluster = 0; cluster < PL_MAX_CLUSTERS; cluster++) {
@@ -222,6 +234,12 @@ static void platform_limits_apply_ipc_limits() {
             log_config_message(msg);
         }
         if (limit <= 0) continue;
+        if (!g_platform_limits_ipc_original_valid[cluster]) {
+            for (int i = 0; i < PL_IPC_LEVELS; i++) {
+                g_platform_limits_ipc_original[cluster][i] = values[i];
+            }
+            g_platform_limits_ipc_original_valid[cluster] = true;
+        }
         bool changed = false;
         int clamped[PL_IPC_LEVELS];
         for (int i = 0; i < PL_IPC_LEVELS; i++) {
@@ -247,6 +265,68 @@ static void platform_limits_apply_ipc_limits() {
             log_config_message_throttled(key, PL_FAIL_LOG_INTERVAL_MS, msg);
         }
     }
+}
+
+/* 恢复 IPC 原始值（enabled=0 / 删除配置时调用，只恢复仍由我们钳制过的簇）。 */
+static void platform_limits_restore_ipc_originals() {
+    for (int cluster = 0; cluster < PL_MAX_CLUSTERS; cluster++) {
+        if (!g_platform_limits_ipc_original_valid[cluster]) continue;
+        char path[192];
+        safe_snprintf(path, sizeof(path), PL_IPC_LEVELS_PATH, cluster);
+        int values[PL_IPC_LEVELS];
+        if (platform_limits_read_ipc_levels(cluster, values)) {
+            bool same = true;
+            for (int i = 0; i < PL_IPC_LEVELS; i++) {
+                if (values[i] != g_platform_limits_ipc_original[cluster][i]) { same = false; break; }
+            }
+            if (!same) {
+                char text[128];
+                safe_snprintf(text, sizeof(text), "%d %d %d %d %d\n",
+                              g_platform_limits_ipc_original[cluster][0], g_platform_limits_ipc_original[cluster][1],
+                              g_platform_limits_ipc_original[cluster][2], g_platform_limits_ipc_original[cluster][3],
+                              g_platform_limits_ipc_original[cluster][4]);
+                platform_limits_write_text(path, text);
+            }
+        }
+        g_platform_limits_ipc_original_valid[cluster] = false;
+    }
+}
+
+/* 配置热重载：每 5s 检查一次配置文件的 mtime/size。 */
+static void platform_limits_maybe_reload_config(long long now_ms) {
+    if (now_ms - g_platform_limits_conf_last_check_ms < 5000) return;
+    g_platform_limits_conf_last_check_ms = now_ms;
+    struct stat st;
+    if (stat(PL_CONF_PATH, &st) != 0) {
+        if (g_platform_limits.enabled) {
+            g_platform_limits.enabled = false;
+            platform_limits_restore_ipc_originals();
+            log_config_message("platform_limits: 配置文件已删除，停止限制并恢复 IPC 原值");
+        }
+        return;
+    }
+    long long mtime_ms = (long long)st.st_mtime * 1000LL;
+    if (mtime_ms == g_platform_limits_conf_last_mtime_ms &&
+        (long long)st.st_size == g_platform_limits_conf_last_size) {
+        return;
+    }
+    g_platform_limits_conf_last_mtime_ms = mtime_ms;
+    g_platform_limits_conf_last_size = (long long)st.st_size;
+    platform_limits_load_config();
+    if (!g_platform_limits.enabled) {
+        platform_limits_restore_ipc_originals();
+        log_config_message("platform_limits: 已禁用，IPC 上限已恢复为初始值");
+        return;
+    }
+    for (int cluster = 0; cluster < PL_MAX_CLUSTERS; cluster++) {
+        if (g_platform_limits.ipc_limit_khz[cluster] != 0) continue;
+        int values[PL_IPC_LEVELS];
+        if (platform_limits_read_ipc_levels(cluster, values) && values[PL_IPC_LEVELS / 2] > 0) {
+            g_platform_limits.ipc_limit_khz[cluster] = values[PL_IPC_LEVELS / 2];
+        }
+    }
+    g_platform_limits_last_game = -1; /* 让场景 caps 重新应用 */
+    log_config_message("platform_limits: 配置已热重载");
 }
 
 /* 读取一个节点里的前 max_count 个整数；返回实际个数（-1=读不到）。 */
@@ -387,9 +467,10 @@ static void platform_limits_record_msm_baseline() {
 
 /*
  * msm cpu_max_freq 稳定化（默认关闭）：
- * 只在游戏中、且配置 enable=1 时，做 raise-only —— 把低于配置值的 CPU 上限抬到
- * 配置值，绝不压低（避免和热管理/平台 QoS 抢控制）。节点可能被平台自动重置，
- * 因此 5s 节流重试。
+ * 源码已确认该节点是本驱动自己的 FREQ_QOS_MAX 请求，最终频率上限 = 所有 QoS 请求的
+ * 最小值 → 向上写只能放松本驱动约束（不能突破 thermal/其它请求），向下写会真实压低。
+ * 因此只在游戏中、且配置 enable=1 时做 raise-only：把低于配置值的 CPU 上限抬到配置值，
+ * 绝不压低；节点可能被平台重置，5s 节流重试。
  */
 static void platform_limits_msm_raise_only() {
     if (!g_platform_limits.msm_enable || !g_platform_limits.msm_cpu_max_freq[0]) return;
@@ -454,6 +535,13 @@ static void platform_limits_init() {
     if (g_platform_limits_inited) return;
     g_platform_limits_inited = true;
     platform_limits_load_config();
+    {
+        struct stat st;
+        if (stat(PL_CONF_PATH, &st) == 0) {
+            g_platform_limits_conf_last_mtime_ms = (long long)st.st_mtime * 1000LL;
+            g_platform_limits_conf_last_size = (long long)st.st_size;
+        }
+    }
 
     /* 解析自动 IPC 上限：读取当前数组第 3 档并固定，方便日志展示与后续不漂移 */
     for (int cluster = 0; cluster < PL_MAX_CLUSTERS; cluster++) {
@@ -484,8 +572,9 @@ static void platform_limits_init() {
  */
 static void platform_limits_tick(long long now_ms, bool is_game) {
     if (!g_platform_limits_inited) platform_limits_init();
-    if (!g_platform_limits.enabled) return;
     if (now_ms <= 0) now_ms = get_current_time_ms();
+    platform_limits_maybe_reload_config(now_ms);
+    if (!g_platform_limits.enabled) return;
 
     int game = is_game ? 1 : 0;
     if (game != g_platform_limits_last_game) {

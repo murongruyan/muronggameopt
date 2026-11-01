@@ -1,6 +1,7 @@
 # 更新记录
 
 ## 6.14 优化批次（免费版）
+- 平台限制配置支持热重载（`config/platform_limits.conf` 改完约 5s 生效，`enabled=0`/删除配置会恢复 IPC 原值）
 
 - 修复：动态调频日用区间千分比换算 int 溢出（大核 span 大时上限被算错/钉在 floor）
 - 新增：DDR 按 GPU 频率动态压制（`config/ddr_gpu_cap.conf`）：GPU≤300MHz → DDR 上限 6389MT/s（本机 3187000kHz）；GPU≥400MHz → 9569MT/s（4780000kHz）；中间线性插值。写全部 `max_freq` 路径，平台持续改写则自动停写；关闭/删配置 5s 内恢复原上限，退出时恢复
