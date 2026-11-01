@@ -5,13 +5,13 @@
       {
         "cluster": 0,
         "governor": "walt",
-        "max_freq": 2611200,
+        "max_freq": 1996800,
         "min_freq": 384000,
         "params": {
           "boost": "0",
           "down_rate_limit_us": "0",
           "hispeed_cond_freq": "787200",
-          "hispeed_freq": "1996800",
+          "hispeed_freq": "1632000",
           "hispeed_load": "90",
           "pl": "",
           "rtg_boost_freq": "787200",
@@ -22,13 +22,13 @@
       {
         "cluster": 1,
         "governor": "walt",
-        "max_freq": 3648000,
+        "max_freq": 2880000,
         "min_freq": 768000,
         "params": {
           "boost": "0",
           "down_rate_limit_us": "0",
           "hispeed_cond_freq": "0",
-          "hispeed_freq": "1862400",
+          "hispeed_freq": "1497600",
           "hispeed_load": "90",
           "pl": "",
           "rtg_boost_freq": "883200",

@@ -138,7 +138,7 @@ static void platform_limits_reset_config() {
     g_platform_limits.msm_readonly = 1;
     g_platform_limits.game_ipc_restore = 1;
     safe_strncpy(g_platform_limits.mode_msm_powersave,
-                 "0:2227200 1:2227200 2:2227200 3:2227200 4:2227200 5:2227200 6:2438400 7:2438400",
+                 "0:1785600 1:1785600 2:1785600 3:1785600 4:1785600 5:1785600 6:1977600 7:1977600",
                  sizeof(g_platform_limits.mode_msm_powersave));
     safe_strncpy(g_platform_limits.mode_msm_balance,
                  "0:2745600 1:2745600 2:2745600 3:2745600 4:2745600 5:2745600 6:2880000 7:2880000",

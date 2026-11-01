@@ -17,10 +17,26 @@
     "rise_hold_ms": 0,
     "fall_hold_ms": 300,
     "stages": [
-      { "load": 40,  "floor": 0,   "ceiling": 250 },
-      { "load": 70,  "floor": 100, "ceiling": 500 },
-      { "load": 88,  "floor": 300, "ceiling": 800 },
-      { "load": 100, "floor": 550, "ceiling": 1000 }
+      {
+        "load": 40,
+        "floor": 0,
+        "ceiling": 250
+      },
+      {
+        "load": 70,
+        "floor": 100,
+        "ceiling": 500
+      },
+      {
+        "load": 88,
+        "floor": 300,
+        "ceiling": 800
+      },
+      {
+        "load": 100,
+        "floor": 550,
+        "ceiling": 1000
+      }
     ]
   },
   "limiter": {
@@ -30,13 +46,64 @@
     "write_walt": 0,
     "load_mode": 1,
     "stage_hysteresis": 5,
-    "stage_load": { "idle": 20, "inactive": 35, "p1": 55, "p2": 75, "p3": 90 },
+    "stage_load": {
+      "idle": 20,
+      "inactive": 35,
+      "p1": 55,
+      "p2": 75,
+      "p3": 90
+    },
     "stages": {
-      "idle":     { "0": { "min": 556800,  "max": 1555200 }, "1": { "min": 768000,  "max": 1689600 } },
-      "inactive": { "0": { "min": 556800,  "max": 1785600 }, "1": { "min": 768000,  "max": 1958400 } },
-      "p1":       { "0": { "min": 748800,  "max": 1996800 }, "1": { "min": 768000,  "max": 1958400 } },
-      "p2":       { "0": { "min": 960000,  "max": 2400000 }, "1": { "min": 1017600, "max": 2438400 } },
-      "p3":       { "0": { "min": 1152000, "max": 2745600 }, "1": { "min": 1209600, "max": 2841600 } }
+      "idle": {
+        "0": {
+          "min": 556800,
+          "max": 1555200
+        },
+        "1": {
+          "min": 768000,
+          "max": 1689600
+        }
+      },
+      "inactive": {
+        "0": {
+          "min": 556800,
+          "max": 1785600
+        },
+        "1": {
+          "min": 768000,
+          "max": 1958400
+        }
+      },
+      "p1": {
+        "0": {
+          "min": 748800,
+          "max": 1996800
+        },
+        "1": {
+          "min": 768000,
+          "max": 1958400
+        }
+      },
+      "p2": {
+        "0": {
+          "min": 960000,
+          "max": 2400000
+        },
+        "1": {
+          "min": 1017600,
+          "max": 2438400
+        }
+      },
+      "p3": {
+        "0": {
+          "min": 1152000,
+          "max": 2745600
+        },
+        "1": {
+          "min": 1209600,
+          "max": 2841600
+        }
+      }
     }
   },
   "vendor_hints": {
@@ -53,10 +120,26 @@
       "enabled": 1,
       "daily": {
         "stages": [
-          { "load": 45,  "floor": 0,   "ceiling": 180 },
-          { "load": 75,  "floor": 80,  "ceiling": 400 },
-          { "load": 90,  "floor": 200, "ceiling": 650 },
-          { "load": 100, "floor": 400, "ceiling": 880 }
+          {
+            "load": 45,
+            "floor": 0,
+            "ceiling": 126
+          },
+          {
+            "load": 75,
+            "floor": 56,
+            "ceiling": 280
+          },
+          {
+            "load": 90,
+            "floor": 140,
+            "ceiling": 455
+          },
+          {
+            "load": 100,
+            "floor": 280,
+            "ceiling": 616
+          }
         ]
       }
     },
@@ -67,10 +150,26 @@
       "enabled": 1,
       "daily": {
         "stages": [
-          { "load": 35,  "floor": 150, "ceiling": 500 },
-          { "load": 65,  "floor": 350, "ceiling": 750 },
-          { "load": 85,  "floor": 550, "ceiling": 950 },
-          { "load": 100, "floor": 800, "ceiling": 1000 }
+          {
+            "load": 35,
+            "floor": 150,
+            "ceiling": 500
+          },
+          {
+            "load": 65,
+            "floor": 350,
+            "ceiling": 750
+          },
+          {
+            "load": 85,
+            "floor": 550,
+            "ceiling": 950
+          },
+          {
+            "load": 100,
+            "floor": 800,
+            "ceiling": 1000
+          }
         ]
       }
     },

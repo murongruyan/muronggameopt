@@ -1,5 +1,11 @@
 # 更新记录
 
+## 6.19 日用功耗重降（powersave）
+
+- 模式表 powersave：msm cpu_max_freq 降到 0-5:1785600 / 6-7:1977600（写后 0444）
+- `SM8850.json` powersave：max_freq 1996800/2880000，walt hispeed_freq 1632000/1497600
+- `dyn.json` powersave 日用档位整体 ×0.7（0-126 / 56-280 / 140-455 / 280-616‰）
+- FAS 与日用功耗无关（FAS 仅对 FAS 应用列表内应用生效），本次改的是非 FAS 日用路径；balance/游戏参数不变
 ## 6.18 配置清理 / 线程配置更新
 
 - 提交用户提供的 `bin/cpu/6+2.json` 线程配置（按 6+2 拓扑）
