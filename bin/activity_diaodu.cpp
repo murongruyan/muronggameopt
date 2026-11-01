@@ -522,9 +522,6 @@ typedef struct {
 CpuPolicy cpu_policies[MAX_POLICIES];
 CpuCluster cpu_clusters[MAX_CLUSTERS];
 CpusetSettings cpuset;
-
-// 游戏场景（WALT/调速器/cpuset）激活时，平台限制与动态调频让出控制权。
-bool g_game_scenario_active = false;
 DdrSettings ddr;
 GpuSettings gpu;
 SchedBoostSettings sched_boost_settings;
@@ -1725,7 +1722,7 @@ namespace UnifiedScheduler {
 #include "activity_freq_utils.inc"
 #include "activity_official_state.inc"
 #include "activity_platform_limits.inc"
-#include "activity_game_scenario.inc"
+#include "activity_system_tweaks.inc"
 
 /*
  * 纯线程版不编动态调频执行器：频率由 <SoC>.json 的 min/max 走廊 + apply_settings() 决定

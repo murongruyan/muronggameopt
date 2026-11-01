@@ -728,7 +728,6 @@ static void platform_limits_init() {
  */
 static void platform_limits_tick(long long now_ms, bool is_game) {
     if (!g_platform_limits_inited) platform_limits_init();
-    if (g_game_scenario_active) return; /* 游戏场景接管中，避免两边抢写同一批节点 */
     if (now_ms <= 0) now_ms = get_current_time_ms();
     platform_limits_maybe_reload_config(now_ms);
     if (!g_platform_limits.enabled) return;

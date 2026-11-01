@@ -1,10 +1,12 @@
 # 更新记录
 
-## 6.15 游戏场景 / msm 固定上限
+## 6.15 模式级系统微调（参考 STRP SmoothUI / Battery）
 
-- 新增游戏场景（`config/game_scenario.conf`，默认 CFM `com.tencent.tmgp.cf`）：仅当配置的游戏包名在前台时应用——performance 调速器、max 2745600/2880000、min 384000/768000、cpuset 0-6、WALT 上限 1497600/1555200、IPC 档位 1497600×5 / 1555200×5、core_ctl 关闭；退出游戏自动恢复进入前的原值（借鉴 cfm运行中.sh / cfm结束运行.sh）
-- 游戏场景激活期间，动态调频与平台限制自动让出控制权，避免互相抢写；场景内每 2s 重新贴一次 governor/频率，防止模式配置覆盖
-- `config/platform_limits.conf` 新增 `daily_msm_cpu_max_freq` / `game_msm_cpu_max_freq` / `msm_readonly` / `game_ipc_restore`：日常把 msm cpu_max_freq 固定为 0-5:2745600、6-7:2880000 并 chmod 0444 防平台改写；游戏时恢复 IPC 原始档位；禁用/删配置/退出恢复原值与权限
+- powersave 模式同步 STRP「Battery（最大电量）」：dm-* 队列 `read_ahead_kb=128`、`nomerges=0`；基础 prop；`low_power`/`low_power_sticky`/`screen_brightness_mode=1`；drop_caches
+- balance / performance / fast 模式同步 STRP「SmoothUI（平滑）」：dm-* 队列 `read_ahead_kb=32`、`nomerges=2`；基础 prop；`ctl.start=perfd/thermald/thermal-engine/mpdecision`；`low_power=0` 等；drop_caches
+- 未照搬 `ctl.stop=logd/statsd`：本模块按前台模式频繁切换，停日志服务会波及系统和抓日志；保留性能/温控服务启动
+- 模式切换时执行一次，不改 CPU 频率/电压（仍由本模块原有模式配置管理）
+- 沿用 6.15 早前提交：msm cpu_max_freq 日常固定 0-5:2745600 / 6-7:2880000 并 chmod 0444、游戏时恢复 IPC 原始档位
 ## 6.14 优化批次（免费版）
 - 平台限制配置支持热重载（`config/platform_limits.conf` 改完约 5s 生效，`enabled=0`/删除配置会恢复 IPC 原值）
 

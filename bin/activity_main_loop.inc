@@ -371,7 +371,7 @@ void run_main_loop() {
         handle_dynamic_tuning(current_app_buf);
         enforce_gpu_ddr_limits(false);
         platform_limits_tick(now_ms, platform_limits_is_game);
-        game_scenario_tick(now_ms, current_app_buf);
+        system_tweaks_tick(current_app_buf);
         UnifiedScheduler::run_scheduler_step();
         emit_runtime_stats_snapshot(current_app_buf, get_current_time_ms());
         // --- 动态调频处理结束 ---
