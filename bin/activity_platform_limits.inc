@@ -57,8 +57,13 @@ struct PlatformLimitsConfig {
     int daily_partial_halt;
     int game_high_perf_cap;
     int game_partial_halt;
-    int msm_enable;                      /* 0=只记录基线；1=游戏中 raise-only */
+    int msm_enable;                      /* 0=只记录基线；1=游戏中 raise-only（旧选项） */
     char msm_cpu_max_freq[256];          /* "cpu:khz cpu:khz ..." */
+    /* 6.15：msm cpu_max_freq 固定上限（借鉴大肥鱼方案：日常固定 cap + chmod 0444 防平台改写）。 */
+    char daily_msm_cpu_max_freq[256];    /* 空 = 不管理 */
+    char game_msm_cpu_max_freq[256];     /* 空 = 游戏中沿用日常值 */
+    int msm_readonly;                    /* 1=写完后 chmod 0444，阻止平台/性能服务改写 */
+    int game_ipc_restore;                /* 1=游戏时恢复 IPC 原始档位，避免被日常 IPC 上限压住 */
 };
 
 static PlatformLimitsConfig g_platform_limits = {
@@ -69,13 +74,25 @@ static PlatformLimitsConfig g_platform_limits = {
     PL_INT_UNLIMITED,
     PL_INT_UNLIMITED,
     0,
-    ""
+    "",
+    "",
+    "",
+    1,
+    1
 };
 static bool g_platform_limits_inited = false;
 static long long g_platform_limits_last_tick_ms = 0;
 static long long g_platform_limits_last_msm_ms = 0;
 static int g_platform_limits_last_game = -1;
 static char g_platform_limits_msm_baseline[512] = "";
+/* msm cpu_max_freq 接管状态：首次写入前保存原文本/权限，禁用或退出时恢复。 */
+static char g_platform_limits_msm_original[512] = "";
+static mode_t g_platform_limits_msm_original_mode = 0644;
+static bool g_platform_limits_msm_original_valid = false;
+static bool g_platform_limits_msm_applied = false;
+/* 前置声明：热重载恢复逻辑在文件靠前位置调用，定义在后面的 msm 接管函数之后。 */
+static void platform_limits_apply_msm_caps(bool is_game);
+static void platform_limits_restore_all();
 /* 配置热重载：每 5s 检查 mtime/size，改为「改配置立即生效」，无需重启守护进程。 */
 static long long g_platform_limits_conf_last_mtime_ms = -1;
 static long long g_platform_limits_conf_last_size = -1;
@@ -95,6 +112,10 @@ static void platform_limits_reset_config() {
     g_platform_limits.game_partial_halt = PL_INT_UNLIMITED;
     g_platform_limits.msm_enable = 0;
     g_platform_limits.msm_cpu_max_freq[0] = '\0';
+    g_platform_limits.daily_msm_cpu_max_freq[0] = '\0';
+    g_platform_limits.game_msm_cpu_max_freq[0] = '\0';
+    g_platform_limits.msm_readonly = 1;
+    g_platform_limits.game_ipc_restore = 1;
 }
 
 static int platform_limits_parse_int(const std::string& value, int fallback) {
@@ -144,6 +165,24 @@ static void platform_limits_apply_kv(const std::string& key, const std::string& 
     if (key == "msm_cpu_max_freq") {
         safe_strncpy(g_platform_limits.msm_cpu_max_freq, value.c_str(),
                      sizeof(g_platform_limits.msm_cpu_max_freq));
+        return;
+    }
+    if (key == "daily_msm_cpu_max_freq") {
+        safe_strncpy(g_platform_limits.daily_msm_cpu_max_freq, value.c_str(),
+                     sizeof(g_platform_limits.daily_msm_cpu_max_freq));
+        return;
+    }
+    if (key == "game_msm_cpu_max_freq") {
+        safe_strncpy(g_platform_limits.game_msm_cpu_max_freq, value.c_str(),
+                     sizeof(g_platform_limits.game_msm_cpu_max_freq));
+        return;
+    }
+    if (key == "msm_readonly") {
+        g_platform_limits.msm_readonly = platform_limits_parse_int(value, 1) != 0 ? 1 : 0;
+        return;
+    }
+    if (key == "game_ipc_restore") {
+        g_platform_limits.game_ipc_restore = platform_limits_parse_int(value, 1) != 0 ? 1 : 0;
         return;
     }
 }
@@ -300,8 +339,8 @@ static void platform_limits_maybe_reload_config(long long now_ms) {
     if (stat(PL_CONF_PATH, &st) != 0) {
         if (g_platform_limits.enabled) {
             g_platform_limits.enabled = false;
-            platform_limits_restore_ipc_originals();
-            log_config_message("platform_limits: 配置文件已删除，停止限制并恢复 IPC 原值");
+            platform_limits_restore_all();
+            log_config_message("platform_limits: 配置文件已删除，停止限制并恢复 IPC/msm 原值");
         }
         return;
     }
@@ -314,8 +353,8 @@ static void platform_limits_maybe_reload_config(long long now_ms) {
     g_platform_limits_conf_last_size = (long long)st.st_size;
     platform_limits_load_config();
     if (!g_platform_limits.enabled) {
-        platform_limits_restore_ipc_originals();
-        log_config_message("platform_limits: 已禁用，IPC 上限已恢复为初始值");
+        platform_limits_restore_all();
+        log_config_message("platform_limits: 已禁用，IPC/msm 限制已恢复初始值");
         return;
     }
     for (int cluster = 0; cluster < PL_MAX_CLUSTERS; cluster++) {
@@ -414,6 +453,9 @@ static void platform_limits_apply_partial_halt(int cap) {
     }
 }
 
+static void platform_limits_apply_msm_caps(bool is_game);
+static void platform_limits_restore_all();
+
 /* 游戏状态切换时应用日常/游戏两套 cap（只在切换时写，避免每 tick 抢写）。 */
 static void platform_limits_apply_caps(bool is_game) {
     int high_perf_cap = is_game ? g_platform_limits.game_high_perf_cap
@@ -422,6 +464,11 @@ static void platform_limits_apply_caps(bool is_game) {
                                : g_platform_limits.daily_partial_halt;
     platform_limits_apply_high_perf_cap(high_perf_cap);
     platform_limits_apply_partial_halt(partial_halt);
+    platform_limits_apply_msm_caps(is_game);
+    /* 游戏时恢复 IPC 原始档位，避免日常 IPC 上限把游戏频率压住（借鉴大肥鱼方案）。 */
+    if (is_game && g_platform_limits.game_ipc_restore) {
+        platform_limits_restore_ipc_originals();
+    }
 }
 
 /* 解析 "cpu:khz cpu:khz ..." 文本到数组；返回 pair 数。 */
@@ -531,6 +578,105 @@ static void platform_limits_msm_raise_only() {
     }
 }
 
+/* 设置 msm cpu_max_freq 节点权限（0444 用于阻止平台/性能服务改写，0444 前需 0666 才可写）。 */
+static void platform_limits_msm_chmod(mode_t mode) {
+    if (chmod(PL_MSM_CPU_MAX_FREQ_PATH, mode) != 0) {
+        log_config_message_throttled("platform_limits_msm_chmod", PL_FAIL_LOG_INTERVAL_MS,
+                                     "platform_limits: chmod msm cpu_max_freq 失败");
+    }
+}
+
+/* 首次接管前保存原文本与权限。 */
+static void platform_limits_msm_capture_original() {
+    if (g_platform_limits_msm_original_valid) return;
+    struct stat st;
+    if (stat(PL_MSM_CPU_MAX_FREQ_PATH, &st) == 0) {
+        g_platform_limits_msm_original_mode = st.st_mode & 0777;
+    }
+    char text[512];
+    if (read_text_file(PL_MSM_CPU_MAX_FREQ_PATH, text, sizeof(text))) {
+        std::string trimmed = trim_copy(std::string(text));
+        safe_strncpy(g_platform_limits_msm_original, trimmed.c_str(),
+                     sizeof(g_platform_limits_msm_original));
+        g_platform_limits_msm_original_valid = true;
+    }
+}
+
+/* 写 msm cpu_max_freq（自动记录原值、按配置决定是否 chmod 0444）。 */
+static bool platform_limits_msm_write_raw(const char* text_in) {
+    if (!text_in || !text_in[0]) return false;
+    if (!file_exists(PL_MSM_CPU_MAX_FREQ_PATH)) return false;
+    platform_limits_msm_capture_original();
+    platform_limits_msm_chmod(0666);
+    char text[512];
+    safe_snprintf(text, sizeof(text), "%s\n", text_in);
+    bool ok = platform_limits_write_text(PL_MSM_CPU_MAX_FREQ_PATH, text);
+    if (ok && g_platform_limits.msm_readonly) {
+        platform_limits_msm_chmod(0444);
+    }
+    if (ok) g_platform_limits_msm_applied = true;
+    return ok;
+}
+
+/* 恢复 msm cpu_max_freq 原值与原权限。 */
+static void platform_limits_restore_msm() {
+    if (!g_platform_limits_msm_applied) return;
+    platform_limits_msm_chmod(0666);
+    if (g_platform_limits_msm_original_valid && g_platform_limits_msm_original[0]) {
+        char text[512];
+        safe_snprintf(text, sizeof(text), "%s\n", g_platform_limits_msm_original);
+        platform_limits_write_text(PL_MSM_CPU_MAX_FREQ_PATH, text);
+    }
+    platform_limits_msm_chmod(g_platform_limits_msm_original_mode);
+    g_platform_limits_msm_applied = false;
+    g_platform_limits_msm_original_valid = false;
+    log_config_message("platform_limits: 已恢复 msm cpu_max_freq 原值与权限");
+}
+
+/* 按当前场景应用 msm cpu_max_freq 固定上限（空=不管理/沿用日常）。 */
+static void platform_limits_apply_msm_caps(bool is_game) {
+    const char* target = is_game ? g_platform_limits.game_msm_cpu_max_freq
+                                 : g_platform_limits.daily_msm_cpu_max_freq;
+    if (is_game && (!target || !target[0])) {
+        target = g_platform_limits.daily_msm_cpu_max_freq;
+    }
+    if (!target || !target[0]) {
+        platform_limits_restore_msm();
+        return;
+    }
+    char current_text[512];
+    if (read_text_file(PL_MSM_CPU_MAX_FREQ_PATH, current_text, sizeof(current_text))) {
+        std::string current = trim_copy(std::string(current_text));
+        std::string wanted = trim_copy(std::string(target));
+        if (current == wanted) {
+            if (g_platform_limits.msm_readonly) platform_limits_msm_chmod(0444);
+            g_platform_limits_msm_applied = true;
+            return;
+        }
+    }
+    if (platform_limits_msm_write_raw(target)) {
+        char msg[420];
+        safe_snprintf(msg, sizeof(msg), "platform_limits: msm cpu_max_freq 固定为 %s（%s）",
+                      target, is_game ? "游戏" : "日常");
+        log_config_message_throttled("platform_limits_msm_cap", PL_CHANGE_LOG_INTERVAL_MS, msg);
+    } else {
+        log_config_message_throttled("platform_limits_msm_cap_fail", PL_FAIL_LOG_INTERVAL_MS,
+                                     "platform_limits: 写入 msm cpu_max_freq 失败");
+    }
+}
+
+/* 禁用/退出：恢复 IPC 原始档位、msm 原值，并把两个 WALT cap 恢复默认不限制。 */
+static void platform_limits_restore_all() {
+    platform_limits_restore_ipc_originals();
+    platform_limits_restore_msm();
+    platform_limits_apply_high_perf_cap(PL_INT_UNLIMITED);
+    platform_limits_apply_partial_halt(PL_INT_UNLIMITED);
+}
+
+static void platform_limits_atexit_restore() {
+    platform_limits_restore_all();
+}
+
 static void platform_limits_init() {
     if (g_platform_limits_inited) return;
     g_platform_limits_inited = true;
@@ -553,6 +699,8 @@ static void platform_limits_init() {
     }
 
     platform_limits_record_msm_baseline();
+    platform_limits_apply_msm_caps(false);
+    atexit(platform_limits_atexit_restore);
 
     char msg[448];
     safe_snprintf(msg, sizeof(msg),
@@ -563,6 +711,14 @@ static void platform_limits_init() {
                   g_platform_limits.daily_high_perf_cap, g_platform_limits.daily_partial_halt,
                   g_platform_limits.game_high_perf_cap, g_platform_limits.game_partial_halt,
                   g_platform_limits.msm_enable);
+    if (g_platform_limits.daily_msm_cpu_max_freq[0]) {
+        char msm_msg[420];
+        safe_snprintf(msm_msg, sizeof(msm_msg),
+                      "platform_limits: msm 日常上限 = %s | msm_readonly=%d | game_ipc_restore=%d",
+                      g_platform_limits.daily_msm_cpu_max_freq,
+                      g_platform_limits.msm_readonly, g_platform_limits.game_ipc_restore);
+        log_config_message(msm_msg);
+    }
     log_config_message(msg);
 }
 
@@ -585,7 +741,10 @@ static void platform_limits_tick(long long now_ms, bool is_game) {
     if (now_ms - g_platform_limits_last_tick_ms < PL_TICK_INTERVAL_MS) return;
     g_platform_limits_last_tick_ms = now_ms;
 
-    platform_limits_apply_ipc_limits();
+    /* 游戏中且开启 game_ipc_restore 时，不再把 IPC 档位钳到日常上限（游戏允许更高档位）。 */
+    if (!(is_game && g_platform_limits.game_ipc_restore)) {
+        platform_limits_apply_ipc_limits();
+    }
 
     if (g_platform_limits.msm_enable && is_game &&
         now_ms - g_platform_limits_last_msm_ms >= PL_MSM_TICK_INTERVAL_MS) {
