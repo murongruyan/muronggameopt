@@ -79,17 +79,5 @@
         "com.hearthstone"
       ]
     }
-  ],
-  "_murong_remote": {
-    "config_version": "0",
-    "synced_at": 1777741871294,
-    "managed_packages": [],
-    "watermark": {
-      "trace_id": "22ed4cbf4e095346e521e5b1",
-      "user_hash": "edbb9b822196248e",
-      "device_hash": "2e590aec20919afa",
-      "config_version": "0",
-      "issued_at": "2026-05-03T01:11:11+08:00"
-    }
-  }
+  ]
 }

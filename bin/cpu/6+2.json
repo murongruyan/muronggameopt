@@ -37,57 +37,42 @@
       }
     },
     {
-      "friendly": "cfm",
-      "packages": [
-        "com.tencent.tmgp.cf"
-      ],
-      "main": {
-        "match": [
-          "UnityMain"
-        ],
-        "limit": 1,
-        "cpus": "7"
-      },
-      "gfx": {
-        "match": [
-          "UnityGfx*"
-        ],
-        "limit": 1,
-        "cpus": "5"
-      },
-      "other": {
-        "nice": -1,
-        "cpus": "0-5"
-      }
-    },
-    {
       "friendly": "Unity主线程保底组",
       "packages": [
         "com.tencent.lolm",
         "com.ztgame.bob",
         "com.Sunborn.SnqxExilium",
-        "com.tencent.tmgp.speedmobile"
+        "com.tencent.tmgp.speedmobile",
+        "com.tencent.tmgp.cf",
+        "com.tencent.tmgp.WePop",
+        "com.ChillyRoom.DungeonShooter"
       ],
       "main": {
         "match": [
           "UnityMain"
         ],
         "limit": 1,
-        "cpus": "7"
+        "cpus": "6-7",
+        "cpu": "6"
       },
       "gfx": {
         "match": [
           "UnityGfx*"
         ],
         "limit": 1,
-        "cpus": "5"
+        "cpus": "0-5",
+        "cpu": "5"
       },
       "worker": {
         "match": [
           "worker"
         ],
         "limit": 3,
-        "cpus": "3-4"
+        "cpus": "4-5"
+      },
+      "other": {
+        "nice": -1,
+        "cpus": "0-5"
       }
     },
     {
@@ -107,67 +92,23 @@
           "UnityMain"
         ],
         "limit": 1,
-        "cpus": "7"
+        "cpus": "6-7",
+        "cpu": "6"
       },
       "gfx": {
         "match": [
           "UnityGfx*"
         ],
         "limit": 1,
-        "cpus": "5"
+        "cpus": "6-7",
+        "cpu": "7"
       },
       "worker": {
         "match": [
           "worker"
         ],
         "limit": 3,
-        "cpus": "3-4"
-      }
-    },
-    {
-      "friendly": "跑跑卡丁车",
-      "packages": [
-        "com.tencent.tmgp.WePop"
-      ],
-      "main": {
-        "match": [
-          "UnityMain"
-        ],
-        "limit": 1,
-        "cpus": "7"
-      },
-      "extra:[UnityChoreograp*]": {
-        "limit": 1
-      },
-      "extra:[Job.worker*]": {
-        "limit": 3
-      }
-    },
-    {
-      "friendly": "原神",
-      "packages": [
-        "com.miHoYo.Yuanshen"
-      ],
-      "main": {
-        "match": [
-          "UnityMain"
-        ],
-        "limit": 1,
-        "cpus": "7"
-      },
-      "gfx": {
-        "match": [
-          "UnityGfx*"
-        ],
-        "limit": 1,
-        "cpus": "5"
-      },
-      "worker": {
-        "match": [
-          "worker"
-        ],
-        "limit": 3,
-        "cpus": "3-4"
+        "cpus": "4-5"
       },
       "other": {
         "nice": -1,
@@ -184,45 +125,23 @@
           "Thread[0-20]"
         ],
         "limit": 1,
-        "cpus": "7"
+        "cpus": "6-7",
+        "cpu": "6"
       },
       "gfx": {
         "match": [
           "RenderThread*"
         ],
         "limit": 1,
-        "cpus": "5"
+        "cpus": "6-7",
+        "cpu": "7"
       },
       "worker": {
         "match": [
           "RHIThread*"
         ],
         "limit": 3,
-        "cpus": "3-4"
-      },
-      "other": {
-        "nice": -1,
-        "cpus": "0-5"
-      }
-    },
-    {
-      "friendly": "元气骑士",
-      "packages": [
-        "com.ChillyRoom.DungeonShooter"
-      ],
-      "main": {
-        "match": [
-          "UnityMain"
-        ],
-        "limit": 1,
-        "cpus": "7"
-      },
-      "gfx": {
-        "match": [
-          "UnityGfx*"
-        ],
-        "limit": 1,
-        "cpus": "5"
+        "cpus": "4-5"
       },
       "other": {
         "nice": -1,
@@ -252,71 +171,14 @@
         "com.netease.party",
         "com.t2ksports.nba2k21and",
         "com.sofunny.Sausage",
-        "com.playmini.miniworld"
-      ],
-      "main": {
-        "match": [
-          "UnityMain"
-        ],
-        "limit": 1,
-        "cpus": "7"
-      },
-      "gfx": {
-        "match": [
-          "UnityGfx*"
-        ],
-        "limit": 1,
-        "cpus": "5"
-      }
-    },
-    {
-      "friendly": "深空之眼",
-      "packages": [
-        "com.yongshi.tenojo.ys"
-      ],
-      "main": {
-        "match": [
-          "UnityMain"
-        ],
-        "limit": 1,
-        "cpus": "7"
-      },
-      "gfx": {
-        "match": [
-          "UnityGfx*"
-        ],
-        "limit": 1,
-        "cpus": "5"
-      }
-    },
-    {
-      "friendly": "轻量Unity主大核+Gfx大核",
-      "packages": [
+        "com.playmini.miniworld",
+        "com.yongshi.tenojo.ys",
         "com.hearthstone",
         "com.netease.onmyoji",
         "com.tencent.KiHan",
         "com.tencent.jkchess",
         "com.tencent.tmgp.cod",
-        "com.bandainamcoent.idolmaster_gakuen"
-      ],
-      "main": {
-        "match": [
-          "UnityMain"
-        ],
-        "limit": 1,
-        "cpus": "7"
-      },
-      "gfx": {
-        "match": [
-          "UnityGfx*"
-        ],
-        "limit": 1,
-        "cpus": "5"
-      }
-    },
-    {
-      "friendly": "轻量主线程保底",
-      "packages": [
+        "com.bandainamcoent.idolmaster_gakuen",
         "com.jwestern.m4d",
         "com.tencent.tmgp.dnf",
         "com.tencent.tmgp.supercell.clashofclans",
@@ -331,7 +193,27 @@
           "UnityMain"
         ],
         "limit": 1,
-        "cpus": "7"
+        "cpus": "6-7",
+        "cpu": "6"
+      },
+      "gfx": {
+        "match": [
+          "UnityGfx*"
+        ],
+        "limit": 1,
+        "cpus": "0-5",
+        "cpu": "5"
+      },
+      "worker": {
+        "match": [
+          "worker"
+        ],
+        "limit": 3,
+        "cpus": "4-5"
+      },
+      "other": {
+        "nice": -1,
+        "cpus": "0-5"
       }
     },
     {
@@ -369,6 +251,9 @@
         ],
         "limit": 1,
         "cpus": "5"
+      },
+      "other": {
+        "cpus": "0-5"
       }
     },
     {
@@ -391,6 +276,9 @@
         ],
         "limit": 1,
         "cpus": "5"
+      },
+      "other": {
+        "cpus": "0-5"
       }
     },
     {
@@ -490,6 +378,9 @@
         ],
         "limit": 2,
         "cpus": "3-4"
+      },
+      "other": {
+        "cpus": "0-5"
       }
     },
     {
@@ -520,6 +411,9 @@
         ],
         "limit": 3,
         "cpus": "3-4"
+      },
+      "other": {
+        "cpus": "0-5"
       }
     },
     {
@@ -569,6 +463,9 @@
         ],
         "limit": 2,
         "cpus": "3-4"
+      },
+      "other": {
+        "cpus": "0-5"
       }
     },
     {

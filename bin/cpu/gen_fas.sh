@@ -4,7 +4,7 @@
 #
 # 作用：按【本机真实 CPU 档位表】生成 bin/cpu/fas.json 里的
 #       sweetspot_freq（甜点频率）与 deep_floor_freq（深睡地板），
-#       其它字段（defaults / apps / _murong_remote）原样保留。
+#       其它字段（defaults / apps）原样保留。
 #
 # 调用时机：安装期（customize.sh）。绝不能每次开机重写：
 #   用户会在软件里手改 fas.json，重写等于冲掉用户配置。
