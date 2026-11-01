@@ -684,6 +684,7 @@ static void control_trace_maybe_emit(long long now_ms, const char* app) {
 }
 
 void handle_dynamic_tuning(const char* current_app) {
+    if (g_game_scenario_active) return; /* 游戏场景接管期间暂停动态调频写频 */
     long long now = get_current_time_ms();
     static long long last_t = 0;
     static long long last_detail_log_ms = 0;
