@@ -103,8 +103,8 @@ static void st_apply_smooth_ui() {
     st_setprop("ctl.start", "thermald");
     st_setprop("ctl.start", "thermal-engine");
     st_setprop("ctl.start", "mpdecision");
-    /* 不照搬 ctl.stop=logd/statsd：本模块按前台模式频繁切换，停日志服务会波及系统/抓日志；
-     * STRP 那套是全局 profile 才会这么干。保留 perfd/thermald/thermal-engine 启动。 */
+    st_setprop("ctl.stop", "logd");
+    st_setprop("ctl.stop", "statsd");
     st_settings_put("global", "low_power", "0");
     st_settings_put("global", "low_power_sticky", "0");
     st_settings_put("system", "screen_brightness_mode", "0");
@@ -113,6 +113,9 @@ static void st_apply_smooth_ui() {
 }
 
 static void st_apply_battery() {
+    /* 从 SmoothUI 切到 Battery 时把日志服务拉回来，避免日志一直是停的。 */
+    st_setprop("ctl.start", "logd");
+    st_setprop("ctl.start", "statsd");
     st_apply_io(128, 0);
     st_apply_base_props();
     st_settings_put("global", "low_power", "1");

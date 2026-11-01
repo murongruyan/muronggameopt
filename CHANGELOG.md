@@ -4,7 +4,7 @@
 
 - powersave 模式同步 STRP「Battery（最大电量）」：dm-* 队列 `read_ahead_kb=128`、`nomerges=0`；基础 prop；`low_power`/`low_power_sticky`/`screen_brightness_mode=1`；drop_caches
 - balance / performance / fast 模式同步 STRP「SmoothUI（平滑）」：dm-* 队列 `read_ahead_kb=32`、`nomerges=2`；基础 prop；`ctl.start=perfd/thermald/thermal-engine/mpdecision`；`low_power=0` 等；drop_caches
-- 未照搬 `ctl.stop=logd/statsd`：本模块按前台模式频繁切换，停日志服务会波及系统和抓日志；保留性能/温控服务启动
+- 平滑模式同步 `ctl.stop=logd/statsd`（启动 perfd/thermald/thermal-engine/mpdecision 后停日志服务）；切回省电模式时自动 `ctl.start=logd/statsd` 恢复
 - 模式切换时执行一次，不改 CPU 频率/电压（仍由本模块原有模式配置管理）
 - 沿用 6.15 早前提交：msm cpu_max_freq 日常固定 0-5:2745600 / 6-7:2880000 并 chmod 0444、游戏时恢复 IPC 原始档位
 ## 6.14 优化批次（免费版）
