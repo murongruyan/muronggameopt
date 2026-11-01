@@ -64,6 +64,20 @@ struct PlatformLimitsConfig {
     char game_msm_cpu_max_freq[256];     /* 空 = 游戏中沿用日常值 */
     int msm_readonly;                    /* 1=写完后 chmod 0444，阻止平台/性能服务改写 */
     int game_ipc_restore;                /* 1=游戏时恢复 IPC 原始档位，避免被日常 IPC 上限压住 */
+    /* 6.16：按模式固定 msm cpu_max_freq / IPC 档位（system_tweaks 模式切换时调用）。
+     * 空字符串 = 该模式不改；IPC 值规则："0"=自动取第 3 档，"-1"=恢复原始值，否则为 5 个 kHz 值。 */
+    char mode_msm_powersave[256];
+    char mode_msm_balance[256];
+    char mode_msm_performance[256];
+    char mode_msm_fast[256];
+    char mode_ipc_powersave_c0[64];
+    char mode_ipc_powersave_c1[64];
+    char mode_ipc_balance_c0[64];
+    char mode_ipc_balance_c1[64];
+    char mode_ipc_performance_c0[64];
+    char mode_ipc_performance_c1[64];
+    char mode_ipc_fast_c0[64];
+    char mode_ipc_fast_c1[64];
 };
 
 static PlatformLimitsConfig g_platform_limits = {
@@ -78,7 +92,9 @@ static PlatformLimitsConfig g_platform_limits = {
     "",
     "",
     1,
-    1
+    1,
+    "", "", "", "",
+    "", "", "", "", "", "", "", ""
 };
 static bool g_platform_limits_inited = false;
 static long long g_platform_limits_last_tick_ms = 0;
@@ -93,6 +109,11 @@ static bool g_platform_limits_msm_applied = false;
 /* 前置声明：热重载恢复逻辑在文件靠前位置调用，定义在后面的 msm 接管函数之后。 */
 static void platform_limits_apply_msm_caps(bool is_game);
 static void platform_limits_restore_all();
+static void platform_limits_apply_mode_tweaks(const char* mode);
+static void platform_limits_init();
+/* 6.16 模式表状态（定义放文件靠前，恢复/重载逻辑要用）。 */
+static char g_platform_limits_active_mode[32] = "";
+static bool g_platform_limits_mode_override = false;
 /* 配置热重载：每 5s 检查 mtime/size，改为「改配置立即生效」，无需重启守护进程。 */
 static long long g_platform_limits_conf_last_mtime_ms = -1;
 static long long g_platform_limits_conf_last_size = -1;
@@ -116,6 +137,30 @@ static void platform_limits_reset_config() {
     g_platform_limits.game_msm_cpu_max_freq[0] = '\0';
     g_platform_limits.msm_readonly = 1;
     g_platform_limits.game_ipc_restore = 1;
+    safe_strncpy(g_platform_limits.mode_msm_powersave,
+                 "0:2227200 1:2227200 2:2227200 3:2227200 4:2227200 5:2227200 6:2438400 7:2438400",
+                 sizeof(g_platform_limits.mode_msm_powersave));
+    safe_strncpy(g_platform_limits.mode_msm_balance,
+                 "0:2745600 1:2745600 2:2745600 3:2745600 4:2745600 5:2745600 6:2880000 7:2880000",
+                 sizeof(g_platform_limits.mode_msm_balance));
+    safe_strncpy(g_platform_limits.mode_msm_performance,
+                 "0:2899200 1:2899200 2:2899200 3:2899200 4:2899200 5:2899200 6:3398400 7:3398400",
+                 sizeof(g_platform_limits.mode_msm_performance));
+    safe_strncpy(g_platform_limits.mode_msm_fast,
+                 "0:3628800 1:3628800 2:3628800 3:3628800 4:3628800 5:3628800 6:4608000 7:4608000",
+                 sizeof(g_platform_limits.mode_msm_fast));
+    safe_strncpy(g_platform_limits.mode_ipc_powersave_c0,
+                 "1363200 1363200 1363200 1363200 1363200",
+                 sizeof(g_platform_limits.mode_ipc_powersave_c0));
+    safe_strncpy(g_platform_limits.mode_ipc_powersave_c1,
+                 "1497600 1497600 1497600 1497600 1497600",
+                 sizeof(g_platform_limits.mode_ipc_powersave_c1));
+    safe_strncpy(g_platform_limits.mode_ipc_balance_c0, "0", sizeof(g_platform_limits.mode_ipc_balance_c0));
+    safe_strncpy(g_platform_limits.mode_ipc_balance_c1, "0", sizeof(g_platform_limits.mode_ipc_balance_c1));
+    safe_strncpy(g_platform_limits.mode_ipc_performance_c0, "-1", sizeof(g_platform_limits.mode_ipc_performance_c0));
+    safe_strncpy(g_platform_limits.mode_ipc_performance_c1, "-1", sizeof(g_platform_limits.mode_ipc_performance_c1));
+    safe_strncpy(g_platform_limits.mode_ipc_fast_c0, "-1", sizeof(g_platform_limits.mode_ipc_fast_c0));
+    safe_strncpy(g_platform_limits.mode_ipc_fast_c1, "-1", sizeof(g_platform_limits.mode_ipc_fast_c1));
 }
 
 static int platform_limits_parse_int(const std::string& value, int fallback) {
@@ -185,6 +230,18 @@ static void platform_limits_apply_kv(const std::string& key, const std::string& 
         g_platform_limits.game_ipc_restore = platform_limits_parse_int(value, 1) != 0 ? 1 : 0;
         return;
     }
+    if (key == "mode_msm_powersave") { safe_strncpy(g_platform_limits.mode_msm_powersave, value.c_str(), sizeof(g_platform_limits.mode_msm_powersave)); return; }
+    if (key == "mode_msm_balance") { safe_strncpy(g_platform_limits.mode_msm_balance, value.c_str(), sizeof(g_platform_limits.mode_msm_balance)); return; }
+    if (key == "mode_msm_performance") { safe_strncpy(g_platform_limits.mode_msm_performance, value.c_str(), sizeof(g_platform_limits.mode_msm_performance)); return; }
+    if (key == "mode_msm_fast") { safe_strncpy(g_platform_limits.mode_msm_fast, value.c_str(), sizeof(g_platform_limits.mode_msm_fast)); return; }
+    if (key == "mode_ipc_powersave_c0") { safe_strncpy(g_platform_limits.mode_ipc_powersave_c0, value.c_str(), sizeof(g_platform_limits.mode_ipc_powersave_c0)); return; }
+    if (key == "mode_ipc_powersave_c1") { safe_strncpy(g_platform_limits.mode_ipc_powersave_c1, value.c_str(), sizeof(g_platform_limits.mode_ipc_powersave_c1)); return; }
+    if (key == "mode_ipc_balance_c0") { safe_strncpy(g_platform_limits.mode_ipc_balance_c0, value.c_str(), sizeof(g_platform_limits.mode_ipc_balance_c0)); return; }
+    if (key == "mode_ipc_balance_c1") { safe_strncpy(g_platform_limits.mode_ipc_balance_c1, value.c_str(), sizeof(g_platform_limits.mode_ipc_balance_c1)); return; }
+    if (key == "mode_ipc_performance_c0") { safe_strncpy(g_platform_limits.mode_ipc_performance_c0, value.c_str(), sizeof(g_platform_limits.mode_ipc_performance_c0)); return; }
+    if (key == "mode_ipc_performance_c1") { safe_strncpy(g_platform_limits.mode_ipc_performance_c1, value.c_str(), sizeof(g_platform_limits.mode_ipc_performance_c1)); return; }
+    if (key == "mode_ipc_fast_c0") { safe_strncpy(g_platform_limits.mode_ipc_fast_c0, value.c_str(), sizeof(g_platform_limits.mode_ipc_fast_c0)); return; }
+    if (key == "mode_ipc_fast_c1") { safe_strncpy(g_platform_limits.mode_ipc_fast_c1, value.c_str(), sizeof(g_platform_limits.mode_ipc_fast_c1)); return; }
 }
 
 static void platform_limits_load_config() {
@@ -365,6 +422,12 @@ static void platform_limits_maybe_reload_config(long long now_ms) {
         }
     }
     g_platform_limits_last_game = -1; /* 让场景 caps 重新应用 */
+    if (g_platform_limits_mode_override && g_platform_limits_active_mode[0]) {
+        char mode_copy[32];
+        safe_strncpy(mode_copy, g_platform_limits_active_mode, sizeof(mode_copy));
+        g_platform_limits_active_mode[0] = '\0';
+        platform_limits_apply_mode_tweaks(mode_copy);
+    }
     log_config_message("platform_limits: 配置已热重载");
 }
 
@@ -671,10 +734,164 @@ static void platform_limits_restore_all() {
     platform_limits_restore_msm();
     platform_limits_apply_high_perf_cap(PL_INT_UNLIMITED);
     platform_limits_apply_partial_halt(PL_INT_UNLIMITED);
+    g_platform_limits_mode_override = false;
+    g_platform_limits_active_mode[0] = '\0';
 }
 
 static void platform_limits_atexit_restore() {
     platform_limits_restore_all();
+}
+
+/* ===== 6.16 模式表：msm cpu_max_freq / IPC 档位按模式固定 ===== */
+
+static const char* platform_limits_mode_msm(const char* mode) {
+    if (!mode) return "";
+    if (strcmp(mode, "powersave") == 0) return g_platform_limits.mode_msm_powersave;
+    if (strcmp(mode, "balance") == 0) return g_platform_limits.mode_msm_balance;
+    if (strcmp(mode, "performance") == 0) return g_platform_limits.mode_msm_performance;
+    if (strcmp(mode, "fast") == 0) return g_platform_limits.mode_msm_fast;
+    return g_platform_limits.mode_msm_balance;
+}
+
+static const char* platform_limits_mode_ipc(const char* mode, int cluster) {
+    if (!mode) return "";
+    if (strcmp(mode, "powersave") == 0) {
+        return cluster == 0 ? g_platform_limits.mode_ipc_powersave_c0 : g_platform_limits.mode_ipc_powersave_c1;
+    }
+    if (strcmp(mode, "balance") == 0) {
+        return cluster == 0 ? g_platform_limits.mode_ipc_balance_c0 : g_platform_limits.mode_ipc_balance_c1;
+    }
+    if (strcmp(mode, "performance") == 0) {
+        return cluster == 0 ? g_platform_limits.mode_ipc_performance_c0 : g_platform_limits.mode_ipc_performance_c1;
+    }
+    if (strcmp(mode, "fast") == 0) {
+        return cluster == 0 ? g_platform_limits.mode_ipc_fast_c0 : g_platform_limits.mode_ipc_fast_c1;
+    }
+    return cluster == 0 ? g_platform_limits.mode_ipc_balance_c0 : g_platform_limits.mode_ipc_balance_c1;
+}
+
+static void platform_limits_write_ipc_array(int cluster, const int values[PL_IPC_LEVELS]) {
+    char path[192];
+    safe_snprintf(path, sizeof(path), PL_IPC_LEVELS_PATH, cluster);
+    if (!file_exists(path)) return;
+    char text[128];
+    safe_snprintf(text, sizeof(text), "%d %d %d %d %d\n",
+                  values[0], values[1], values[2], values[3], values[4]);
+    platform_limits_write_text(path, text);
+}
+
+static void platform_limits_restore_ipc_cluster(int cluster) {
+    if (cluster < 0 || cluster >= PL_MAX_CLUSTERS) return;
+    if (!g_platform_limits_ipc_original_valid[cluster]) return;
+    char path[192];
+    safe_snprintf(path, sizeof(path), PL_IPC_LEVELS_PATH, cluster);
+    int current[PL_IPC_LEVELS];
+    if (platform_limits_read_ipc_levels(cluster, current)) {
+        bool same = true;
+        for (int i = 0; i < PL_IPC_LEVELS; i++) {
+            if (current[i] != g_platform_limits_ipc_original[cluster][i]) { same = false; break; }
+        }
+        if (!same) platform_limits_write_ipc_array(cluster, g_platform_limits_ipc_original[cluster]);
+    }
+    g_platform_limits_ipc_original_valid[cluster] = false;
+}
+
+/*
+ * 解析模式 IPC 配置：
+ *   空 -> -2（不改）；"-1" -> -1（恢复原始值）；"0" -> 0（自动取第 3 档）；
+ *   其它 -> 1（5 个 kHz 值，允许只写 1 个值表示全档同值）。
+ */
+static int platform_limits_parse_ipc_spec(const char* spec, int out[PL_IPC_LEVELS]) {
+    if (!spec || !spec[0]) return -2;
+    char* ptr = (char*)spec;
+    char* end = NULL;
+    long first = strtol(ptr, &end, 10);
+    if (!end || end == ptr) return 0;
+    ptr = end;
+    while (*ptr == ' ' || *ptr == '\t' || *ptr == '\r' || *ptr == '\n') ptr++;
+    if (*ptr == '\0') {
+        if (first == -1) return -1;
+        if (first == 0) return 0;
+    }
+    int count = 0;
+    ptr = (char*)spec;
+    while (*ptr && count < PL_IPC_LEVELS) {
+        end = NULL;
+        long v = strtol(ptr, &end, 10);
+        if (!end || end == ptr) break;
+        out[count++] = (int)v;
+        ptr = end;
+    }
+    if (count <= 0) return 0;
+    if (count == 1) {
+        for (int i = 1; i < PL_IPC_LEVELS; i++) out[i] = out[0];
+    } else if (count < PL_IPC_LEVELS) {
+        for (int i = count; i < PL_IPC_LEVELS; i++) out[i] = out[count - 1];
+    }
+    return 1;
+}
+
+static void platform_limits_apply_mode_ipc(int cluster, const char* spec) {
+    int values[PL_IPC_LEVELS];
+    int kind = platform_limits_parse_ipc_spec(spec, values);
+    if (kind == -2) return;
+    if (kind == -1) {
+        platform_limits_restore_ipc_cluster(cluster);
+        return;
+    }
+    char path[192];
+    safe_snprintf(path, sizeof(path), PL_IPC_LEVELS_PATH, cluster);
+    if (!file_exists(path)) return;
+    int current[PL_IPC_LEVELS];
+    if (!platform_limits_read_ipc_levels(cluster, current)) return;
+    if (!g_platform_limits_ipc_original_valid[cluster]) {
+        for (int i = 0; i < PL_IPC_LEVELS; i++) g_platform_limits_ipc_original[cluster][i] = current[i];
+        g_platform_limits_ipc_original_valid[cluster] = true;
+    }
+    int target[PL_IPC_LEVELS];
+    if (kind == 0) {
+        int limit = current[PL_IPC_LEVELS / 2];
+        for (int i = 0; i < PL_IPC_LEVELS; i++) target[i] = current[i] > limit ? limit : current[i];
+    } else {
+        for (int i = 0; i < PL_IPC_LEVELS; i++) target[i] = values[i];
+    }
+    bool changed = false;
+    for (int i = 0; i < PL_IPC_LEVELS; i++) {
+        if (target[i] != current[i]) { changed = true; break; }
+    }
+    if (!changed) return;
+    platform_limits_write_ipc_array(cluster, target);
+    char msg[224];
+    safe_snprintf(msg, sizeof(msg), "platform_limits: cluster%d IPC 档位按模式写为 %d %d %d %d %d",
+                  cluster, target[0], target[1], target[2], target[3], target[4]);
+    log_config_message_throttled("platform_limits_mode_ipc", PL_CHANGE_LOG_INTERVAL_MS, msg);
+}
+
+/* 按模式应用 msm / IPC（system_tweaks 检测到模式变化时调用）。 */
+static void platform_limits_apply_mode_tweaks(const char* mode) {
+    if (!g_platform_limits_inited) platform_limits_init();
+    if (!g_platform_limits.enabled) return;
+    if (!mode || !mode[0]) return;
+    if (g_platform_limits_mode_override && strcmp(mode, g_platform_limits_active_mode) == 0) return;
+    safe_strncpy(g_platform_limits_active_mode, mode, sizeof(g_platform_limits_active_mode));
+    g_platform_limits_mode_override = true;
+
+    const char* msm = platform_limits_mode_msm(mode);
+    if (msm && msm[0]) {
+        platform_limits_msm_write_raw(msm);
+    } else {
+        platform_limits_restore_msm();
+    }
+    platform_limits_restore_ipc_originals();
+    platform_limits_apply_mode_ipc(0, platform_limits_mode_ipc(mode, 0));
+    platform_limits_apply_mode_ipc(1, platform_limits_mode_ipc(mode, 1));
+
+    char msg[420];
+    safe_snprintf(msg, sizeof(msg),
+                  "platform_limits: 模式 %s 已应用 | msm=%s | ipc_c0=%s | ipc_c1=%s",
+                  mode, msm && msm[0] ? msm : "(不改)",
+                  platform_limits_mode_ipc(mode, 0), platform_limits_mode_ipc(mode, 1));
+    log_config_message(msg);
 }
 
 static void platform_limits_init() {
@@ -731,6 +948,8 @@ static void platform_limits_tick(long long now_ms, bool is_game) {
     if (now_ms <= 0) now_ms = get_current_time_ms();
     platform_limits_maybe_reload_config(now_ms);
     if (!g_platform_limits.enabled) return;
+    /* 模式表接管 msm/IPC 时，不再跑日常/游戏那套固定值。 */
+    if (g_platform_limits_mode_override) return;
 
     int game = is_game ? 1 : 0;
     if (game != g_platform_limits_last_game) {

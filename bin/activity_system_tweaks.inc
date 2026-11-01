@@ -146,6 +146,8 @@ static void system_tweaks_tick(const char* current_app) {
     if (strcmp(mode, g_st_last_mode) == 0) return;
     safe_strncpy(g_st_last_mode, mode, sizeof(g_st_last_mode));
     st_apply_for_mode(mode);
+    /* 模式表：msm cpu_max_freq / IPC 档位也按模式切换（platform_limits.inc） */
+    platform_limits_apply_mode_tweaks(mode);
 }
 
 #endif /* MURONG_ACTIVITY_SYSTEM_TWEAKS_INC */
